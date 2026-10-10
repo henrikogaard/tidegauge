@@ -53,7 +53,7 @@ if [ -n "${TIDEGAUGE_SPARKLE_PRIVATE_KEY:-}" ]; then
     printf '%s' "$TIDEGAUGE_SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" \
         --ed-key-file - \
         --download-url-prefix "https://github.com/henrikogaard/tidegauge/releases/latest/download/" \
-        -o "$APPCAST" "$APPCAST_INPUT"
+        -o "$APPCAST_CANDIDATE" "$APPCAST_INPUT"
 else
     "$GENERATE_APPCAST" \
         --account "${TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT:-ed25519}" \

@@ -202,15 +202,13 @@ class AppcastValidationTests(unittest.TestCase):
             ).encode("utf-8")
             checksum.write_bytes(previous_checksum)
 
-            environment = os.environ.copy()
-            environment.pop("TIDEGAUGE_SPARKLE_PRIVATE_KEY", None)
-            environment.pop("NOTARY_PROFILE", None)
-            environment.update(
+            base_environment = os.environ.copy()
+            base_environment.pop("TIDEGAUGE_SPARKLE_PRIVATE_KEY", None)
+            base_environment.pop("NOTARY_PROFILE", None)
+            base_environment.update(
                 {
                     "DEVELOPER_ID_APPLICATION": "test identity",
-                    "PATH": os.pathsep.join(
-                        (str(fake_bin), environment.get("PATH", ""))
-                    ),
+                    "PATH": os.pathsep.join((str(fake_bin), os.environ.get("PATH", ""))),
                     "TEST_DISTRIBUTION": str(distribution),
                     "TIDEGAUGE_OUTPUT_ROOT": str(output_root),
                     "TIDEGAUGE_SPARKLE_PUBLIC_KEY": "test public key",
@@ -218,20 +216,29 @@ class AppcastValidationTests(unittest.TestCase):
                     "TIDEGAUGE_VERSION": "1.2.3",
                 }
             )
-            result = subprocess.run(
-                ["/bin/bash", str(packaging / "release.sh")],
-                cwd=fixture_root,
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            for signing_mode in ("keychain", "private-key"):
+                with self.subTest(signing_mode=signing_mode):
+                    environment = base_environment.copy()
+                    if signing_mode == "private-key":
+                        environment["TIDEGAUGE_SPARKLE_PRIVATE_KEY"] = (
+                            "test-only-dummy-private-key"
+                        )
+                    appcast.write_bytes(previous_feed)
+                    checksum.write_bytes(previous_checksum)
+                    result = subprocess.run(
+                        ["/bin/bash", str(packaging / "release.sh")],
+                        cwd=fixture_root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
 
-            self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn("Appcast validation failed", result.stderr)
-            self.assertEqual(appcast.read_bytes(), previous_feed)
-            self.assertEqual(checksum.read_bytes(), previous_checksum)
-            self.assertEqual(list(output_root.glob(".appcast.*")), [])
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("Appcast validation failed", result.stderr)
+                    self.assertEqual(appcast.read_bytes(), previous_feed)
+                    self.assertEqual(checksum.read_bytes(), previous_checksum)
+                    self.assertEqual(list(output_root.glob(".appcast.*")), [])
 
 
 if __name__ == "__main__":
