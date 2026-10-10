@@ -170,6 +170,48 @@ clients. A draft release is not evidence of production update delivery; feed
 hosting, publishing, and end-to-end update acceptance remain release-owner
 responsibilities.
 
+## Signing-key custody and recovery
+
+The Ed25519 signing key is independent of GitHub. GitHub Actions stores a
+deployment copy, not a recoverable backup: its API cannot return the private
+value. Do not assume a saved automation secret can be revealed later.
+
+Keep the raw private key in a concealed password field in the release owner's
+password vault. Keep a portable password-encrypted `age` backup and its
+strong, independently chosen transfer password in the vault as well, with an
+appropriate offline recovery copy. This transfer password is not the vault's
+account password. Never commit the private key, certificate exports, API
+private keys, encrypted key backups, passwords, or vault recovery credentials.
+Only `packaging/sparkle-public-key.txt` belongs in source control.
+
+The password-encrypted backup is distinct from an older SSH-recipient backup:
+it needs only its transfer password, not an SSH identity or a GitHub account.
+On a trusted Mac with `age` installed, restore directly to the clipboard without
+printing the key or creating a plaintext file:
+
+```sh
+key="$(age --decrypt "$HOME/Downloads/Tidegauge-Sparkle-password-backup.age")" && printf '%s' "$key" | pbcopy && unset key && echo "Key copied to clipboard"
+```
+
+Enter the transfer password at the secure terminal prompt. Continue only if
+the command reports that the key was copied. Paste into the concealed vault
+field or the `TIDEGAUGE_SPARKLE_PRIVATE_KEY` Actions secret, then clear the
+clipboard with `pbcopy < /dev/null`. Never paste the encrypted file contents
+into the Actions secret. Do not put private values in shell command history,
+chat, screenshots, logs, issue bodies, or release attachments.
+
+Keep the same key when moving CI or hosting. Verify a restored key against the
+committed public key before accepting it; `release.sh` verifies the archive's
+signature using the public key embedded in the packaged app and fails closed
+on a mismatch. Key generation is not a recovery procedure. Rotation needs a
+planned, tested update path for already-installed clients.
+
+The current feed is hosted on GitHub. Before moving it, ship an update through
+the old feed that points clients to the new HTTPS address; keep the old feed
+available during migration. An update-feed address on an owner-controlled
+domain is preferable before public distribution, but no such address is
+configured here. A draft release does not make the production feed live.
+
 ## Upgrade acceptance
 
 End-to-end delivery is not claimed by this repository. Before a real release,
