@@ -309,6 +309,7 @@ impl Smc {
     }
 
     fn sample(&mut self) -> SensorSnapshot {
+        let collected_at = Instant::now();
         self.transport_error.set(None);
         self.discover();
         let temperatures = self
@@ -333,8 +334,7 @@ impl Smc {
                     key: String::from_utf8_lossy(&key).into_owned(),
                     value: self
                         .read(fcc(&key))
-                        .and_then(|(info, bytes)| decode(info, &bytes))
-                        .filter(|v| (0.0..=30_000.0).contains(v)),
+                        .and_then(|(info, bytes)| decode_fan(info, &bytes)),
                 }
             })
             .collect();
@@ -347,7 +347,7 @@ impl Smc {
             temperatures,
             fans,
             fan_count,
-            collected_at: Some(Instant::now()),
+            collected_at: Some(collected_at),
             discovering: self
                 .key_count
                 .is_some_and(|count| self.next_key < count.min(8192)),
@@ -359,6 +359,16 @@ impl Smc {
 fn valid_temperature(value: f64) -> bool {
     // Zero is also used by idle/offline channels; do not present it as measured.
     value.is_finite() && (-40.0..=150.0).contains(&value) && value != 0.0
+}
+
+fn decode_fan(info: KeyInfo, bytes: &[u8; 32]) -> Option<f64> {
+    if !matches!(
+        info.data_type.to_be_bytes(),
+        [b'f', b'p', b'e', b'2'] | [b'f', b'l', b't', b' ']
+    ) {
+        return None;
+    }
+    decode(info, bytes).filter(|v| (0.0..=30_000.0).contains(v))
 }
 
 fn decode(info: KeyInfo, bytes: &[u8; 32]) -> Option<f64> {
@@ -433,11 +443,13 @@ mod tests {
             attributes: 0,
         };
         assert_eq!(decode(info, &bytes), Some(42.5));
+        assert_eq!(decode_fan(info, &bytes), None);
         bytes[..2].copy_from_slice(&(-256i16).to_be_bytes());
         assert_eq!(decode(info, &bytes), Some(-1.0));
         info.data_type = fcc(b"fpe2");
         bytes[..2].copy_from_slice(&8000u16.to_be_bytes());
         assert_eq!(decode(info, &bytes), Some(2000.0));
+        assert_eq!(decode_fan(info, &bytes), Some(2000.0));
         info = KeyInfo {
             size: 4,
             data_type: fcc(b"flt "),
