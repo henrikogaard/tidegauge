@@ -1,0 +1,627 @@
+//! System metrics collectors: CPU, memory, disk, network, battery, GPU,
+//! power, thermal — everything the UI snapshots each tick.
+
+#![allow(non_snake_case, dead_code)]
+
+use crate::ffi::*;
+use std::collections::HashMap;
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::mem::{size_of, zeroed};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+pub fn now_unix() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+pub fn sysctl_u64(name: &str) -> Option<u64> {
+    let n = CString::new(name).ok()?;
+    unsafe {
+        let mut size = 0usize;
+        if sysctlbyname(n.as_ptr(), std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) != 0 {
+            return None;
+        }
+        let mut v: u64 = 0;
+        if size == 8 {
+            if sysctlbyname(n.as_ptr(), &mut v as *mut u64 as *mut c_void, &mut size, std::ptr::null_mut(), 0) != 0 { return None; }
+            Some(v)
+        } else {
+            let mut v4: u32 = 0;
+            if sysctlbyname(n.as_ptr(), &mut v4 as *mut u32 as *mut c_void, &mut size, std::ptr::null_mut(), 0) != 0 { return None; }
+            Some(v4 as u64)
+        }
+    }
+}
+
+pub fn sysctl_str(name: &str) -> Option<String> {
+    let n = CString::new(name).ok()?;
+    unsafe {
+        let mut size = 0usize;
+        if sysctlbyname(n.as_ptr(), std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) != 0 || size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        if sysctlbyname(n.as_ptr(), buf.as_mut_ptr() as *mut c_void, &mut size, std::ptr::null_mut(), 0) != 0 {
+            return None;
+        }
+        buf.truncate(size);
+        while buf.last() == Some(&0) { buf.pop(); }
+        String::from_utf8(buf).ok()
+    }
+}
+
+fn swap_usage() -> Option<xsw_usage> {
+    unsafe {
+        let mut x: xsw_usage = zeroed();
+        let mut size = size_of::<xsw_usage>();
+        let n = CString::new("vm.swapusage").ok()?;
+        if sysctlbyname(n.as_ptr(), &mut x as *mut xsw_usage as *mut c_void, &mut size, std::ptr::null_mut(), 0) != 0 {
+            return None;
+        }
+        Some(x)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct CpuTicks {
+    pub user: u64,
+    pub system: u64,
+    pub idle: u64,
+    pub nice: u64,
+}
+
+pub fn cpu_ticks() -> Option<CpuTicks> {
+    unsafe {
+        let host = mach_host_self();
+        let mut count: natural_t = 0;
+        let mut info: *mut c_int = std::ptr::null_mut();
+        let mut info_count: natural_t = 0;
+        if host_processor_info(
+            host,
+            PROCESSOR_CPU_LOAD_INFO,
+            &mut count,
+            &mut info,
+            &mut info_count,
+        ) != KERN_SUCCESS || info.is_null() {
+            return None;
+        }
+        let ticks = std::slice::from_raw_parts(info as *const u32, info_count as usize);
+        let mut t = CpuTicks::default();
+        for c in ticks.chunks(4) {
+            if c.len() == 4 {
+                t.user += c[CPU_STATE_USER] as u64;
+                t.system += c[CPU_STATE_SYSTEM] as u64;
+                t.idle += c[CPU_STATE_IDLE] as u64;
+                t.nice += c[CPU_STATE_NICE] as u64;
+            }
+        }
+        vm_deallocate(
+            mach_task_self(),
+            info as usize,
+            info_count as usize * size_of::<c_int>(),
+        );
+        Some(t)
+    }
+}
+
+pub fn load_avg() -> [f64; 3] {
+    unsafe {
+        let mut a = [0f64; 3];
+        getloadavg(a.as_mut_ptr(), 3);
+        a
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct MemStats {
+    pub app: u64,
+    pub wired: u64,
+    pub compressed: u64,
+    pub cached: u64,
+    pub free: u64,
+    pub used: u64,
+    pub total: u64,
+    pub swap_used: u64,
+    pub swap_total: u64,
+}
+
+pub fn mem_stats() -> MemStats {
+    unsafe {
+        let host = mach_host_self();
+        let mut vms: vm_statistics64 = zeroed();
+        let mut count = (size_of::<vm_statistics64>() / size_of::<natural_t>()) as natural_t;
+        let mut out = MemStats::default();
+        let mut page_size: natural_t = 4096;
+        let _ = host_page_size(host, &mut page_size);
+        if host_statistics64(host, HOST_VM_INFO64, &mut vms, &mut count) == KERN_SUCCESS {
+            let ps = page_size as u64;
+            let free = (vms.free_count as u64 + vms.speculative_count as u64) * ps;
+            let purgeable = vms.purgeable_count as u64 * ps;
+            let internal = vms.internal_page_count as u64 * ps;
+            let external = vms.external_page_count as u64 * ps;
+            let wired = vms.wire_count as u64 * ps;
+            let compressed = vms.compressor_page_count as u64 * ps;
+            let app = internal.saturating_sub(purgeable);
+            let cached = purgeable + external;
+            out = MemStats {
+                app,
+                wired,
+                compressed,
+                cached,
+                free,
+                used: app + wired + compressed,
+                total: sysctl_u64("hw.memsize").unwrap_or(0),
+                ..Default::default()
+            };
+        }
+        out.total = out.total.max(1);
+        if let Some(sw) = swap_usage() {
+            out.swap_used = sw.xsu_used;
+            out.swap_total = sw.xsu_total;
+        }
+        out
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct DiskStats {
+    pub total: u64,
+    pub free: u64,
+    pub used: u64,
+    pub read_bytes_total: u64,
+    pub write_bytes_total: u64,
+    pub volume_count: usize,
+    pub volume_names: Vec<String>,
+}
+
+impl DiskStats {
+    pub fn volumes() -> (usize, Vec<String>) {
+        // count mounted local volumes via getmntinfo would need more FFI;
+        // keep it simple: read /Volumes plus root.
+        let mut names = vec!["Macintosh HD".to_string()];
+        if let Ok(rd) = std::fs::read_dir("/Volumes") {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n != "Macintosh HD" && !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+        }
+        (names.len(), names)
+    }
+}
+
+#[repr(C)]
+struct statfs64 {
+    f_bsize: u32,
+    f_iosize: i32,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: u64,
+    f_owner: u32,
+    f_type: u32,
+    f_flags: u32,
+    f_fssubtype: u32,
+    f_fstypename: [u8; 16],
+    f_mntonname: [u8; 1024],
+    f_mntfromname: [u8; 1024],
+    f_flags_ext: u32,
+    f_reserved: [u32; 7],
+}
+
+extern "C" {
+    fn statfs(path: *const std::ffi::c_char, buf: *mut c_void) -> c_int;
+}
+
+fn statfs_free_total(path: &str) -> Option<(u64, u64)> {
+    unsafe {
+        let mut buf = vec![0u8; 2168];
+        let c = CString::new(path).ok()?;
+        if statfs(c.as_ptr(), buf.as_mut_ptr() as *mut c_void) != 0 {
+            return None;
+        }
+        let bsize = u32::from_ne_bytes(buf[0..4].try_into().ok()?) as u64;
+        let blocks = u64::from_ne_bytes(buf[8..16].try_into().ok()?);
+        let bavail = u64::from_ne_bytes(buf[24..32].try_into().ok()?);
+        Some((bavail * bsize, blocks * bsize))
+    }
+}
+
+pub fn disk_stats() -> DiskStats {
+    let (free, total) = statfs_free_total("/").unwrap_or((0, 0));
+    let (count, names) = DiskStats::volumes();
+    DiskStats {
+        total,
+        free,
+        used: total.saturating_sub(free),
+        volume_count: count,
+        volume_names: names,
+        ..Default::default()
+    }
+}
+
+// ---- IOKit helpers ----
+
+pub fn cf_str(s: &str) -> CFStringRef {
+    unsafe {
+        extern "C" {
+            fn CFStringCreateWithCString(
+                alloc: CFAllocatorRef,
+                cstr: *const c_char,
+                encoding: u32,
+            ) -> CFStringRef;
+        }
+        let c = CString::new(s).unwrap();
+        CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), K_CF_STRING_ENCODING_UTF8)
+    }
+}
+
+pub fn cf_to_string(s: CFTypeRef) -> Option<String> {
+    if s.is_null() {
+        return None;
+    }
+    unsafe {
+        if CFGetTypeID(s) != CFStringGetTypeID() {
+            return None;
+        }
+        let mut buf = [0i8; 256];
+        if CFStringGetCString(s as CFStringRef, buf.as_mut_ptr(), 256, K_CF_STRING_ENCODING_UTF8) != 0 {
+            let c = CStr::from_ptr(buf.as_ptr());
+            Some(c.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+}
+
+pub fn cf_to_i64(v: CFTypeRef) -> Option<i64> {
+    if v.is_null() {
+        return None;
+    }
+    unsafe {
+        if CFGetTypeID(v) == CFNumberGetTypeID() {
+            let mut out: i64 = 0;
+            if CFNumberGetValue(v as CFNumberRef, K_CF_NUMBER_SINT64, &mut out as *mut i64 as *mut c_void) != 0 {
+                return Some(out);
+            }
+            let mut f: f64 = 0.0;
+            if CFNumberGetValue(v as CFNumberRef, K_CF_NUMBER_FLOAT64, &mut f as *mut f64 as *mut c_void) != 0 {
+                return Some(f as i64);
+            }
+        }
+        None
+    }
+}
+
+pub fn cf_to_bool(v: CFTypeRef) -> Option<bool> {
+    if v.is_null() {
+        return None;
+    }
+    unsafe {
+        if CFGetTypeID(v) == CFBooleanGetTypeID() {
+            return Some(CFBooleanGetValue(v) != 0);
+        }
+        if CFGetTypeID(v) == CFNumberGetTypeID() {
+            return cf_to_i64(v).map(|n| n != 0);
+        }
+    }
+    None
+}
+
+pub fn dict_get(dict: CFDictionaryRef, key: &str) -> CFTypeRef {
+    if dict.is_null() {
+        return std::ptr::null();
+    }
+    let k = cf_str(key);
+    let v = unsafe { CFDictionaryGetValue(dict, k as CFTypeRef) };
+    unsafe { CFRelease(k as CFTypeRef) };
+    v
+}
+
+pub struct IoIterator(pub io_iterator_t);
+impl Drop for IoIterator {
+    fn drop(&mut self) {
+        unsafe { IOObjectRelease(self.0) };
+    }
+}
+impl Iterator for IoIterator {
+    type Item = io_object_t;
+    fn next(&mut self) -> Option<io_object_t> {
+        let o = unsafe { IOIteratorNext(self.0) };
+        if o != 0 { Some(o) } else { None }
+    }
+}
+
+pub fn matching_services(name: &str) -> IoIterator {
+    let c = CString::new(name).unwrap();
+    unsafe {
+        let dict = IOServiceMatching(c.as_ptr());
+        let mut it: io_iterator_t = 0;
+        if IOServiceGetMatchingServices(0, dict, &mut it) == KERN_SUCCESS {
+            IoIterator(it)
+        } else {
+            IoIterator(0)
+        }
+    }
+}
+
+pub fn entry_prop(entry: io_registry_entry_t, key: &str) -> CFTypeRef {
+    let k = cf_str(key);
+    let v = unsafe { IORegistryEntryCreateCFProperty(entry, k, std::ptr::null(), 0) };
+    unsafe { CFRelease(k as CFTypeRef) };
+    v
+}
+
+// ---- IOMedia disk I/O totals ----
+pub fn disk_io_totals() -> (u64, u64) {
+    let mut read = 0u64;
+    let mut write = 0u64;
+    for e in matching_services("IOMedia") {
+        let stats = entry_prop(e, "Statistics");
+        if !stats.is_null() {
+            read += cf_to_i64(dict_get(stats as CFDictionaryRef, "Bytes (Read)"))
+                .unwrap_or(0) as u64;
+            write += cf_to_i64(dict_get(stats as CFDictionaryRef, "Bytes (Write)"))
+                .unwrap_or(0) as u64;
+            unsafe { CFRelease(stats) };
+        }
+        unsafe { IOObjectRelease(e) };
+    }
+    (read, write)
+}
+
+// ---- GPU ----
+#[derive(Clone, Copy, Default)]
+pub struct GpuStats {
+    pub utilization: Option<f64>,
+    pub mem_in_use: Option<u64>,
+    pub supported: bool,
+}
+
+pub fn gpu_stats() -> GpuStats {
+    for class in ["IOAccelerator", "IOGPU"] {
+        for e in matching_services(class) {
+            let stats = entry_prop(e, "PerformanceStatistics");
+            if !stats.is_null() {
+                let d = stats as CFDictionaryRef;
+                let mut g = GpuStats { supported: true, ..Default::default() };
+                for (key, dst) in [
+                    ("Device Utilization %", "util"),
+                    ("GPU activity(%)", "util"),
+                    ("GPU Utilization %", "util"),
+                    ("In use system memory", "mem"),
+                    ("Alloc system memory", "mem"),
+                ] {
+                    if let Some(v) = cf_to_i64(dict_get(d, key)) {
+                        if dst == "util" {
+                            g.utilization = Some(v as f64);
+                        } else {
+                            g.mem_in_use = Some(v as u64);
+                        }
+                    }
+                }
+                unsafe { CFRelease(stats) };
+                unsafe { IOObjectRelease(e) };
+                return g;
+            }
+            unsafe { IOObjectRelease(e) };
+        }
+    }
+    GpuStats::default()
+}
+
+// ---- Battery / power ----
+#[derive(Clone, Default)]
+pub struct BatteryStats {
+    pub present: bool,
+    pub on_battery: bool,
+    pub percent: Option<f64>,
+    pub minutes_remaining: Option<i64>,
+    pub is_charging: bool,
+    pub cycles: Option<i64>,
+    pub health: Option<f64>,
+    pub temperature_c: Option<f64>,
+    pub power_w: Option<f64>,
+    pub ac_power: bool,
+}
+
+pub fn battery_stats() -> BatteryStats {
+    let mut b = BatteryStats::default();
+    unsafe {
+        let info = IOPSCopyPowerSourcesInfo();
+        if !info.is_null() {
+            let list = IOPSCopyPowerSourcesList(info);
+            if !list.is_null() {
+                let n = CFArrayGetCount(list);
+                for i in 0..n {
+                    let ps = CFArrayGetValueAtIndex(list, i);
+                    let d = IOPSGetPowerSourceDescription(info, ps);
+                    if d.is_null() {
+                        continue;
+                    }
+                    let ty = cf_to_string(dict_get(d, "Type")).unwrap_or_default();
+                    if ty == "InternalBattery" {
+                        b.present = true;
+                        let cur = cf_to_i64(dict_get(d, "Current Capacity"));
+                        let max = cf_to_i64(dict_get(d, "Max Capacity"));
+                        if let (Some(c), Some(m)) = (cur, max) {
+                            if m > 0 {
+                                b.percent = Some(c as f64 / m as f64 * 100.0);
+                            }
+                        }
+                        b.is_charging = cf_to_bool(dict_get(d, "Is Charging")).unwrap_or(false);
+                        let st = cf_to_string(dict_get(d, "Power Source State")).unwrap_or_default();
+                        b.on_battery = st == "Battery Power";
+                        b.ac_power = st == "AC Power" || st == "UPS Power";
+                        let tte = cf_to_i64(dict_get(d, "Time to Empty"));
+                        if let Some(t) = tte {
+                            if t >= 0 {
+                                b.minutes_remaining = Some(t);
+                            }
+                        }
+                    }
+                }
+                CFRelease(list as CFTypeRef);
+            }
+            CFRelease(info);
+        }
+        // SmartBattery detail: cycles, health, temp, amperage → power draw
+        for e in matching_services("AppleSmartBattery") {
+            let cap_now = cf_to_i64(entry_prop(e, "CurrentCapacity").cast());
+            let max_cap = cf_to_i64(entry_prop(e, "MaxCapacity").cast());
+            let design = cf_to_i64(entry_prop(e, "DesignCapacity").cast());
+            let cycles = cf_to_i64(entry_prop(e, "CycleCount").cast());
+            let temp = cf_to_i64(entry_prop(e, "Temperature").cast());
+            let amps = cf_to_i64(entry_prop(e, "InstantAmperage").cast())
+                .or_else(|| cf_to_i64(entry_prop(e, "Amperage").cast()));
+            let volts = cf_to_i64(entry_prop(e, "Voltage").cast());
+            let charging = cf_to_bool(entry_prop(e, "IsCharging").cast()).unwrap_or(false);
+            let ext = cf_to_bool(entry_prop(e, "ExternalConnected").cast()).unwrap_or(false);
+            b.present = true;
+            b.cycles = cycles;
+            if let (Some(m), Some(d)) = (max_cap, design) {
+                if d > 0 {
+                    b.health = Some(m as f64 / d as f64 * 100.0);
+                }
+            }
+            if b.percent.is_none() {
+                if let (Some(c), Some(m)) = (cap_now, max_cap) {
+                    if m > 0 {
+                        b.percent = Some(c as f64 / m as f64 * 100.0);
+                    }
+                }
+            }
+            if let Some(t) = temp {
+                b.temperature_c = Some(t as f64 / 100.0);
+            }
+            if let (Some(a), Some(v)) = (amps, volts) {
+                // a in mA (negative when discharging), v in mV
+                let w = (a as f64 * v as f64 / 1e6).abs();
+                if w > 0.05 && w < 500.0 {
+                    b.power_w = Some(if ext && !charging { w } else { w });
+                }
+            }
+            b.is_charging = b.is_charging || charging;
+            unsafe { IOObjectRelease(e) };
+            break;
+        }
+    }
+    b
+}
+
+// ---- Network (system counters) ----
+#[derive(Clone, Default)]
+pub struct NetStats {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub primary_iface: String,
+    pub iface_kind: String,
+}
+
+pub fn net_counters() -> (u64, u64) {
+    unsafe {
+        let mut ifas: *mut ifaddrs = std::ptr::null_mut();
+        if getifaddrs(&mut ifas) != 0 || ifas.is_null() {
+            return (0, 0);
+        }
+        let mut rx = 0u64;
+        let mut tx = 0u64;
+        let mut cur = ifas;
+        while !cur.is_null() {
+            let a = &*cur;
+            if !a.ifa_addr.is_null()
+                && (*a.ifa_addr).sa_family == AF_LINK
+                && !a.ifa_data.is_null()
+                && a.ifa_flags & IFF_LOOPBACK == 0
+            {
+                let d = &*a.ifa_data;
+                rx += d.ifi_ibytes as u64;
+                tx += d.ifi_obytes as u64;
+            }
+            cur = a.ifa_next;
+        }
+        freeifaddrs(ifas);
+        (rx, tx)
+    }
+}
+
+static DEFAULT_IFACE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+
+pub fn default_interface() -> String {
+    {
+        let g = DEFAULT_IFACE.lock().unwrap();
+        if let Some((t, name)) = g.as_ref() {
+            if !name.is_empty() && t.elapsed() < Duration::from_secs(30) {
+                return name.clone();
+            }
+        }
+    }
+    let mut iface = String::from("en0");
+    if let Ok(out) = std::process::Command::new("/sbin/route")
+        .args(["-n", "get", "default"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let l = line.trim();
+            if l.starts_with("interface:") {
+                iface = l.trim_start_matches("interface:").trim().to_string();
+            }
+        }
+    }
+    let mut g = DEFAULT_IFACE.lock().unwrap();
+    *g = Some((Instant::now(), iface.clone()));
+    iface
+}
+
+// ---- Chip / CPU info ----
+#[derive(Clone, Default)]
+pub struct ChipInfo {
+    pub brand: String,
+    pub cores: usize,
+    pub p_cores: usize,
+    pub e_cores: usize,
+    pub neural_cores: usize,
+}
+
+pub fn chip_info() -> ChipInfo {
+    let brand = sysctl_str("machdep.cpu.brand_string")
+        .or_else(|| sysctl_str("hw.model"))
+        .unwrap_or_else(|| "Apple Silicon".to_string());
+    let cores = sysctl_u64("hw.ncpu").unwrap_or(0) as usize;
+    let levels = sysctl_u64("hw.nperflevels").unwrap_or(1) as usize;
+    let (mut p, mut e) = (cores, 0);
+    if levels > 1 {
+        p = sysctl_u64("hw.perflevel0.physicalcpu").unwrap_or(cores as u64) as usize;
+        e = sysctl_u64("hw.perflevel1.physicalcpu").unwrap_or(0) as usize;
+    }
+    // ANE core count is not exposed; infer 16-core for most M-chips (or 0 on VM).
+    let has_ane = !matching_services("IOService")
+        .filter(|e| {
+            let n = entry_prop(*e, "IOName");
+            let s = cf_to_string(n);
+            if !n.is_null() { unsafe { CFRelease(n) }; }
+            s.map(|x| x.to_lowercase().contains("ane")).unwrap_or(false)
+        })
+        .count()
+        == 0;
+    ChipInfo {
+        brand,
+        cores,
+        p_cores: p,
+        e_cores: e,
+        neural_cores: if has_ane { 0 } else { 16 },
+    }
+}
+
+// ---- Thermal ----
+pub fn thermal_state() -> Option<&'static str> {
+    // NSProcessInfo.thermalState: 0 Nominal 1 Fair 2 Serious 3 Critical
+    None // filled in via objc2 in app layer to keep this module C-only
+}
