@@ -6,6 +6,10 @@
 
 A menu-bar system monitor for macOS, written in Rust with [gpui-kit](https://crates.io/crates/gpui-kit). Tidegauge groups processes by their owning app and presents system activity in a compact panel.
 
+![Tidegauge dashboard](assets/dashboard.png)
+
+Dashboard preview in Graphite Night, rendered with generic sample data.
+
 ## Project status
 
 Tidegauge is an early development build. This repository contains the app source and recovered development notes. Packaging and some controls are incomplete. Collector regression tests cover the fixes described in [CONTRIBUTING](CONTRIBUTING.md). See the limitations below before relying on a metric or action.
@@ -40,7 +44,7 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 | Area | Current implementation |
 |---|---|
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
-| Overview | Summary tiles and memory and power breakdowns |
+| Overview | Summary tiles and memory and power breakdowns in paired graphite palettes |
 | Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, and Battery |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
 | Sound | Output device and volume display, plus process audio state |

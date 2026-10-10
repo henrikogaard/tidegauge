@@ -155,7 +155,7 @@ fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
         .justify_center()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(gpui_kit::white())
+        .text_color(t::on_accent(dark))
         .bg(Metric::Memory.accent(dark))
         .child(initial)
 }
@@ -383,8 +383,7 @@ impl Render for TideGaugeView {
         let tab = self.tab;
         let this = cx.entity();
 
-        // Pill tab bar: centered, rounded-full card, icon+label
-        // pills; active = metric accent text on accent@15% bg.
+        // Quiet neutral navigation; focus uses the high-contrast theme accent.
         let topbar = div()
             .w_full()
             .h(px(64.))
@@ -410,10 +409,7 @@ impl Render for TideGaugeView {
                     .p_1()
                     .children(Tab::ALL.iter().map(|&tb| {
                         let active = tb == tab;
-                        let accent = tb
-                            .metric()
-                            .map(|m| m.accent(dark))
-                            .unwrap_or_else(hex_acc);
+                        let accent = t::accent(dark);
                         let this = this.clone();
                         let keyboard_target = this.clone();
                         div()
@@ -439,7 +435,7 @@ impl Render for TideGaugeView {
                             .rounded_full()
                             .cursor_pointer()
                             .when(active, |d| {
-                                d.bg(accent.opacity(0.15)).border_color(accent).text_color(accent)
+                                d.bg(t::card_hi(dark)).border_color(t::line(dark)).text_color(accent)
                             })
                             .when(!active, |d| {
                                 d.text_color(t::ink_dim(dark))
@@ -583,10 +579,6 @@ fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
     });
 }
 
-fn hex_acc() -> Hsla {
-    gpui_kit::rgb(0x007aff).into()
-}
-
 impl TideGaugeView {
     fn render_tab(&self, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
         if self.show_settings {
@@ -626,7 +618,7 @@ fn settings_choice(
     let change = std::rc::Rc::new(change);
     let keyboard_change = change.clone();
     let keyboard_target = this.clone();
-    let accent = hex_acc();
+    let accent = t::accent(dark);
     div().id(SharedString::from(id)).role(Role::RadioButton)
         .aria_label(SharedString::from(description))
         .aria_toggled(if active { Toggled::True } else { Toggled::False })
@@ -692,7 +684,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 let key_target = this.clone();
                 div().id("settings-icon-only").role(Role::Button).aria_label("Reset to icon only")
                     .tab_index(29).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
-                    .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))
+                    .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
                     .child("Reset to icon only")
                     .on_key_down(move |event, _, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -704,7 +696,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
             })
             .child(div().id("settings-app-menu").role(Role::Button).aria_label("App menu")
                 .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
-                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))
+                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
                 .child("App menu")
                 .on_key_down(|event, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -715,7 +707,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 .on_click(|_, _, _| crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst)))
             .child(div().id("settings-quit").role(Role::Button).aria_label("Quit Tidegauge")
                 .tab_index(31).rounded_md().px_4().py_2().bg(t::card_hi(dark))
-                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))
+                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
                 .child("Quit Tidegauge")
                 .on_key_down(|event, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.quit(); }
@@ -755,7 +747,7 @@ fn bar_chart(pts: &[f64], color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
 }
 
 fn metric_heading(tab: Tab, dark: bool) -> Div {
-    let color = tab.metric().map(|m| m.accent(dark)).unwrap_or_else(hex_acc);
+    let color = tab.metric().map(|m| m.accent(dark)).unwrap_or_else(|| t::accent(dark));
     div().flex().items_center().gap_2()
         .child(div().size(px(22.)).rounded(px(7.)).bg(color.opacity(0.14))
             .flex().items_center().justify_center().child(icon_img(tab.icon(), 13., color)))
@@ -783,7 +775,7 @@ fn overview_card(
                 cx.stop_propagation();
             }
         })
-        .min_w_0().h(px(222.)).p(px(18.)).rounded(px(18.))
+        .min_w_0().h(px(222.)).p(px(18.)).rounded(px(12.))
         .bg(t::card(dark)).flex().flex_col().justify_between()
         .cursor_pointer().hover(|d| d.bg(t::card_hi(dark)))
         .child(div().flex().items_center().justify_between()
@@ -863,8 +855,8 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .child(div().grid().grid_cols(3).gap(px(16.))
             .child(donut_card("Memory by Type", Tab::Memory, vec![
                 BreakdownEntry::new("App", s.mem.app as f64, Metric::Cpu.accent(dark)),
-                BreakdownEntry::new("Wired", s.mem.wired as f64, t::hex(0xe76635)),
-                BreakdownEntry::new("Compressed", s.mem.compressed as f64, Metric::Network.accent(dark)),
+                BreakdownEntry::new("Wired", s.mem.wired as f64, Metric::Memory.accent(dark)),
+                BreakdownEntry::new("Compressed", s.mem.compressed as f64, Metric::Gpu.accent(dark)),
                 BreakdownEntry::new("Cached", s.mem.cached as f64, t::ink_dim(dark)),
                 BreakdownEntry::new("Free", s.mem.free as f64, t::card_hi(dark)),
             ], format!("{:.0}%", mem_pct), "in use", fmt_bytes, dark))
@@ -891,7 +883,7 @@ fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
             let r_in = r * 0.70;
             let total: f64 = slices.iter().map(|s| s.0).sum();
             let ring = if total > 0. { slices.clone() }
-                else { vec![(1., gpui_kit::rgb(0x86868b).into())] };
+                else { vec![(1., t::hex(0x8e8e93))] };
             let total = if total > 0. { total } else { 1. };
             let mut angle = -std::f64::consts::FRAC_PI_2;
             let at = |radius: f32, angle: f64| point(
@@ -944,7 +936,7 @@ fn donut_card(
             .child(div().flex_shrink_0().text_size(px(11.)).text_color(t::ink_dim(dark))
                 .child(format(entry.value)))
     }).collect::<Vec<_>>();
-    div().min_w_0().h(px(184.)).rounded(px(18.)).bg(t::card(dark)).p(px(18.))
+    div().min_w_0().h(px(184.)).rounded(px(12.)).bg(t::card(dark)).p(px(18.))
         .flex().flex_col().gap(px(14.))
         .child(div().flex().items_center().gap_2()
             .child(div().size(px(22.)).rounded(px(7.)).bg(tab.metric().unwrap().soft(dark))
