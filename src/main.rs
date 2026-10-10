@@ -39,10 +39,16 @@ fn main() {
         #[cfg(target_os = "macos")]
         {
             // Hide Dock icon & menu bar — we're a status item app.
-            use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+            use objc2::AllocAnyThread;
+            use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSImage};
+            use objc2_foundation::NSData;
             unsafe {
-                NSApplication::sharedApplication(objc2_foundation::MainThreadMarker::new_unchecked())
-                    .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+                let application = NSApplication::sharedApplication(objc2_foundation::MainThreadMarker::new_unchecked());
+                application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+                let data = NSData::with_bytes(include_bytes!("../assets/logo.png"));
+                if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+                    application.setApplicationIconImage(Some(&icon));
+                }
             }
         }
 

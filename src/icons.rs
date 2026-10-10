@@ -79,6 +79,9 @@ impl TideGaugeAssets {
 
 impl AssetSource for TideGaugeAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == "tidegauge/logo.png" {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.png"))));
+        }
         if let Some(rest) = path.strip_prefix("icon:") {
             let file = icons_dir().join(rest);
             if let Ok(bytes) = std::fs::read(&file) {
