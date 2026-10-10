@@ -39,6 +39,10 @@ if [ -n "${NOTARY_PROFILE:-}" ]; then
     trap - EXIT
 fi
 
+APPCAST_TEMP_DIR="$(mktemp -d "$OUTPUT_ROOT/.appcast.XXXXXX")"
+trap 'rm -rf "$APPCAST_TEMP_DIR"' EXIT
+APPCAST_CANDIDATE="$APPCAST_TEMP_DIR/appcast.xml"
+
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 shasum -a 256 "$ZIP" > "$ZIP.sha256"
 
@@ -54,8 +58,10 @@ else
     "$GENERATE_APPCAST" \
         --account "${TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT:-ed25519}" \
         --download-url-prefix "https://github.com/henrikogaard/tidegauge/releases/latest/download/" \
-        -o "$APPCAST" "$APPCAST_INPUT"
+        -o "$APPCAST_CANDIDATE" "$APPCAST_INPUT"
 fi
+python3 "$ROOT/packaging/validate_appcast.py" "$APPCAST_CANDIDATE" "$ZIP"
+mv "$APPCAST_CANDIDATE" "$APPCAST"
 shasum -a 256 "$APPCAST" > "$APPCAST.sha256"
 
 if [ -n "${NOTARY_PROFILE:-}" ]; then

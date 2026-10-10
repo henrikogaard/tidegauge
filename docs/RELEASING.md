@@ -88,13 +88,18 @@ cargo build --release
 packaging/release.sh
 ```
 
-`release.sh` defaults to production and therefore stops before packaging
-without the production public key, Developer ID identity, and an explicit
-EdDSA signing key. Sparkle's appcast tool reads the private key from the
-configured keychain account, defaulting to `ed25519`, or from the
-`TIDEGAUGE_SPARKLE_PRIVATE_KEY` environment variable through standard input.
-Private key material is never printed or written by these scripts. Set
-`TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT` to override the keychain account.
+`release.sh` defaults to production and requires the production public key and
+Developer ID identity before packaging. Sparkle's appcast tool reads the
+private key from the configured keychain account, defaulting to `ed25519`, or
+from the `TIDEGAUGE_SPARKLE_PRIVATE_KEY` environment variable through standard
+input. A generated candidate appcast is accepted only if every enclosure has a
+nonempty base64 EdDSA signature decoding to 64 bytes and an enclosure matches
+the current archive's filename and byte length. Validation happens before the
+candidate can replace the final appcast or its checksum. This is structural
+validation only; it does not cryptographically verify that signatures match
+the bundle's public key. Private key material is never printed or written by
+these scripts. Set `TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT` to override the keychain
+account.
 `NOTARY_PROFILE` is optional:
 
 ```sh
