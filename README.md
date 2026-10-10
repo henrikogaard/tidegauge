@@ -63,8 +63,8 @@ when its signing credentials are unavailable.
 
 ## Current limitations
 
-- Project Stop and Stop All actions send SIGTERM immediately. They have no confirmation dialog.
-- Sound is currently a display. Volume and per-app mute controls are not connected to the UI, and the level meter is an indicative value rather than a measured signal level.
+- Project Stop and Stop All actions require confirmation. They send SIGTERM only after rechecking process ownership and start time; no force-kill escalation is performed.
+- Sound is read-only: it displays device volume and app playback/recording activity, not per-app volume or measured signal levels.
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
 - Custom alert thresholds and launch-at-login settings are stored but not applied. Closing the dashboard hides it while collection continues.
 - History is written to disk, but the panel shows in-memory charts. There is no history browser, and pruning is periodic rather than a strict 30-day cutoff.

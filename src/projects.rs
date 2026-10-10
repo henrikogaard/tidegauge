@@ -186,9 +186,52 @@ fn project_root(dir: &str) -> Option<String> {
     None
 }
 
-pub fn kill_pid(pid: i32) {
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
+fn matches_server(server: &DevServer, info: &crate::ffi::proc_bsdinfo, uid: u32) -> bool {
+    let started = info.pbi_start_tvsec as f64 + info.pbi_start_tvusec as f64 / 1_000_000.0;
+    server.pid > 1 && info.pbi_pid == server.pid as u32 && info.pbi_uid == uid
+        && server.up_since.is_finite() && server.up_since > 0.0 && started == server.up_since
+}
+
+pub fn stop_server(server: &DevServer) -> bool {
+    let Some(info) = proc_bsd(server.pid) else { return false };
+    if !matches_server(server, &info, unsafe { libc::getuid() }) { return false; }
+    unsafe { libc::kill(server.pid, libc::SIGTERM) == 0 }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+
+    #[test]
+    fn stop_requires_same_owner_pid_and_start_time() {
+        let pid = std::process::id() as i32;
+        let info = proc_bsd(pid).unwrap();
+        let uid = unsafe { libc::getuid() };
+        let mut server = DevServer { pid, up_since: info.pbi_start_tvsec as f64 + info.pbi_start_tvusec as f64 / 1_000_000.0, ..Default::default() };
+        assert!(matches_server(&server, &info, uid));
+        assert!(!matches_server(&server, &info, uid.wrapping_add(1)));
+        server.up_since += 1.0;
+        assert!(!matches_server(&server, &info, uid));
+        server.up_since = f64::NAN;
+        assert!(!matches_server(&server, &info, uid));
+        server.pid = 0;
+        assert!(!matches_server(&server, &info, uid));
+    }
+
+    #[test]
+    #[ignore = "launches and terminates a disposable owned process"]
+    fn native_stop_rejects_changed_identity_before_signalling() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let info = proc_bsd(pid).unwrap();
+        let started = info.pbi_start_tvsec as f64 + info.pbi_start_tvusec as f64 / 1_000_000.0;
+        let mut server = DevServer { pid, up_since: started + 1.0, ..Default::default() };
+        assert!(!stop_server(&server));
+        assert!(child.try_wait().unwrap().is_none());
+        server.up_since = started;
+        assert!(stop_server(&server));
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
     }
 }
 

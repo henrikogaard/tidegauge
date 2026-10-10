@@ -36,7 +36,7 @@ Run the build from the same commit being reviewed and record the macOS version a
 - Panel changes: inspect the affected tabs, charts, scrolling, and appearance. Check dashboard Settings access by mouse and keyboard.
 - Collector changes: compare values with the relevant macOS tool and test unavailable-data handling.
 - History changes: use an isolated database and verify writes, queries, and retention.
-- Project changes: use a disposable server that you own. Confirm that desktop listeners, root/home directories, and processes without a project marker are excluded. Stop actions send SIGTERM immediately; do not test them against unrelated processes.
+- Project changes: use a disposable server that you own. Confirm that desktop listeners, root/home directories, and processes without a project marker are excluded. Verify that cancelling Stop or Stop All sends no signal, and that confirmation only targets the original process identity. Never test against unrelated processes.
 
 Keep screenshots and raw diagnostics outside commits unless they are deliberately selected documentation assets. Do not record private process arguments, Bluetooth addresses, or unrelated personal data in a review report.
 
