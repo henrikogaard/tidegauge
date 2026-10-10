@@ -221,6 +221,25 @@ fn os_status_error(control: &str, status: OSStatus) -> String {
     format!("{message} (OSStatus {status})")
 }
 
+pub fn adjust_output_volume(expected_id: u32, delta: f32) -> Result<(), String> {
+    let value = adjusted_volume(&output_state(), expected_id, delta)?;
+    set_output_volume(expected_id, value)
+}
+
+fn adjusted_volume(state: &OutputState, expected_id: u32, delta: f32) -> Result<f32, String> {
+    if !target_is_current(expected_id, state.id) {
+        return Err(stale_output_error());
+    }
+    if !state.can_volume || !valid_volume(delta.abs()) {
+        return Err(unsupported_control_error("volume"));
+    }
+    let volume = state
+        .volume
+        .filter(|value| valid_volume(*value))
+        .ok_or_else(|| unsupported_control_error("volume"))?;
+    Ok((volume + delta).clamp(0., 1.))
+}
+
 pub fn set_output_volume(expected_id: u32, value: f32) -> Result<(), String> {
     if !valid_volume(value) {
         return Err(crate::locale::text(
@@ -319,6 +338,27 @@ mod tests {
         assert!(!target_is_current(0, 42));
         assert!(!target_is_current(42, 43));
         assert!(target_is_current(42, 42));
+    }
+
+    #[test]
+    fn adjustments_use_current_volume_and_reject_unavailable_targets() {
+        let mut state = OutputState {
+            id: 42,
+            volume: Some(0.5),
+            can_volume: true,
+            ..OutputState::default()
+        };
+        state.volume = Some(adjusted_volume(&state, 42, 0.1).unwrap());
+        assert!((adjusted_volume(&state, 42, 0.1).unwrap() - 0.7).abs() < 0.0001);
+        assert_eq!(adjusted_volume(&state, 42, 0.8).unwrap(), 1.);
+        assert_eq!(adjusted_volume(&state, 42, -0.8).unwrap(), 0.);
+        assert!(adjusted_volume(&state, 43, 0.1).is_err());
+        assert!(adjusted_volume(&state, 42, f32::NAN).is_err());
+        state.can_volume = false;
+        assert!(adjusted_volume(&state, 42, 0.1).is_err());
+        state.can_volume = true;
+        state.volume = None;
+        assert!(adjusted_volume(&state, 42, 0.1).is_err());
     }
 
     #[test]

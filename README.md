@@ -148,7 +148,10 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 | `src/projects.rs` | Listening ports, project grouping, idle tracking, per-app network collection |
 | `src/audio.rs` | CoreAudio device and process properties |
 | `src/bluetooth.rs` | Bluetooth JSON parsing and cache |
-| `src/history.rs` | SQLite persistence and alert thresholds |
+| `src/history.rs`, `src/history_browser.rs` | SQLite persistence and read-only range queries |
+| `src/alerts.rs` | Sustained alert thresholds, recovery, and cooldowns |
+| `src/keepawake.rs` | Owned native idle-sleep assertions and expiry |
+| `src/controls.rs` | Settings, history, keep-awake, and output-device controls |
 | `src/settings.rs` | Settings model, defaults, and JSON persistence |
 | `src/statusbar.rs` | Native menu-bar items and sparklines |
 | `src/ui.rs` | Panel navigation, tab content, and charts |

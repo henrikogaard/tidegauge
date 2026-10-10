@@ -665,7 +665,7 @@ pub fn audio_output(
     }
     let mut buttons = div().flex().gap_2();
     if audio.can_volume {
-        if let Some(volume) = audio.device_volume {
+        if let Some(_volume) = audio.device_volume {
             for (key, label, delta) in [("down", "− 10%", -0.1), ("up", "+ 10%", 0.1)] {
                 let target = this.clone();
                 buttons = buttons.child(button(
@@ -674,9 +674,8 @@ pub fn audio_output(
                     false,
                     dark,
                     move |_, cx| {
-                        let value = (volume + delta).clamp(0., 1.);
                         audio_action(&target, cx, move || {
-                            crate::audio::set_output_volume(id, value)
+                            crate::audio::adjust_output_volume(id, delta)
                         });
                     },
                 ));
