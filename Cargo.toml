@@ -33,6 +33,10 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 ] }
 objc2-core-foundation = "0.3"
 block2 = "0.6"
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = [
+    "UNNotification", "UNNotificationContent", "UNNotificationRequest",
+    "UNNotificationTrigger", "UNUserNotificationCenter", "block2",
+] }
 
 [profile.release]
 lto = "thin"

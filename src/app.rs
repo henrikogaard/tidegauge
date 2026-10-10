@@ -82,7 +82,7 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, view: &gpui_kit::E
     let snap = crate::engine::latest();
     bar.sync(&settings, &snap);
     for a in drain_alerts() {
-        notify(&a.message);
+        crate::notifications::send(&a.message);
     }
 }
 
@@ -101,18 +101,4 @@ pub fn toggle_panel(cx: &mut gpui_kit::App) {
             window.activate_window();
         });
     }
-}
-
-/// macOS notification for alerts (best-effort via osascript to keep it
-/// dependency-free and unsigned-binary safe).
-fn notify(msg: &str) {
-    let _ = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            &format!(
-                "display notification {} with title \"tidegauge\"",
-                serde_json::to_string(msg).unwrap_or_else(|_| "\"\"".into())
-            ),
-        ])
-        .spawn();
 }
