@@ -488,24 +488,27 @@ impl Render for TideGaugeView {
             .flex()
             .items_center()
             .justify_between()
-            .child({
-                let click_target = this.clone();
-                let key_target = this.clone();
-                div().id("dashboard-settings").role(Role::Button).aria_label("Settings")
-                    .tab_index(11).flex().items_center().gap_1().px_2().py_1().rounded_md()
-                    .cursor_pointer().text_xs().text_color(t::ink_dim(dark))
-                    .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
-                    .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
-                    .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
-                    .child("Settings")
-                    .on_click(move |_, _, cx| open_settings(&click_target, cx))
-                    .on_key_down(move |event, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            open_settings(&key_target, cx);
-                            cx.stop_propagation();
-                        }
-                    })
-            })
+            .child(div().flex().items_center().gap_2()
+                .child(img("tidegauge/logo.png").w(px(22.)).h(px(22.)))
+                .child({
+                    let click_target = this.clone();
+                    let key_target = this.clone();
+                    div().id("dashboard-settings").role(Role::Button).aria_label("Settings")
+                        .tab_index(11).flex().items_center().gap_1().px_2().py_1().rounded_md()
+                        .cursor_pointer().text_xs().text_color(t::ink_dim(dark))
+                        .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
+                        .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
+                        .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
+                        .child("Settings")
+                        .on_click(move |_, _, cx| open_settings(&click_target, cx))
+                        .on_key_down(move |event, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                open_settings(&key_target, cx);
+                                cx.stop_propagation();
+                            }
+                        })
+                })
+            )
             .child(
                 div()
                     .text_size(px(10.))

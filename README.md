@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="128" alt="Tidegauge activity-bar logo">
+</p>
+
 # Tidegauge
 
 A menu-bar system monitor for macOS, written in Rust with [gpui-kit](https://crates.io/crates/gpui-kit). Tidegauge groups processes by their owning app and presents system activity in a compact panel.
@@ -108,6 +112,8 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 
 ## Development documentation
 
+- [Roadmap and implementation issues](https://github.com/henrikogaard/tidegauge/issues/12): priorities, acceptance criteria, and verification steps.
+- [Artwork](assets/README.md): logo files and generation prompt.
 - [Contributing](CONTRIBUTING.md): checks, manual verification, and review expectations.
 - [Design](DESIGN.md): colors, layout, and menu-bar behavior.
 - [Recovery manifest](RECOVERY-MANIFEST.md): provenance of the recovered files.
