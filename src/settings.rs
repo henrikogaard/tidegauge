@@ -80,6 +80,31 @@ pub const MENU_STYLES: [(&str, &str); 4] = [
     ("icon", "Icon"), ("value", "Value"), ("graph", "Graph"), ("both", "Value + graph"),
 ];
 
+pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
+    let (english, norwegian) = match metric {
+        "cpu" => ("CPU", "CPU"),
+        "memory" => ("Memory", "Minne"),
+        "gpu" => ("GPU", "GPU"),
+        "disk" => ("Disk", "Disk"),
+        "network" => ("Network", "Nettverk"),
+        "battery" => ("Battery", "Batteri"),
+        "power" => ("Power", "Effekt"),
+        _ => return None,
+    };
+    Some(crate::locale::text(english, norwegian))
+}
+
+pub fn localized_style_label(style: &str) -> Option<&'static str> {
+    let (english, norwegian) = match style {
+        "icon" => ("Icon", "Ikon"),
+        "value" => ("Value", "Verdi"),
+        "graph" => ("Graph", "Graf"),
+        "both" => ("Value + graph", "Verdi + graf"),
+        _ => return None,
+    };
+    Some(crate::locale::text(english, norwegian))
+}
+
 /// Read the latest file before changing one setting, preserving other preferences.
 pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
     let mut settings = Settings::load();

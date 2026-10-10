@@ -12,7 +12,7 @@ Dashboard preview in Graphite Night, rendered with generic sample data.
 
 ## Project status
 
-Tidegauge is an early development build. This repository contains the app source and recovered development notes. Packaging and some controls are incomplete. Collector regression tests cover the fixes described in [CONTRIBUTING](CONTRIBUTING.md). See the limitations below before relying on a metric or action.
+Tidegauge is an early development build. This repository contains the app source and recovered development notes. Some controls remain incomplete, while local `.app` packaging and a fail-closed production release helper are available. Production signing and notarization require the credentials described in [Releasing](docs/RELEASING.md). Collector regression tests cover the fixes described in [CONTRIBUTING](CONTRIBUTING.md). See the limitations below before relying on a metric or action.
 
 ## Build and run
 
@@ -37,14 +37,22 @@ cargo build --release
 
 The app opens a resizable dashboard and adds one item to the menu bar. It runs without a Dock icon. Click the menu-bar item and choose Open Dashboard to bring it forward. Closing the window hides it while collection continues. The single menu-bar item opens a native menu with Open Dashboard, Settings, and Quit. Every dashboard tab has a Settings button in the footer. Command-comma also opens Settings, and Command-Q quits while the dashboard is focused. A per-user lock prevents duplicate instances; launching again leaves the existing app running.
 
-There is currently no bundle script, `.app` packaging, signing, or notarization workflow in this repository.
+Create an ad-hoc preview bundle after the optimized build:
+
+```sh
+packaging/package-app.sh preview
+```
+
+The packaging modes, signing prerequisites, and optional notarization flow are
+documented in [Releasing](docs/RELEASING.md). Production packaging fails closed
+when its signing credentials are unavailable.
 
 ## What the app contains
 
 | Area | Current implementation |
 |---|---|
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
-| Overview | Summary tiles and memory and power breakdowns in paired graphite palettes |
+| Overview | Summary tiles and memory and power breakdowns on neutral surfaces with colorful metric accents |
 | Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, and Battery |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
 | Sound | Output device and volume display, plus process audio state |
@@ -55,8 +63,8 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 
 ## Current limitations
 
-- Project Stop and Stop All actions send SIGTERM immediately. They have no confirmation dialog.
-- Sound is currently a display. Volume and per-app mute controls are not connected to the UI, and the level meter is an indicative value rather than a measured signal level.
+- Project Stop and Stop All actions require confirmation. They send SIGTERM only after rechecking process ownership and start time; no force-kill escalation is performed.
+- Sound is read-only: it displays device volume and app playback/recording activity, not per-app volume or measured signal levels.
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
 - Custom alert thresholds and launch-at-login settings are stored but not applied. Closing the dashboard hides it while collection continues.
 - History is written to disk, but the panel shows in-memory charts. There is no history browser, and pruning is periodic rather than a strict 30-day cutoff.
@@ -120,6 +128,7 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 - [Artwork](assets/README.md): logo files and generation prompt.
 - [Contributing](CONTRIBUTING.md): checks, manual verification, and review expectations.
 - [Design](DESIGN.md): colors, layout, and menu-bar behavior.
+- [Releasing](docs/RELEASING.md): bundle modes, signing prerequisites, and update acceptance.
 - [Recovery manifest](RECOVERY-MANIFEST.md): provenance of the recovered files.
 - [Historical findings](tidegauge-findings.md) and [historical test plan](tidegauge-test-plan.md): evidence from an earlier environment, not validation of the current checkout.
 

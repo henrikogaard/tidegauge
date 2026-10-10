@@ -1,0 +1,306 @@
+name: Draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Numeric release version (for example, 1.2.3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - name: Validate version and required secrets
+        id: validate
+        shell: bash
+        env:
+          TIDEGAUGE_SPARKLE_PRIVATE_KEY: ${{ secrets.TIDEGAUGE_SPARKLE_PRIVATE_KEY }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,2}$ ]]; then
+            printf '%s\n' "Release version must contain one to three numeric components." >&2
+            exit 1
+          fi
+          missing=()
+          for name in \
+            TIDEGAUGE_SPARKLE_PRIVATE_KEY \
+            APPLE_CERTIFICATE_P12_BASE64 \
+            APPLE_CERTIFICATE_PASSWORD \
+            DEVELOPER_ID_APPLICATION \
+            APPLE_TEAM_ID \
+            APPSTORE_API_PRIVATE_KEY \
+            APPSTORE_API_KEY_ID \
+            APPSTORE_ISSUER_ID
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if ((${#missing[@]})); then
+            printf 'Missing required release secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Reject existing tags and non-monotonic versions
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const version = process.env.RELEASE_VERSION;
+            const tag = `v${version}`;
+            const parts = value => {
+              const numeric = value.replace(/^v/, "");
+              if (!/^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,2}$/.test(numeric)) {
+                throw new Error(`Cannot compare non-numeric release version ${value}.`);
+              }
+              return numeric.split(".").map(BigInt);
+            };
+            const compare = (left, right) => {
+              const a = parts(left);
+              const b = parts(right);
+              for (let i = 0; i < 3; i++) {
+                const delta = (a[i] || 0n) - (b[i] || 0n);
+                if (delta !== 0n) return delta > 0n ? 1 : -1;
+              }
+              return 0;
+            };
+            const exists = async request => {
+              try {
+                await request();
+                return true;
+              } catch (error) {
+                if (error.status === 404) return false;
+                throw error;
+              }
+            };
+            const [tagExists, releaseExists] = await Promise.all([
+              exists(() => github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })),
+              exists(() => github.rest.repos.getReleaseByTag({ owner, repo, tag })),
+            ]);
+            if (tagExists || releaseExists) {
+              throw new Error(`Refusing to overwrite existing tag or release ${tag}.`);
+            }
+            let latest;
+            try {
+              latest = (await github.rest.repos.getLatestRelease({ owner, repo })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (latest && compare(version, latest.tag_name) <= 0) {
+              throw new Error(`Release version must be newer than the latest published release (${latest.tag_name}).`);
+            }
+
+  build-release:
+    needs: preflight
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    permissions:
+      contents: read
+    env:
+      TIDEGAUGE_VERSION: ${{ needs.preflight.outputs.version }}
+      TIDEGAUGE_BUILD_VERSION: ${{ needs.preflight.outputs.version }}
+      TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT: no.ogard.tidegauge.sparkle
+      NOTARY_PROFILE: tidegauge-release
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Assert Apple Silicon runner
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "arm64" ]]; then
+            printf '%s\n' "Release runner must be arm64." >&2
+            exit 1
+          fi
+      - name: Ensure stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Import signing certificate and store notarization profile
+        shell: bash
+        env:
+          KEYCHAIN_PATH: ${{ runner.temp }}/tidegauge-release.keychain-db
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          P12_PATH="$RUNNER_TEMP/tidegauge-signing.p12"
+          trap 'rm -f "$P12_PATH"' EXIT
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 -D > "$P12_PATH"
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$P12_PATH"
+          trap - EXIT
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" \
+            >/dev/null
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPSTORE_API_KEY_ID}.p8"
+          trap 'rm -f "$API_KEY_PATH"' EXIT
+          printf '%s' "$APPSTORE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPSTORE_API_KEY_ID" \
+            --issuer "$APPSTORE_ISSUER_ID" \
+            --keychain "$KEYCHAIN_PATH"
+          rm -f "$API_KEY_PATH"
+          trap - EXIT
+      - name: Run locked Rust tests and release build
+        run: |
+          set -euo pipefail
+          rustup run stable cargo test --locked
+          rustup run stable cargo build --release --locked
+      - name: Package, notarize, and validate release
+        shell: bash
+        env:
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          NOTARY_KEYCHAIN: ${{ runner.temp }}/tidegauge-release.keychain-db
+          TIDEGAUGE_OUTPUT_ROOT: ${{ runner.temp }}/tidegauge-release
+          TIDEGAUGE_SPARKLE_PRIVATE_KEY: ${{ secrets.TIDEGAUGE_SPARKLE_PRIVATE_KEY }}
+        run: packaging/release.sh
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tidegauge-release-assets
+          path: |
+            ${{ runner.temp }}/tidegauge-release/Tidegauge-${{ needs.preflight.outputs.version }}.zip
+            ${{ runner.temp }}/tidegauge-release/Tidegauge-${{ needs.preflight.outputs.version }}.zip.sha256
+            ${{ runner.temp }}/tidegauge-release/appcast.xml
+            ${{ runner.temp }}/tidegauge-release/appcast.xml.sha256
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        env:
+          KEYCHAIN_PATH: ${{ runner.temp }}/tidegauge-release.keychain-db
+        run: |
+          set +e
+          security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1
+          rm -f "$RUNNER_TEMP/tidegauge-signing.p12"
+
+  create-draft-release:
+    needs:
+      - preflight
+      - build-release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tidegauge-release-assets
+          path: release-assets
+      - name: Create draft release and attach validated assets
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const version = process.env.RELEASE_VERSION;
+            const tag = `v${version}`;
+            const parts = value => {
+              const numeric = value.replace(/^v/, "");
+              if (!/^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,2}$/.test(numeric)) {
+                throw new Error(`Cannot compare non-numeric release version ${value}.`);
+              }
+              return numeric.split(".").map(BigInt);
+            };
+            const compare = (left, right) => {
+              const a = parts(left);
+              const b = parts(right);
+              for (let i = 0; i < 3; i++) {
+                const delta = (a[i] || 0n) - (b[i] || 0n);
+                if (delta !== 0n) return delta > 0n ? 1 : -1;
+              }
+              return 0;
+            };
+            const exists = async request => {
+              try {
+                await request();
+                return true;
+              } catch (error) {
+                if (error.status === 404) return false;
+                throw error;
+              }
+            };
+            const [tagExists, releaseExists] = await Promise.all([
+              exists(() => github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })),
+              exists(() => github.rest.repos.getReleaseByTag({ owner, repo, tag })),
+            ]);
+            if (tagExists || releaseExists) {
+              throw new Error(`Refusing to overwrite existing tag or release ${tag}.`);
+            }
+            let latest;
+            try {
+              latest = (await github.rest.repos.getLatestRelease({ owner, repo })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (latest && compare(version, latest.tag_name) <= 0) {
+              throw new Error(`Release version must be newer than the latest published release (${latest.tag_name}).`);
+            }
+            const release = (await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: `Tidegauge ${version}`,
+              body: "Review this draft and its assets before publishing.",
+              draft: true,
+              prerelease: false,
+            })).data;
+            const directory = path.resolve("release-assets");
+            const assets = [
+              ["Tidegauge-" + version + ".zip", "application/zip"],
+              ["Tidegauge-" + version + ".zip.sha256", "text/plain"],
+              ["appcast.xml", "application/xml"],
+              ["appcast.xml.sha256", "text/plain"],
+            ];
+            for (const [name, contentType] of assets) {
+              const data = fs.readFileSync(path.join(directory, name));
+              await github.rest.repos.uploadReleaseAsset({
+                owner,
+                repo,
+                release_id: release.id,
+                name,
+                data,
+                headers: {
+                  "content-type": contentType,
+                  "content-length": data.length,
+                },
+              });
+            }

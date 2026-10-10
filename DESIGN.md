@@ -18,26 +18,30 @@ Graphite Night uses a charcoal canvas, mineral surfaces, silver text, and neutra
 | Success | `#248a3d` | `#30d158` |
 | Error or critical state | `#d70015` | `#ff453a` |
 
-## Metric tones
+## Metric colors
 
-Charts and metric headings use neutral tones. Labels, units, and values identify each metric; color is reserved for status signals. App breakdowns use progressively softer tones with a labeled legend.
+Surfaces, body text, and controls stay neutral in both appearances. Charts, metric headings, and selected navigation use consistent metric colors. Labels, units, and values remain readable without relying on color. App breakdowns use progressively softer shades with a labeled legend.
 
 | Metric | Graphite Day | Graphite Night |
 |---|---|---|
-| CPU | `#3a3a3c` | `#d1d1d6` |
-| Memory, Neural | `#6e6e73` | `#aeaeb2` |
-| GPU, Sound | `#48484a` | `#c7c7cc` |
-| Disk, Projects | `#6e6e73` | `#8e8e93` |
-| Network, Bluetooth | `#3a3a3c` | `#d1d1d6` |
-| Battery, Power | `#48484a` | `#b8b8bd` |
+| CPU | `#246fc7` | `#5a9cf0` |
+| Memory | `#6550bb` | `#a397f4` |
+| GPU | `#b94378` | `#f18db5` |
+| Disk | `#9b6900` | `#e8ad39` |
+| Network | `#147d59` | `#41c79a` |
+| Battery, Power | `#287c35` | `#63ca6e` |
+| Sound | `#ab338c` | `#e87bcc` |
+| Bluetooth | `#087d99` | `#51c4df` |
+| Projects | `#ba4f22` | `#f28d60` |
+| Neural | `#8648b8` | `#c28df2` |
 
-The soft metric tone uses 16% alpha. Chart fills use lower opacity. Selected navigation uses `card-hi`, `line`, and `accent`; keyboard focus uses a high-contrast neutral border.
+The soft metric tone uses 16% alpha. Chart fills use lower opacity. Selected navigation uses a 12% metric tint without an outline; keyboard focus uses a visible metric-colored border.
 
 ## Layout
 
 - **Window**: 1192×780 with a 1050×650 minimum, resizable native window with a transparent titlebar and system window controls. Closing hides the dashboard; a menu-bar readout reopens it.
-- **Navigation**: horizontal top tab bar with all 11 tabs, metric icon + label, selected tab = neutral raised surface with a quiet outline. Tab/Shift-Tab moves keyboard focus; Enter/Space opens a tab or metric card.
-- **Footer**: generated graphite activity-bar logo, Settings access, and live app and process counts.
+- **Navigation**: horizontal top tab bar with all 11 tabs, metric icon + label, selected tab = quiet metric-tinted surface. Tab/Shift-Tab moves keyboard focus; Enter/Space opens a tab or metric card.
+- **Footer**: Settings icon and label, plus live app and process counts, on the same uninterrupted canvas. No divider or decorative app-logo tile.
 - **Cards**: 12 px radius, `card` fill, 1 px `line` border.
 - **Overview**: six 222 px metric cards in three columns, 12 px radius, 16 px gaps; 34 px headline with a separate unit, three supporting readings, and a 38 px tinted bar-chart tray. Clicking a card opens its detail tab.
 - **Hero card**: caption, 42 px number, sub-caption, filled area chart (130 px), footer stat triplets.

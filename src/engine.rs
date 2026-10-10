@@ -142,7 +142,7 @@ pub struct Snapshot {
     pub proc_count: usize,
     pub app_count: usize,
     pub chip: ChipInfo,
-    pub power_w: f64,
+    pub power_w: Option<f64>,
     pub power_hist: Hist,
     pub thermal: String,
     pub neural: Option<f64>,
@@ -179,9 +179,9 @@ impl Default for Snapshot {
             proc_count: 0,
             app_count: 0,
             chip: ChipInfo::default(),
-            power_w: 0.0,
+            power_w: None,
             power_hist: h(),
-            thermal: "Nominal".into(),
+            thermal: "—".into(),
             neural: None,
             neural_hist: h(),
             uptime: Duration::ZERO,
@@ -262,6 +262,7 @@ impl Engine {
         self.last_ticks = ticks;
         s.cpu_hist.push(s.cpu_pct);
         s.load_avg = load_avg();
+        s.thermal = thermal_state().unwrap_or("—").into();
 
         // Memory
         s.mem = mem_stats();
@@ -304,12 +305,16 @@ impl Engine {
 
         // GPU
         s.gpu = gpu_stats();
-        s.gpu_hist.push(s.gpu.utilization.unwrap_or(0.0));
+        if let Some(utilization) = s.gpu.utilization {
+            s.gpu_hist.push(utilization);
+        }
 
         // Battery + system power
         s.battery = battery_stats();
         if let Some(p) = s.battery.percent {
             s.batt_hist.push(p);
+        } else {
+            s.batt_hist.pts.clear();
         }
 
         // Processes
@@ -384,14 +389,9 @@ impl Engine {
             crate::projects::apply_nettop(&mut s.apps);
         }
 
-        // system power: sum of billed app power + baseline, or battery draw
-        let app_power: f64 = s.apps.iter().map(|a| a.power_w).sum();
-        s.power_w = if let Some(w) = s.battery.power_w {
-            w.max(app_power)
-        } else {
-            app_power.max(s.cpu_pct / 100.0 * 8.0) // VM estimate floor
-        };
-        s.power_hist.push(s.power_w);
+        // Battery terminal power and per-process estimates are not system power.
+        s.power_w = None;
+        s.power_hist.pts.clear();
 
         s.audio = AudioInfo { apps: audio_apps, ..s.audio.clone() };
         s.audio.device_name = crate::audio::default_output_name();
@@ -404,8 +404,7 @@ impl Engine {
         s.projects = crate::projects::detect_projects(&procs);
         s.uptime = self.started.elapsed();
 
-        s.neural = None; // no public ANE counter; keep chart at 0 when unsupported
-        s.neural_hist.push(s.neural.unwrap_or(0.0));
+        s.neural = None; // No public ANE counter; leave the history empty.
     }
 }
 

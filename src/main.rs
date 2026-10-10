@@ -1,20 +1,25 @@
 #![cfg_attr(target_os = "macos", allow(non_snake_case))]
 
 mod app;
+mod battery;
 mod audio;
 mod bluetooth;
+mod disks;
 mod engine;
 mod ffi;
 mod history;
 mod icons;
 mod instance;
+mod locale;
 mod metrics;
 mod processes;
 mod projects;
 mod settings;
+mod sensors;
 mod statusbar;
 mod theme;
 mod ui;
+pub mod updater;
 
 use gpui_kit::*;
 use std::time::Duration;
@@ -28,6 +33,8 @@ fn main() {
         Err(error) => { eprintln!("Cannot start Tidegauge: {error}"); return; }
     };
     env_logger_init();
+    sensors::start();
+    disks::start();
     app::start_sampler();
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());
@@ -50,6 +57,7 @@ fn main() {
                     application.setApplicationIconImage(Some(&icon));
                 }
             }
+            updater::initialize();
         }
 
         let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);
