@@ -4,6 +4,7 @@ mod app;
 mod battery;
 mod audio;
 mod bluetooth;
+mod disks;
 mod engine;
 mod ffi;
 mod history;
@@ -33,6 +34,7 @@ fn main() {
     };
     env_logger_init();
     sensors::start();
+    disks::start();
     app::start_sampler();
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());
