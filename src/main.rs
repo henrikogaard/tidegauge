@@ -15,6 +15,7 @@ mod settings;
 mod statusbar;
 mod theme;
 mod ui;
+pub mod updater;
 
 use gpui_kit::*;
 use std::time::Duration;
@@ -50,6 +51,7 @@ fn main() {
                     application.setApplicationIconImage(Some(&icon));
                 }
             }
+            updater::initialize();
         }
 
         let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);

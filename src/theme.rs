@@ -83,21 +83,29 @@ pub enum Metric {
 }
 
 impl Metric {
-    /// Neutral chart tones. Labels and values identify metrics without relying on color.
+    /// Metric identity stays colorful while the surrounding chrome stays neutral.
     pub fn accent(self, dark: bool) -> Hsla {
         hex(match (self, dark) {
-            (Metric::Cpu, true) => 0xd1d1d6,
-            (Metric::Memory | Metric::Neural, true) => 0xaeaeb2,
-            (Metric::Gpu | Metric::Sound, true) => 0xc7c7cc,
-            (Metric::Disk | Metric::Projects, true) => 0x8e8e93,
-            (Metric::Network | Metric::Bluetooth, true) => 0xd1d1d6,
-            (Metric::Battery | Metric::Power, true) => 0xb8b8bd,
-            (Metric::Cpu, false) => 0x3a3a3c,
-            (Metric::Memory | Metric::Neural, false) => 0x6e6e73,
-            (Metric::Gpu | Metric::Sound, false) => 0x48484a,
-            (Metric::Disk | Metric::Projects, false) => 0x6e6e73,
-            (Metric::Network | Metric::Bluetooth, false) => 0x3a3a3c,
-            (Metric::Battery | Metric::Power, false) => 0x48484a,
+            (Metric::Cpu, true) => 0x5a9cf0,
+            (Metric::Memory, true) => 0xa397f4,
+            (Metric::Gpu, true) => 0xf18db5,
+            (Metric::Disk, true) => 0xe8ad39,
+            (Metric::Network, true) => 0x41c79a,
+            (Metric::Battery | Metric::Power, true) => 0x63ca6e,
+            (Metric::Sound, true) => 0xe87bcc,
+            (Metric::Bluetooth, true) => 0x51c4df,
+            (Metric::Projects, true) => 0xf28d60,
+            (Metric::Neural, true) => 0xc28df2,
+            (Metric::Cpu, false) => 0x246fc7,
+            (Metric::Memory, false) => 0x6550bb,
+            (Metric::Gpu, false) => 0xb94378,
+            (Metric::Disk, false) => 0x9b6900,
+            (Metric::Network, false) => 0x147d59,
+            (Metric::Battery | Metric::Power, false) => 0x287c35,
+            (Metric::Sound, false) => 0xab338c,
+            (Metric::Bluetooth, false) => 0x087d99,
+            (Metric::Projects, false) => 0xba4f22,
+            (Metric::Neural, false) => 0x8648b8,
         })
     }
     /// Softer version for chart fills.

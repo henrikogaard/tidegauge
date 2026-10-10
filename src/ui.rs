@@ -137,7 +137,7 @@ fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
 
 fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
     if let Some(path) = &app.icon_path {
-        if let Some(file) = crate::icons::icon_file_for_bundle(path) {
+        if let Some(file) = crate::icons::cached_icon_for_bundle(path) {
             return div()
                 .size(px(20.))
                 .rounded_sm()
@@ -156,7 +156,7 @@ fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(t::on_accent(dark))
-        .bg(Metric::Memory.accent(dark))
+        .bg(t::accent(dark))
         .child(initial)
 }
 
@@ -383,7 +383,7 @@ impl Render for TideGaugeView {
         let tab = self.tab;
         let this = cx.entity();
 
-        // Quiet neutral navigation; focus uses the high-contrast theme accent.
+        // Neutral chrome with a quiet metric-colored selection.
         let topbar = div()
             .w_full()
             .h(px(64.))
@@ -409,7 +409,7 @@ impl Render for TideGaugeView {
                     .p_1()
                     .children(Tab::ALL.iter().map(|&tb| {
                         let active = tb == tab;
-                        let accent = t::accent(dark);
+                        let accent = tb.metric().unwrap_or(Metric::Cpu).accent(dark);
                         let this = this.clone();
                         let keyboard_target = this.clone();
                         div()
@@ -435,7 +435,7 @@ impl Render for TideGaugeView {
                             .rounded_full()
                             .cursor_pointer()
                             .when(active, |d| {
-                                d.bg(t::card_hi(dark)).border_color(t::line(dark)).text_color(accent)
+                                d.bg(accent.opacity(0.12)).text_color(accent)
                             })
                             .when(!active, |d| {
                                 d.text_color(t::ink_dim(dark))
@@ -477,15 +477,12 @@ impl Render for TideGaugeView {
 
         let footer = div()
             .w_full()
-            .border_t_1()
-            .border_color(t::line(dark))
             .px_3()
             .py_1()
             .flex()
             .items_center()
             .justify_between()
             .child(div().flex().items_center().gap_2()
-                .child(img("tidegauge/logo.png").w(px(22.)).h(px(22.)))
                 .child({
                     let click_target = this.clone();
                     let key_target = this.clone();
@@ -1265,11 +1262,11 @@ fn neural_tab(s: &Snapshot, dark: bool) -> Div {
             vec![
                 ("Cores".into(), if supported { format!("{}", cores) } else { "—".into() }),
                 ("Thermal".into(), s.thermal.clone()),
-                ("State".into(), if supported { "Ready".into() } else { "Unavailable".into() }),
+                ("State".into(), if s.neural.is_some() { "Ready".into() } else { "Unavailable".into() }),
             ],
             Some(100.0),
         ))
-        .when(!supported, |d| {
+        .when(s.neural.is_none(), |d| {
             d.child(card(dark).child(div().text_sm().text_color(t::ink_dim(dark)).child(
                 "Neural Engine utilization needs real Apple Silicon hardware with IOReport access.",
             )))

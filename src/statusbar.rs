@@ -61,6 +61,18 @@ fn context_menu(target: &TideGaugeTarget) -> Retained<NSMenu> {
         }
         menu.addItem(&item);
     }
+    let update_item = NSMenuItem::new(mtm());
+    update_item.setTitle(&NSString::from_str(crate::updater::check_for_updates_title()));
+    update_item.setKeyEquivalent(&NSString::from_str(""));
+    if let Some(controller) = crate::updater::menu_target() {
+        unsafe {
+            update_item.setTarget(Some(&controller));
+            update_item.setAction(Some(sel!(checkForUpdates:)));
+        }
+    } else {
+        update_item.setEnabled(false);
+    }
+    menu.insertItem_atIndex(&update_item, 2);
     menu
 }
 
