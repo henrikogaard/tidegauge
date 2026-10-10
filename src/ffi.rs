@@ -46,6 +46,13 @@ pub const CPU_STATE_NICE: usize = 3;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
+pub struct mach_timebase_info_data_t {
+    pub numer: u32,
+    pub denom: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
 pub struct proc_bsdinfo {
     pub pbi_flags: u32,
     pub pbi_status: u32,
@@ -74,11 +81,10 @@ pub struct proc_bsdinfo {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vnode_info {
-    pub vi_stat: [u32; 45], // vstat blob; we only need vi_path below
+    pub vi_stat: [u64; 17], // 136-byte, 8-byte-aligned struct vinfo_stat
     pub vi_type: c_int,
     pub vi_pad: c_int,
-    pub vi_fsid: u64, // fsid_t
-    pub vi_fid: u64,  // fileid_t
+    pub vi_fsid: [u32; 2], // fsid_t
 }
 
 #[repr(C)]
@@ -89,11 +95,10 @@ pub struct _unused_proc_vnodepathinfo {
 // vnode_info is followed by vi_path[MAXPATHLEN=1024]; define with path inline:
 #[repr(C)]
 pub struct vnode_info_path {
-    pub vi_stat: [u8; 152], // struct vinfo_stat
+    pub vi_stat: [u64; 17], // 136-byte, 8-byte-aligned struct vinfo_stat
     pub vi_type: c_int,
     pub vi_pad: c_int,
     pub vi_fsid: [u32; 2],
-    pub vi_fid: u64,
     pub vi_path: [c_char; 1024],
 }
 #[repr(C)]
@@ -272,6 +277,7 @@ pub const K_AUDIO_PROCESS_PROPERTY_IS_RUNNING_INPUT: u32 = u32::from_be_bytes(*b
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     pub fn mach_host_self() -> mach_port_t;
+    pub fn mach_timebase_info(info: *mut mach_timebase_info_data_t) -> kern_return_t;
     pub fn host_processor_info(
         host: mach_port_t,
         flavor: c_int,
@@ -387,4 +393,18 @@ pub const K_CF_NUMBER_SINT32: c_int = 3;
 /// Four-char code helper.
 pub const fn fcc(s: &[u8; 4]) -> u32 {
     u32::from_be_bytes(*s)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vnode_path_layout_matches_macos_sdk() {
+        assert_eq!(std::mem::offset_of!(vnode_info_path, vi_path), 152);
+        assert_eq!(std::mem::size_of::<vnode_info_path>(), 1176);
+        assert_eq!(std::mem::size_of::<proc_vnodepathinfo_full>(), 2352);
+        assert_eq!(std::mem::align_of::<proc_vnodepathinfo_full>(), 8);
+    }
 }

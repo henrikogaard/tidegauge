@@ -7,6 +7,7 @@ mod engine;
 mod ffi;
 mod history;
 mod icons;
+mod instance;
 mod metrics;
 mod processes;
 mod projects;
@@ -18,7 +19,14 @@ mod ui;
 use gpui_kit::*;
 use std::time::Duration;
 
+actions!(tidegauge, [Quit]);
+
 fn main() {
+    let _instance = match instance::acquire() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => { eprintln!("Tidegauge is already running. Use its menu-bar item to open it."); return; }
+        Err(error) => { eprintln!("Cannot start Tidegauge: {error}"); return; }
+    };
     env_logger_init();
     app::start_sampler();
 
@@ -26,6 +34,8 @@ fn main() {
 
     app.run(|cx| {
         gpui_kit::init(cx);
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.on_action(|_: &Quit, cx| cx.quit());
         #[cfg(target_os = "macos")]
         {
             // Hide Dock icon & menu bar — we're a status item app.
@@ -36,20 +46,29 @@ fn main() {
             }
         }
 
-        let bounds = Bounds::centered(None, size(px(860.), px(640.)), cx);
+        let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);
         let (window, view) = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                kind: WindowKind::PopUp,
+                kind: WindowKind::Normal,
                 focus: true,
                 show: true,
                 is_movable: true,
-                titlebar: None,
-                window_min_size: Some(size(px(700.), px(500.))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Tidegauge".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(16.), px(26.))),
+                }),
+                window_min_size: Some(size(px(1050.), px(650.))),
                 ..Default::default()
             },
             cx,
             |window, cx| {
+                // Closing the dashboard hides it; the menu-bar item reopens it.
+                window.on_window_should_close(cx, |_, cx| {
+                    cx.hide();
+                    false
+                });
                 cx.new(|cx| {
                     let mut v = ui::TideGaugeView::new(window, cx);
                     v.snap = engine::latest();
@@ -59,7 +78,6 @@ fn main() {
         )
         .expect("open panel");
         app::set_panel_handle(window);
-        let _ = view;
 
         #[cfg(target_os = "macos")]
         {
@@ -68,7 +86,12 @@ fn main() {
             cx.spawn(async move |cx: &mut AsyncApp| {
                 loop {
                     smol::Timer::after(Duration::from_millis(700)).await;
-                    let _ = cx.update(|cx: &mut App| app::pump_status_bar(&mut bar, cx));
+                    let _ = cx.update(|cx: &mut App| app::pump_status_bar(&mut bar, &view, cx));
+                    // Native menu tracking runs a nested event loop. Release the
+                    // GPUI App borrow before allowing other UI tasks to run.
+                    if statusbar::SHOW_CONTEXT_MENU.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        statusbar::show_context_menu();
+                    }
                 }
             })
             .detach();

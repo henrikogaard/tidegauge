@@ -16,7 +16,13 @@ cargo build
 cargo test
 ```
 
-`cargo check` checks Rust types without linking the binary. `cargo build` also verifies native linking. The repository currently has no automated test cases, so a successful `cargo test` does not prove runtime behavior.
+`cargo check` checks Rust types without linking the binary. `cargo build` also verifies native linking. The default tests cover native structure layouts, counter conversion, CSV parsing, snapshot access, working directories, retained app rates, settings persistence, and the instance lock. Hardware and process integration checks run separately on macOS:
+
+```sh
+cargo test native_ -- --ignored
+```
+
+These checks require `nettop`, `lsof`, and `python3`. They read disk counters, transfer data over a disposable loopback connection, and start a busy local test server. The test server is stopped when its check completes. Run these checks serially when investigating counter baselines (`--test-threads=1`).
 
 For a documentation-only change, verify examples against the source, check local Markdown links, and inspect the diff. Source comment edits do not require new behavioral tests.
 
@@ -26,11 +32,11 @@ For a collector or FFI change, compare native structure sizes, field offsets, co
 
 Run the build from the same commit being reviewed and record the macOS version and hardware. Check only the behavior affected by the change:
 
-- Menu-bar changes: verify readouts update and clicking brings the panel forward.
-- Panel changes: inspect the affected tabs, charts, scrolling, and appearance.
+- Menu-bar changes: capture the actual menu bar. Check the icon-only default and optional labeled readings inside a single native item. Values must remain aligned when their digits change. Change a metric style in Settings, confirm persistence after restart, reset to icon only, and disable all readings with the icon preference hidden to check the visible fallback. Click the item to open the native menu, choose Open Dashboard, then Quit and verify the process exits. Launch twice and confirm only one monitor runs.
+- Panel changes: inspect the affected tabs, charts, scrolling, and appearance. Check dashboard Settings access by mouse and keyboard.
 - Collector changes: compare values with the relevant macOS tool and test unavailable-data handling.
 - History changes: use an isolated database and verify writes, queries, and retention.
-- Project changes: use a disposable server that you own. Stop actions send SIGTERM immediately; do not test them against unrelated processes.
+- Project changes: use a disposable server that you own. Confirm that desktop listeners, root/home directories, and processes without a project marker are excluded. Stop actions send SIGTERM immediately; do not test them against unrelated processes.
 
 Keep screenshots and raw diagnostics outside commits unless they are deliberately selected documentation assets. Do not record private process arguments, Bluetooth addresses, or unrelated personal data in a review report.
 

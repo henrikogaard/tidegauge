@@ -1,11 +1,12 @@
-//! Menu-bar presence: one NSStatusItem per enabled metric, drawn as
-//! value text + sparkline image. Click toggles the panel.
+//! One compact native menu-bar item, with optional labeled metric readings.
 
 #![allow(dead_code)]
 #![cfg(target_os = "macos")]
 
 use crate::engine::Snapshot;
-use crate::settings::Settings;
+#[cfg(test)]
+use crate::settings::MenuItem;
+use crate::settings::{Settings, MENU_METRICS};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, ClassType};
 use objc2_app_kit::*;
@@ -13,13 +14,19 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
+pub static SHOW_SETTINGS: AtomicBool = AtomicBool::new(false);
 pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
+pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);
 
 define_class!(
     #[unsafe(super(NSObject))]
     #[name = "TideGaugeTarget"]
     struct TideGaugeTarget;
     impl TideGaugeTarget {
+        #[unsafe(method(settings:))]
+        fn _settings(&self, _sender: Option<&NSObject>) {
+            SHOW_SETTINGS.store(true, Ordering::SeqCst);
+        }
         #[unsafe(method(toggle:))]
         fn _toggle(&self, _sender: Option<&NSObject>) {
             TOGGLE_PANEL.store(true, Ordering::SeqCst);
@@ -35,124 +42,438 @@ fn mtm() -> MainThreadMarker {
     unsafe { MainThreadMarker::new_unchecked() }
 }
 
-pub fn menu_bar_dark() -> bool {
-    unsafe {
-        let app = NSApplication::sharedApplication(mtm());
-        let app_obj: &NSObject = &app;
-        let appearance: Retained<objc2::runtime::AnyObject> =
-            msg_send![app_obj, effectiveAppearance];
-        let name: Retained<NSString> = msg_send![&*appearance, name];
-        name.to_string().to_lowercase().contains("dark")
+fn context_menu(target: &TideGaugeTarget) -> Retained<NSMenu> {
+    let menu = NSMenu::new(mtm());
+    for (title, action, key) in [
+        ("Open Dashboard", sel!(toggle:), ""),
+        ("Settings…", sel!(settings:), ","),
+        ("Quit Tidegauge", sel!(quit:), "q"),
+    ] {
+        if key == "q" {
+            menu.addItem(&NSMenuItem::separatorItem(mtm()));
+        }
+        let item = NSMenuItem::new(mtm());
+        item.setTitle(&NSString::from_str(title));
+        item.setKeyEquivalent(&NSString::from_str(key));
+        unsafe {
+            item.setTarget(Some(target));
+            item.setAction(Some(action));
+        }
+        menu.addItem(&item);
     }
+    menu
 }
 
+/// The same menu is available from Settings for keyboard and window users.
+pub fn show_context_menu() {
+    let app = NSApplication::sharedApplication(mtm());
+    let Some(window) = app.keyWindow() else {
+        return;
+    };
+    let Some(view) = window.contentView() else {
+        return;
+    };
+    let Some(event) = app.currentEvent() else {
+        return;
+    };
+    let target: Retained<TideGaugeTarget> = unsafe { msg_send![TideGaugeTarget::class(), new] };
+    NSMenu::popUpContextMenu_withEvent_forView(&context_menu(&target), &event, &view);
+}
+
+const ITEM_HEIGHT: f64 = 16.;
+const ITEM_GAP: f64 = 10.;
+const GRAPH_WIDTH: f64 = 24.;
+
+/// A single native item keeps readings together and preserves their identity.
 pub struct StatusBar {
-    items: Vec<(String, Retained<NSStatusItem>)>,
-    target: Retained<TideGaugeTarget>,
+    item: Retained<NSStatusItem>,
+    _target: Retained<TideGaugeTarget>,
 }
 
 impl StatusBar {
     pub fn new() -> Self {
         let target: Retained<TideGaugeTarget> = unsafe { msg_send![TideGaugeTarget::class(), new] };
-        StatusBar { items: Vec::new(), target }
-    }
-
-    pub fn sync(&mut self, settings: &Settings, snap: &Snapshot, dark: bool) {
-        let want: Vec<String> = settings.menu_items.iter().map(|m| m.metric.clone()).collect();
-        self.items.retain(|(m, _)| want.contains(m));
-        for mi in &settings.menu_items {
-            if !self.items.iter().any(|(m, _)| m == &mi.metric) {
-                unsafe {
-                    let bar = NSStatusBar::systemStatusBar();
-                    let item = bar.statusItemWithLength(-1.0);
-                    if let Some(btn) = item.button(mtm()) {
-                        btn.setTarget(Some(&self.target));
-                        btn.setAction(Some(sel!(toggle:)));
-                        btn.sendActionOn(NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown);
-                    }
-                    self.items.push((mi.metric.clone(), item));
-                }
-            }
-        }
-        for (m, item) in &self.items {
-            let (title, img) = render_item(m, snap, dark);
-            unsafe {
-                if let Some(btn) = item.button(mtm()) {
-                    btn.setTitle(&NSString::from_str(&title));
-                    if let Some(img) = img {
-                        btn.setImage(Some(&img));
-                        btn.setImagePosition(NSCellImagePosition::ImageLeft);
-                    } else {
-                        btn.setImage(None);
-                    }
-                }
-            }
+        let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
+        item.setMenu(Some(&context_menu(&target)));
+        Self {
+            item,
+            _target: target,
         }
     }
-}
 
-fn render_item(metric: &str, s: &Snapshot, dark: bool) -> (String, Option<Retained<NSImage>>) {
-    let (title, pts) = match metric {
-        "cpu" => (format!("{:.0}%", s.cpu_pct), Some(s.cpu_hist.pts.clone())),
-        "memory" => (
-            format!("{:.0}%", s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0),
-            Some(s.mem_hist.pts.clone()),
-        ),
-        "network" => (
-            crate::engine::fmt_rate(s.net.rate_in + s.net.rate_out),
-            Some(s.net_in_hist.pts.iter().zip(&s.net_out_hist.pts).map(|(a, b)| a + b).collect()),
-        ),
-        "disk" => (
-            crate::engine::fmt_rate(s.disk.read_rate + s.disk.write_rate),
-            Some(s.disk_r_hist.pts.iter().zip(&s.disk_w_hist.pts).map(|(a, b)| a + b).collect()),
-        ),
-        "battery" => (
-            s.battery.percent.map(|p| format!("{:.0}%", p)).unwrap_or_else(|| "—".into()),
-            if s.battery.present { Some(s.batt_hist.pts.clone()) } else { None },
-        ),
-        "gpu" => (
-            s.gpu.utilization.map(|u| format!("{:.0}%", u)).unwrap_or_else(|| "—".into()),
-            if s.gpu.supported { Some(s.gpu_hist.pts.clone()) } else { None },
-        ),
-        "power" => (crate::engine::fmt_watts(s.power_w), Some(s.power_hist.pts.clone())),
-        _ => (metric.to_string(), None),
-    };
-    let img = pts.and_then(|p| sparkline_image(&p, dark));
-    (title, img)
-}
-
-fn sparkline_image(pts: &[f64], dark: bool) -> Option<Retained<NSImage>> {
-    if pts.len() < 2 {
-        return None;
-    }
-    unsafe {
-        let (w, h) = (34.0f64, 16.0f64);
-        let img = NSImage::new();
-        img.setSize(objc2_foundation::NSSize { width: w, height: h });
-        img.lockFocus();
-        let color = if dark {
-            NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.8)
+    pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
+        let readouts = menu_readouts(settings, snap);
+        let show_icon = settings.show_app_icon || readouts.is_empty();
+        let description = if readouts.is_empty() {
+            "Tidegauge. Click for Open Dashboard, Settings, and Quit.".to_string()
         } else {
-            NSColor::colorWithSRGBRed_green_blue_alpha(0.15, 0.15, 0.2, 0.85)
+            format!(
+                "Tidegauge. {}. Click for Open Dashboard, Settings, and Quit.",
+                readouts
+                    .iter()
+                    .map(|r| format!("{} {}", r.label, r.value))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
         };
-        color.setStroke();
-        let max = pts.iter().cloned().fold(1.0f64, f64::max);
-        let n = pts.len().min(60);
-        let tail = &pts[pts.len() - n..];
+        let image = menu_image(&readouts, show_icon);
+        image.setAccessibilityDescription(Some(&NSString::from_str(&description)));
+        if let Some(button) = self.item.button(mtm()) {
+            button.setTitle(&NSString::from_str(""));
+            button.setImage(Some(&image));
+            button.setImagePosition(NSCellImagePosition::ImageOnly);
+            button.setToolTip(Some(&NSString::from_str(&description)));
+        }
+    }
+}
+
+impl Drop for StatusBar {
+    fn drop(&mut self) {
+        NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
+    }
+}
+
+#[derive(Clone)]
+struct Readout {
+    metric: &'static str,
+    label: &'static str,
+    style: String,
+    value: String,
+    history: Vec<f64>,
+}
+
+impl Readout {
+    fn value_width(&self) -> f64 {
+        match self.metric {
+            "network" | "disk" => 55.,
+            "power" => 42.,
+            _ => 31.,
+        }
+    }
+    fn width(&self) -> f64 {
+        match self.style.as_str() {
+            "icon" => 14.,
+            "graph" => 22. + 4. + GRAPH_WIDTH,
+            "both" => 22. + 4. + self.value_width() + 6. + GRAPH_WIDTH,
+            _ => 22. + 4. + self.value_width(),
+        }
+    }
+}
+
+fn menu_readouts(settings: &Settings, s: &Snapshot) -> Vec<Readout> {
+    // Canonical metric order also eliminates duplicate and unsupported entries.
+    MENU_METRICS
+        .iter()
+        .filter_map(|&(metric, _)| {
+            let preference = settings
+                .menu_items
+                .iter()
+                .find(|item| item.metric == metric)?;
+            let (label, value, history) = match metric {
+                "cpu" => ("CPU", format!("{:.0}%", s.cpu_pct), s.cpu_hist.pts.clone()),
+                "memory" => (
+                    "MEM",
+                    format!(
+                        "{:.0}%",
+                        s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.
+                    ),
+                    s.mem_hist.pts.clone(),
+                ),
+                "gpu" => (
+                    "GPU",
+                    s.gpu
+                        .utilization
+                        .map(|p| format!("{:.0}%", p))
+                        .unwrap_or_else(|| "—".into()),
+                    if s.gpu.utilization.is_some() {
+                        s.gpu_hist.pts.clone()
+                    } else {
+                        Vec::new()
+                    },
+                ),
+                "disk" => (
+                    "DSK",
+                    menu_rate(s.disk.read_rate + s.disk.write_rate),
+                    s.disk_r_hist
+                        .pts
+                        .iter()
+                        .zip(&s.disk_w_hist.pts)
+                        .map(|(a, b)| a + b)
+                        .collect(),
+                ),
+                "network" => (
+                    "NET",
+                    menu_rate(s.net.rate_in + s.net.rate_out),
+                    s.net_in_hist
+                        .pts
+                        .iter()
+                        .zip(&s.net_out_hist.pts)
+                        .map(|(a, b)| a + b)
+                        .collect(),
+                ),
+                "battery" => (
+                    "BAT",
+                    s.battery
+                        .percent
+                        .map(|p| format!("{:.0}%", p))
+                        .unwrap_or_else(|| "—".into()),
+                    if s.battery.percent.is_some() {
+                        s.batt_hist.pts.clone()
+                    } else {
+                        Vec::new()
+                    },
+                ),
+                "power" => (
+                    "PWR",
+                    crate::engine::fmt_watts(s.power_w),
+                    s.power_hist.pts.clone(),
+                ),
+                _ => return None,
+            };
+            Some(Readout {
+                metric,
+                label,
+                style: preference.style.clone(),
+                value,
+                history,
+            })
+        })
+        .collect()
+}
+
+fn menu_rate(rate: f64) -> String {
+    let rate = if rate.is_finite() { rate.max(0.) } else { 0. };
+    let units = ["B/s", "K/s", "M/s", "G/s", "T/s"];
+    let mut value = rate;
+    let mut unit = 0;
+    while value >= 1024. && unit < units.len() - 1 {
+        value /= 1024.;
+        unit += 1;
+    }
+    if unit > 0 && value < 10. {
+        format!("{value:.1} {}", units[unit])
+    } else {
+        format!("{value:.0} {}", units[unit])
+    }
+}
+
+fn symbol_image(metric: &str) -> Option<Retained<NSImage>> {
+    let symbol = match metric {
+        "cpu" => "cpu",
+        "memory" => "memorychip",
+        "gpu" => "rectangle.3.group",
+        "disk" => "internaldrive",
+        "network" => "network",
+        "battery" => "battery.100percent",
+        "power" => "bolt.fill",
+        _ => return None,
+    };
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(symbol),
+        Some(&NSString::from_str(metric)),
+    )
+}
+
+fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSDictionary;
+    let weight = unsafe { NSFontWeightMedium };
+    let font = if value {
+        NSFont::monospacedDigitSystemFontOfSize_weight(font_size, weight)
+    } else {
+        NSFont::systemFontOfSize_weight(font_size, weight)
+    };
+    let color = NSColor::blackColor();
+    let font_object: &AnyObject = &font;
+    let color_object: &AnyObject = &color;
+    unsafe {
+        let attributes = NSDictionary::from_slices(
+            &[NSFontAttributeName, NSForegroundColorAttributeName],
+            &[font_object, color_object],
+        );
+        let string = NSString::from_str(text);
+        let size = string.sizeWithAttributes(Some(&attributes));
+        string.drawAtPoint_withAttributes(
+            objc2_foundation::NSPoint {
+                x,
+                y: (ITEM_HEIGHT - size.height) / 2.,
+            },
+            Some(&attributes),
+        );
+    }
+}
+
+fn draw_wave_icon(x: f64) {
+    NSColor::blackColor().setStroke();
+    for y in [5., 10.] {
         let path = NSBezierPath::bezierPath();
-        path.setLineWidth(1.2);
-        for (i, v) in tail.iter().enumerate() {
-            let x = i as f64 / (n - 1).max(1) as f64 * (w - 2.0) + 1.0;
-            let y = (v / max).clamp(0.0, 1.0) * (h - 3.0) + 1.5;
-            let pt = objc2_foundation::NSPoint { x, y };
-            if i == 0 {
-                path.moveToPoint(pt);
+        path.setLineWidth(1.4);
+        path.setLineCapStyle(NSLineCapStyle::Round);
+        for step in 0..=32 {
+            let dx = 0.7 + step as f64 / 32. * 14.6;
+            let point = objc2_foundation::NSPoint {
+                x: x + dx,
+                y: y + (dx / 16. * std::f64::consts::TAU).sin() * 1.7,
+            };
+            if step == 0 {
+                path.moveToPoint(point);
             } else {
-                path.lineToPoint(pt);
+                path.lineToPoint(point);
             }
         }
         path.stroke();
-        img.unlockFocus();
-        Some(img)
+    }
+}
+
+fn draw_graph(history: &[f64], x: f64, metric: &str) {
+    if history.len() < 2 {
+        draw_text("—", x + 6., 10., false);
+        return;
+    }
+    let maximum = if matches!(metric, "cpu" | "memory" | "gpu" | "battery") {
+        100.
+    } else {
+        history
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .fold(1., f64::max)
+    };
+    let count = history.len().min(60);
+    let points = &history[history.len() - count..];
+    let path = NSBezierPath::bezierPath();
+    path.setLineWidth(1.);
+    NSColor::blackColor().setStroke();
+    for (i, value) in points.iter().enumerate() {
+        let point = objc2_foundation::NSPoint {
+            x: x + i as f64 / (count - 1) as f64 * GRAPH_WIDTH,
+            y: 3.
+                + if value.is_finite() {
+                    (value / maximum).clamp(0., 1.) * 10.
+                } else {
+                    0.
+                },
+        };
+        if i == 0 {
+            path.moveToPoint(point);
+        } else {
+            path.lineToPoint(point);
+        }
+    }
+    path.stroke();
+}
+
+fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let width = readouts.iter().map(Readout::width).sum::<f64>()
+        + if show_icon { 16. } else { 0. }
+        + (readouts.len() + usize::from(show_icon)).saturating_sub(1) as f64 * ITEM_GAP;
+    let readouts = readouts.to_vec();
+    // AppKit invokes the drawing block at the display's backing scale.
+    let drawing = block2::RcBlock::new(move |_bounds: NSRect| {
+        let mut x = 0.;
+        if show_icon {
+            draw_wave_icon(x);
+            x += 16. + ITEM_GAP;
+        }
+        for readout in &readouts {
+            if readout.style == "icon" {
+                if let Some(symbol) = symbol_image(readout.metric) {
+                    symbol.drawInRect_fromRect_operation_fraction(
+                        NSRect {
+                            origin: NSPoint { x, y: 1. },
+                            size: NSSize {
+                                width: 14.,
+                                height: 14.,
+                            },
+                        },
+                        NSRect {
+                            origin: NSPoint { x: 0., y: 0. },
+                            size: NSSize {
+                                width: 0.,
+                                height: 0.,
+                            },
+                        },
+                        NSCompositingOperation::SourceOver,
+                        1.,
+                    );
+                } else {
+                    draw_text(readout.label, x, 8., false);
+                }
+            } else {
+                draw_text(readout.label, x, 9., false);
+                let value_x = x + 26.;
+                if readout.style != "graph" {
+                    draw_text(&readout.value, value_x, 11., true);
+                }
+                if matches!(readout.style.as_str(), "graph" | "both") {
+                    let graph_x = if readout.style == "both" {
+                        value_x + readout.value_width() + 6.
+                    } else {
+                        value_x
+                    };
+                    draw_graph(&readout.history, graph_x, readout.metric);
+                }
+            }
+            x += readout.width() + ITEM_GAP;
+        }
+        objc2::runtime::Bool::YES
+    });
+    let image = NSImage::imageWithSize_flipped_drawingHandler(
+        NSSize {
+            width: width.max(16.),
+            height: ITEM_HEIGHT,
+        },
+        false,
+        &drawing,
+    );
+    image.setTemplate(true);
+    image
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_readings_are_identified_ordered_and_do_not_resize_for_new_values() {
+        let settings = Settings {
+            menu_items: vec![
+                MenuItem {
+                    metric: "network".into(),
+                    style: "value".into(),
+                },
+                MenuItem {
+                    metric: "cpu".into(),
+                    style: "both".into(),
+                },
+                MenuItem {
+                    metric: "cpu".into(),
+                    style: "graph".into(),
+                },
+                MenuItem {
+                    metric: "unsupported".into(),
+                    style: "icon".into(),
+                },
+            ],
+            ..Settings::default()
+        };
+        let mut snapshot = Snapshot::default();
+        snapshot.cpu_pct = 9.;
+        let first = menu_readouts(&settings, &snapshot);
+        assert_eq!(
+            first.iter().map(|r| r.label).collect::<Vec<_>>(),
+            ["CPU", "NET"]
+        );
+        assert_eq!(first[0].value, "9%");
+        snapshot.cpu_pct = 100.;
+        snapshot.net.rate_in = 1024. * 1024. * 999.;
+        let next = menu_readouts(&settings, &snapshot);
+        assert_eq!(next[0].value, "100%");
+        assert_eq!(next[1].value, "999 M/s");
+        assert_eq!(
+            first.iter().map(Readout::width).sum::<f64>(),
+            next.iter().map(Readout::width).sum::<f64>()
+        );
     }
 }

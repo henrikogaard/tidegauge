@@ -107,18 +107,18 @@ pub fn proc_path(pid: i32) -> String {
 
 pub fn proc_cwd(pid: i32) -> String {
     unsafe {
-        let mut buf = [0u8; size_of::<vnode_info_path>() * 2];
+        let mut info: proc_vnodepathinfo_full = std::mem::zeroed();
+        let size = size_of::<proc_vnodepathinfo_full>();
         let r = proc_pidinfo(
             pid,
             PROC_PIDVNODEPATHINFO,
             0,
-            buf.as_mut_ptr() as *mut c_void,
-            buf.len() as i32,
+            &mut info as *mut proc_vnodepathinfo_full as *mut c_void,
+            size as i32,
         );
-        if r <= 0 {
+        if r != size as i32 {
             return String::new();
         }
-        let info = &*(buf.as_ptr() as *const proc_vnodepathinfo_full);
         CStr::from_ptr(info.pvi_cdir.vi_path.as_ptr())
             .to_string_lossy()
             .to_string()
@@ -222,4 +222,15 @@ pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
     let mut v: Vec<AppGroup> = groups.into_values().collect();
     v.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
     v
+}
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn own_working_directory_is_not_truncated() {
+        let actual = super::proc_cwd(std::process::id() as i32);
+        let expected = std::env::current_dir().unwrap();
+        assert_eq!(std::path::PathBuf::from(actual), expected);
+    }
 }
