@@ -217,6 +217,41 @@ pub fn battery_stats() -> BatteryStats {
     b
 }
 
+/// UI-only development fixture; never enters the sampler or history database.
+pub fn preview() -> Option<BatteryStats> {
+    #[cfg(debug_assertions)]
+    {
+        let mode = std::env::var("TIDEGAUGE_BATTERY_PREVIEW").ok()?;
+        if !matches!(mode.as_str(), "charging" | "discharging") {
+            return None;
+        }
+        let charging = mode == "charging";
+        return Some(BatteryStats {
+            available: true,
+            present: true,
+            percent: Some(72.0),
+            on_battery: !charging,
+            ac_power: charging,
+            is_charging: charging,
+            minutes_remaining: (!charging).then_some(240),
+            minutes_to_full: charging.then_some(55),
+            cycles: Some(167),
+            health: Some(90.0),
+            condition: Some("Good".into()),
+            temperature_c: Some(32.5),
+            full_capacity_mah: Some(5400),
+            design_capacity_mah: Some(6000),
+            power_w: Some(if charging { 12.0 } else { -12.0 }),
+            voltage_v: Some(12.0),
+            current_ma: Some(if charging { 1000 } else { -1000 }),
+            adapter_rating_w: charging.then_some(96),
+            ..BatteryStats::default()
+        });
+    }
+    #[cfg(not(debug_assertions))]
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

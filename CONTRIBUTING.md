@@ -42,6 +42,12 @@ Keep screenshots and raw diagnostics outside commits unless they are deliberatel
 
 ## Review evidence
 
+For battery layout checks on a Mac without a battery, run a debug build with
+`TIDEGAUGE_BATTERY_PREVIEW=charging cargo run` (or `discharging`). The Battery
+tab displays an explicit sample-data banner. This UI-only fixture does not
+alter collected metrics or persisted history and is disabled in release builds.
+It validates layout only, not native battery readings.
+
 Record the commit, commands, results, and any hardware-dependent checks that could not run. A build pass, a rendered check, and verification on physical hardware are separate results.
 
 Recovered notes in `docs/recovered/` and the historical test files document a previous environment. They can explain implementation choices, but their paths, build results, and packaging claims are not current setup instructions.

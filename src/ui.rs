@@ -1277,7 +1277,9 @@ fn neural_tab(s: &Snapshot, dark: bool) -> Div {
 fn battery_tab(s: &Snapshot, dark: bool) -> Div {
     use crate::locale::text as l;
     let m = Metric::Battery;
-    let b = &s.battery;
+    let preview = crate::battery::preview();
+    let b = preview.as_ref().unwrap_or(&s.battery);
+    let empty_history = Hist::default();
     let status = b.status();
     let main = if b.present {
         b.percent.map(|p| format!("{:.0}%", p)).unwrap_or("—".into())
@@ -1288,11 +1290,12 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
         .flex()
         .flex_col()
         .gap_3()
+        .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample battery values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke batterimålinger")).text_color(t::ink_dim(dark)))))
         .child(hero(
             l("Battery", "Batteri"),
             main,
             status.into(),
-            &s.batt_hist,
+            if preview.is_some() { &empty_history } else { &s.batt_hist },
             m.accent(dark),
             dark,
             vec![
