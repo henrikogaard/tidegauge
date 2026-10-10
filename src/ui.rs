@@ -144,6 +144,7 @@ fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
                 .overflow_hidden()
                 .child(img(file).size(px(20.)).rounded_sm());
         }
+        crate::icons::request_icon_for_bundle(path);
     }
     // letter tile fallback
     let initial = app.name.chars().next().unwrap_or('?').to_uppercase().to_string();

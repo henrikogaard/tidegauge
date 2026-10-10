@@ -8,8 +8,10 @@ URL="https://github.com/sparkle-project/Sparkle/releases/download/${VERSION}/${A
 SHA256="52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192"
 CACHE_ROOT="${TIDEGAUGE_SPARKLE_CACHE:-$ROOT/.cache/sparkle}"
 ARCHIVE="$CACHE_ROOT/$ARCHIVE_NAME"
+DISTRIBUTIONS_ROOT="$CACHE_ROOT/distributions"
+DISTRIBUTION="$DISTRIBUTIONS_ROOT/$VERSION"
 
-mkdir -p "$CACHE_ROOT"
+mkdir -p "$CACHE_ROOT" "$DISTRIBUTIONS_ROOT"
 
 download_archive() {
     local temporary
@@ -30,23 +32,19 @@ else
     download_archive
 fi
 
-if [ -d "$CACHE_ROOT/Sparkle.framework" ]; then
-    FRAMEWORK="$CACHE_ROOT/Sparkle.framework"
-else
-    FRAMEWORK="$(find "$CACHE_ROOT" -type d -path '*/Sparkle.framework' -print -quit 2>/dev/null || true)"
-fi
-if [ -z "$FRAMEWORK" ]; then
-    tar -xJf "$ARCHIVE" -C "$CACHE_ROOT"
-    if [ -d "$CACHE_ROOT/Sparkle.framework" ]; then
-        FRAMEWORK="$CACHE_ROOT/Sparkle.framework"
-    else
-        FRAMEWORK="$(find "$CACHE_ROOT" -type d -path '*/Sparkle.framework' -print -quit 2>/dev/null || true)"
-    fi
-fi
+TEMP_DIR="$(mktemp -d "$DISTRIBUTIONS_ROOT/.${VERSION}.XXXXXX")"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+tar -xJf "$ARCHIVE" -C "$TEMP_DIR"
 
-if [ -z "$FRAMEWORK" ]; then
-    printf '%s\n' "Sparkle.framework was not found in $ARCHIVE" >&2
+if [ ! -d "$TEMP_DIR/Sparkle.framework" ] ||
+    [ ! -x "$TEMP_DIR/bin/generate_appcast" ] ||
+    [ ! -f "$TEMP_DIR/LICENSE" ]; then
+    printf '%s\n' "Pinned Sparkle distribution is incomplete: $ARCHIVE" >&2
     exit 1
 fi
 
-printf '%s\n' "$FRAMEWORK"
+rm -rf "$DISTRIBUTION"
+mv "$TEMP_DIR" "$DISTRIBUTION"
+trap - EXIT
+
+printf '%s\n' "$DISTRIBUTION"

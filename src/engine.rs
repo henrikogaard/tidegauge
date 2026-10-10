@@ -396,11 +396,6 @@ impl Engine {
         s.power_hist.push(s.power_w);
 
         s.audio = AudioInfo { apps: audio_apps, ..s.audio.clone() };
-        for path in s.apps.iter().filter_map(|app| app.icon_path.as_deref())
-            .chain(s.audio.apps.iter().filter_map(|app| app.icon_path.as_deref()))
-        {
-            crate::icons::icon_file_for_bundle(path);
-        }
         s.audio.device_name = crate::audio::default_output_name();
         s.audio.device_volume = crate::audio::default_output_volume().unwrap_or(0.0);
         s.audio.device_muted = crate::audio::default_output_muted().unwrap_or(false);

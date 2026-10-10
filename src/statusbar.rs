@@ -64,6 +64,13 @@ fn context_menu(target: &TideGaugeTarget) -> Retained<NSMenu> {
     let update_item = NSMenuItem::new(mtm());
     update_item.setTitle(&NSString::from_str(crate::updater::check_for_updates_title()));
     update_item.setKeyEquivalent(&NSString::from_str(""));
+    let availability = crate::updater::availability();
+    if let crate::updater::Availability::Disabled { reason }
+    | crate::updater::Availability::Unavailable { reason } = &availability
+    {
+        let reason = NSString::from_str(reason);
+        update_item.setToolTip(Some(&reason));
+    }
     if let Some(controller) = crate::updater::menu_target() {
         unsafe {
             update_item.setTarget(Some(&controller));

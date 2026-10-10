@@ -4,8 +4,9 @@
 
 use gpui_kit::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Mutex, OnceLock};
 
 fn icons_dir() -> PathBuf {
@@ -17,6 +18,46 @@ fn icons_dir() -> PathBuf {
 }
 
 static ICON_KEYS: OnceLock<Mutex<HashMap<String, Option<PathBuf>>>> = OnceLock::new();
+static PENDING_ICONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static ICON_WORKER: OnceLock<Option<SyncSender<String>>> = OnceLock::new();
+
+/// Queue visible icons without blocking rendering or metric collection.
+pub fn request_icon_for_bundle(bundle_path: &str) {
+    let sender = ICON_WORKER.get_or_init(|| {
+        let (sender, receiver) = sync_channel::<String>(32);
+        std::thread::Builder::new()
+            .name("tidegauge-icons".into())
+            .spawn(move || {
+                for path in receiver {
+                    icon_file_for_bundle(&path);
+                    PENDING_ICONS.get().unwrap().lock().unwrap().remove(&path);
+                }
+            })
+            .ok()
+            .map(|_| sender)
+    });
+    if let Some(sender) = sender {
+        queue_icon(bundle_path, sender);
+    }
+}
+
+fn queue_icon(bundle_path: &str, sender: &SyncSender<String>) {
+    if ICON_KEYS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .contains_key(bundle_path)
+    {
+        return;
+    }
+    let mut pending = PENDING_ICONS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap();
+    if pending.insert(bundle_path.to_owned()) && sender.try_send(bundle_path.to_owned()).is_err() {
+        pending.remove(bundle_path);
+    }
+}
 
 /// Rendering only reads published paths; it never asks AppKit or the disk for an icon.
 pub fn cached_icon_for_bundle(bundle_path: &str) -> Option<PathBuf> {
@@ -30,7 +71,7 @@ pub fn cached_icon_for_bundle(bundle_path: &str) -> Option<PathBuf> {
 }
 
 /// Map a bundle path (/Applications/Foo.app) to a cached PNG file path.
-/// Extraction happens on the sampler thread.
+/// Extraction happens on the dedicated icon worker.
 #[cfg(target_os = "macos")]
 pub fn icon_file_for_bundle(bundle_path: &str) -> Option<PathBuf> {
     use std::collections::hash_map::DefaultHasher;
@@ -122,6 +163,23 @@ impl AssetSource for TideGaugeAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requests_are_deduplicated_and_full_queues_can_retry() {
+        let (sender, receiver) = sync_channel(1);
+        let first = "/test/tidegauge-queued.app";
+        let second = "/test/tidegauge-retry.app";
+        queue_icon(first, &sender);
+        queue_icon(first, &sender);
+        queue_icon(second, &sender);
+        assert_eq!(receiver.try_recv().unwrap(), first);
+        assert!(receiver.try_recv().is_err());
+        queue_icon(second, &sender);
+        assert_eq!(receiver.try_recv().unwrap(), second);
+        let mut pending = PENDING_ICONS.get().unwrap().lock().unwrap();
+        pending.remove(first);
+        pending.remove(second);
+    }
 
     #[test]
     fn render_lookup_never_extracts_uncached_icons() {

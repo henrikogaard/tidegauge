@@ -95,17 +95,10 @@ case "$MODE" in
         ;;
 esac
 
-SPARKLE_FRAMEWORK="$("$ROOT/scripts/fetch-sparkle.sh")"
-SPARKLE_CACHE="${TIDEGAUGE_SPARKLE_CACHE:-$ROOT/.cache/sparkle}"
-LICENSE_FILE=""
-for candidate in "$SPARKLE_CACHE/LICENSE" "$SPARKLE_CACHE/License.txt" \
-    "$SPARKLE_FRAMEWORK/LICENSE" "$SPARKLE_FRAMEWORK/Resources/LICENSE"; do
-    if [ -f "$candidate" ]; then
-        LICENSE_FILE="$candidate"
-        break
-    fi
-done
-if [ -z "$LICENSE_FILE" ]; then
+SPARKLE_DISTRIBUTION="$("$ROOT/scripts/fetch-sparkle.sh")"
+SPARKLE_FRAMEWORK="$SPARKLE_DISTRIBUTION/Sparkle.framework"
+LICENSE_FILE="$SPARKLE_DISTRIBUTION/LICENSE"
+if [ ! -f "$LICENSE_FILE" ]; then
     printf '%s\n' "Sparkle license file was not found in the pinned distribution." >&2
     exit 1
 fi

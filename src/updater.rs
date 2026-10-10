@@ -208,10 +208,14 @@ fn localized(english: &str, norwegian: &str) -> String {
 }
 
 fn is_norwegian() -> bool {
-    let code = NSLocale::currentLocale().languageCode();
-    code.isEqualToString(&NSString::from_str("nb"))
-        || code.isEqualToString(&NSString::from_str("nn"))
-        || code.isEqualToString(&NSString::from_str("no"))
+    let Some(language) = NSLocale::preferredLanguages().firstObject() else {
+        return false;
+    };
+    let language = language.to_string();
+    matches!(
+        language.split(['-', '_']).next(),
+        Some("nb") | Some("nn") | Some("no")
+    )
 }
 
 #[cfg(test)]

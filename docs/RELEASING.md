@@ -1,7 +1,8 @@
 # Releasing Tidegauge
 
 This project packages a native macOS app bundle and uses Sparkle 2.9.6 for
-signed update checks. Packaging never publishes a release or creates a tag.
+signed update checks. Packaging never publishes a GitHub release or creates a
+tag.
 
 ## Pinned updater distribution
 
@@ -12,10 +13,12 @@ https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6
 SHA-256: 52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192
 ```
 
-The archive is cached under `.cache/sparkle/` and its checksum is verified
-before extraction. The complete framework distribution is embedded in
-`Tidegauge.app/Contents/Frameworks/`, including its license in
-`Contents/Resources/Sparkle-LICENSE.txt`.
+The verified archive is freshly extracted under
+`.cache/sparkle/distributions/2.9.6/` on each fetch. Packaging takes the
+framework, command-line tools, and license only from that versioned
+distribution, so an unrelated stale framework cannot be reused. The complete
+framework distribution is embedded in `Tidegauge.app/Contents/Frameworks/`,
+including its license in `Contents/Resources/Sparkle-LICENSE.txt`.
 
 The bundle uses `no.ogard.tidegauge`, `Tidegauge.app`, `tidegauge.icns`,
 `LSUIElement`, and a macOS 11.0 minimum. The minimum matches the existing
@@ -45,7 +48,7 @@ QA bundles are ad-hoc signed and require both of these explicitly separate
 test settings:
 
 ```sh
-export TIDEGAUGE_QA_FEED_URL=https://qa.example.invalid/appcast.xml
+export TIDEGAUGE_QA_FEED_URL=https://tidegauge-qa.invalid/appcast.xml
 export TIDEGAUGE_QA_PUBLIC_KEY='<base64 32-byte Ed25519 public key>'
 packaging/package-app.sh qa
 ```
@@ -74,9 +77,11 @@ success when Sparkle is unavailable.
 
 ## Signed release helper
 
-After an optimized build, the release helper signs the nested framework code
-before signing the app, creates a symlink-preserving archive with `ditto`,
-generates a Sparkle EdDSA appcast, and writes SHA-256 files:
+After an optimized build, the release helper signs Sparkle's XPC services,
+standalone `Autoupdate`, and `Updater.app` before signing the framework and
+application. It preserves `Downloader.xpc` entitlements, creates a
+symlink-preserving archive with `ditto`, generates a Sparkle EdDSA appcast, and
+writes SHA-256 files:
 
 ```sh
 cargo build --release
@@ -97,9 +102,11 @@ export NOTARY_PROFILE='configured-notarytool-profile'
 packaging/release.sh
 ```
 
-When set, the helper submits the archive, waits for notarization, and staples
-the ticket. Without it, the output is signed but explicitly not notarized.
-The helper does not upload, publish, tag, or mutate any external service.
+When set, the helper submits the archive to Apple's notarization service, waits
+for notarization, and staples the ticket. Without it, the output is signed but
+explicitly not notarized. The helper does not publish a GitHub release, upload
+release artifacts, or create tags. Notarization is the explicit exception that
+contacts Apple when `NOTARY_PROFILE` is configured.
 
 ## Upgrade acceptance
 

@@ -21,8 +21,8 @@ TIDEGAUGE_OUTPUT_ROOT="$OUTPUT_ROOT" \
     "$ROOT/packaging/package-app.sh" production
 
 mkdir -p "$OUTPUT_ROOT"
-SPARKLE_CACHE="${TIDEGAUGE_SPARKLE_CACHE:-$ROOT/.cache/sparkle}"
-GENERATE_APPCAST="$SPARKLE_CACHE/bin/generate_appcast"
+SPARKLE_DISTRIBUTION="$("$ROOT/scripts/fetch-sparkle.sh")"
+GENERATE_APPCAST="$SPARKLE_DISTRIBUTION/bin/generate_appcast"
 if [ ! -x "$GENERATE_APPCAST" ]; then
     printf 'Sparkle appcast tool not found: %s\n' "$GENERATE_APPCAST" >&2
     exit 1
