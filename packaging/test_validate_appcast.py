@@ -350,6 +350,30 @@ class AppcastValidationTests(unittest.TestCase):
                     "mock-checksum  appcast.xml\n",
                 )
 
+            with self.subTest(success="relative output root containing spaces"):
+                relative_root_name = "release output"
+                relative_root = fixture_root / relative_root_name
+                relative_environment = environment.copy()
+                relative_environment["TIDEGAUGE_OUTPUT_ROOT"] = relative_root_name
+                relative_zip = relative_root / "Tidegauge-1.2.3.zip"
+                relative_dmg = relative_root / "Tidegauge-1.2.3.dmg"
+                relative_dmg_checksum = relative_root / f"{relative_dmg.name}.sha256"
+                result = subprocess.run(
+                    ["/bin/bash", str(packaging / "release.sh")],
+                    cwd=fixture_root,
+                    env=relative_environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                validate_appcast(relative_root / "appcast.xml", relative_zip)
+                self.assertEqual(
+                    relative_dmg_checksum.read_text(encoding="utf-8"),
+                    f"mock-checksum  {relative_dmg.name}\n",
+                )
+                self.assertFalse((relative_root / relative_root_name).exists())
+
             appcast.write_bytes(previous_feed)
             checksum.write_bytes(previous_checksum)
             with self.subTest(failure="missing notarization profile"):

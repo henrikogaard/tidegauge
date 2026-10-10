@@ -9,7 +9,6 @@ ZIP="$OUTPUT_ROOT/Tidegauge-${VERSION}.zip"
 DMG="$OUTPUT_ROOT/Tidegauge-${VERSION}.dmg"
 APPCAST="$OUTPUT_ROOT/appcast.xml"
 APPCAST_CHECKSUM="$APPCAST.sha256"
-DMG_CHECKSUM="$DMG.sha256"
 PRODUCTION_FEED="https://github.com/henrikogaard/tidegauge/releases/latest/download/appcast.xml"
 DOWNLOAD_URL_PREFIX="https://github.com/henrikogaard/tidegauge/releases/download/v${VERSION}/"
 
@@ -76,7 +75,7 @@ xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 DMG_BASENAME="$(basename "$DMG")"
-(cd "$OUTPUT_ROOT" && shasum -a 256 "$DMG_BASENAME" > "$DMG_CHECKSUM")
+(cd "$OUTPUT_ROOT" && shasum -a 256 "$DMG_BASENAME" > "$DMG_BASENAME.sha256")
 
 RELEASE_TEMP_DIR="$(mktemp -d "$OUTPUT_ROOT/.release.XXXXXX")"
 trap 'rm -rf "$RELEASE_TEMP_DIR"' EXIT
