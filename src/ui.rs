@@ -84,6 +84,7 @@ pub struct TideGaugeView {
     pub window: Option<AnyWindowHandle>,
     pub show_settings: bool,
     pub settings_error: Option<String>,
+    pub selected_disk: Option<String>,
 }
 
 impl TideGaugeView {
@@ -99,6 +100,7 @@ impl TideGaugeView {
             window: None,
             show_settings: false,
             settings_error: None,
+            selected_disk: None,
         };
         // 1s refresh loop
         cx.spawn(async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| {
@@ -523,7 +525,7 @@ impl Render for TideGaugeView {
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_tab(dark, this.clone()));
+            .child(self.render_tab(dark, this.clone(), cx));
 
         div()
             .id("dashboard")
@@ -580,7 +582,9 @@ fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
 }
 
 impl TideGaugeView {
-    fn render_tab(&self, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+    fn render_tab(
+        &self, dark: bool, this: Entity<TideGaugeView>, cx: &mut Context<TideGaugeView>,
+    ) -> AnyElement {
         if self.show_settings {
             return settings_panel(dark, this, self.settings_error.as_deref()).into_any_element();
         }
@@ -589,7 +593,7 @@ impl TideGaugeView {
             Tab::Overview => overview(s, dark, this).into_any_element(),
             Tab::Cpu => cpu_tab(s, dark).into_any_element(),
             Tab::Memory => memory_tab(s, dark).into_any_element(),
-            Tab::Disk => disk_tab(s, dark).into_any_element(),
+            Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), cx).into_any_element(),
             Tab::Network => network_tab(s, dark).into_any_element(),
             Tab::Gpu => gpu_tab(s, dark).into_any_element(),
             Tab::Neural => neural_tab(s, dark).into_any_element(),
@@ -1109,44 +1113,45 @@ fn memory_tab(s: &Snapshot, dark: bool) -> Div {
         ))
 }
 
-fn disk_tab(s: &Snapshot, dark: bool) -> Div {
+fn disk_tab(s: &Snapshot, dark: bool, selected: Option<&str>, cx: &mut Context<TideGaugeView>) -> Div {
+    use crate::locale::text as l;
     let m = Metric::Disk;
-    let used_pct = s.disk.used as f64 / s.disk.total.max(1) as f64 * 100.0;
+    let preview = crate::disks::preview();
+    let is_preview = preview.is_some();
+    let (inventory, io) = preview.unwrap_or_else(|| (crate::disks::inventory(), crate::disks::io()));
+    let device = match selected {
+        Some(id) => inventory.devices.iter().find(|d| d.id == id),
+        None => inventory.devices.first(),
+    };
+    let selected_id = device.map(|d| d.id.as_str());
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
     rows.sort_by(|a, b| (b.disk_read_rate + b.disk_write_rate).partial_cmp(&(a.disk_read_rate + a.disk_write_rate)).unwrap());
     let max = rows.first().map(|a| a.disk_read_rate + a.disk_write_rate).unwrap_or(1.0).max(1.0);
-    let mut combined = s.disk_r_hist.pts.clone();
-    for (i, v) in combined.iter_mut().enumerate() {
-        *v += s.disk_w_hist.pts.get(i).copied().unwrap_or(0.0);
-    }
-    let hist = Hist { pts: combined, max_len: 360 };
     div()
         .flex()
         .flex_col()
         .gap_3()
-        .child(hero(
-            "Disk Activity",
-            fmt_rate(s.disk.read_rate + s.disk.write_rate),
-            format!("{} used of {} · {} volumes", fmt_bytes(s.disk.used as f64), fmt_bytes(s.disk.total as f64), s.disk.volume_count),
-            &hist,
-            m.accent(dark),
-            dark,
-            vec![
-                ("Read".into(), fmt_rate(s.disk.read_rate)),
-                ("Write".into(), fmt_rate(s.disk.write_rate)),
-                ("Free".into(), fmt_bytes(s.disk.free as f64)),
-                ("Used".into(), format!("{:.0}%", used_pct)),
-            ],
-            None,
-        ))
-        .child(
-            div().grid().grid_cols(4).gap_3()
-                .child(stat_card("Read", fmt_rate(s.disk.read_rate), None, dark))
-                .child(stat_card("Write", fmt_rate(s.disk.write_rate), None, dark))
-                .child(stat_card("Free", fmt_bytes(s.disk.free as f64), None, dark))
-                .child(stat_card("Volumes", format!("{}", s.disk.volume_count), None, dark)),
-        )
-        .child(section_header("App", "Disk Activity", dark))
+        .child(section_header(l("Storage devices", "Lagringsenheter"), l("Read-only", "Kun avlesning"), dark))
+        .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
+        .child(div().flex().flex_wrap().gap_2().children(inventory.devices.iter().map(|device| {
+            let id = device.id.clone();
+            div().id(SharedString::from(format!("disk-{}", id)))
+                .px_3().py_2().rounded_md().border_1().border_color(t::line(dark))
+                .bg(if selected_id == Some(id.as_str()) { t::card_hi(dark) } else { t::card(dark) })
+                .cursor_pointer().max_w(px(320.))
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(device.id.clone()))
+                .child(sub(device.name.clone()).text_color(t::ink_dim(dark)))
+                .on_click(cx.listener(move |view, _, _, cx| { view.selected_disk = Some(id.clone()); cx.notify(); }))
+        })))
+        .when(!inventory.fresh(), |d| d.child(card(dark).child(sub(if inventory.collected_at.is_none() {
+            l("Discovering storage devices…", "Finner lagringsenheter…")
+        } else { l("Disk inventory unavailable or stale. No capacity or health is assumed.", "Diskoversikten er utilgjengelig eller utdatert. Ingen kapasitet eller helsetilstand antas.") }).text_color(t::ink_dim(dark)))))
+        .when(inventory.partial, |d| d.child(sub(l("Partial inventory · some device information could not be read.", "Delvis oversikt · enkelte enhetsopplysninger kunne ikke leses.")).text_color(t::ink_dim(dark))))
+        .when(inventory.fresh() && device.is_none(), |d| d.child(card(dark).child(sub(l("Selected device unavailable, or no supported devices found.", "Valgt enhet er utilgjengelig, eller ingen støttede enheter ble funnet.")).text_color(t::ink_dim(dark)))))
+        .when_some(device.filter(|_| inventory.fresh()), |d, device| d.child(disk_detail(device, io.get(&device.id).filter(|sample| sample.fresh()), dark)))
+        .child(sub(l("Inventory refreshes every 30 seconds. Virtual disk images are omitted. No mount, eject, erase, or SMART-setting operations are performed.", "Oversikten oppdateres hvert 30. sekund. Virtuelle diskbilder utelates. Ingen montering, utmating, sletting eller endring av SMART-innstillinger utføres.")).text_color(t::ink_dim(dark)))
+        .child(section_header(l("All apps · all devices", "Alle apper · alle enheter"), l("Disk activity", "Diskaktivitet"), dark))
+        .child(sub(l("App activity below is system-wide, not attributed to the selected drive.", "Appaktiviteten nedenfor gjelder hele systemet, ikke bare den valgte disken.")).text_color(t::ink_dim(dark)))
         .child(list_card(
             rows.iter()
                 .take(30)
@@ -1158,6 +1163,58 @@ fn disk_tab(s: &Snapshot, dark: bool) -> Div {
                 .collect(),
             dark,
         ))
+}
+
+fn disk_detail(device: &crate::disks::Device, io: Option<&crate::disks::IoSample>, dark: bool) -> Div {
+    use crate::disks::Health;
+    use crate::locale::text as l;
+    let unknown = || l("Unavailable", "Utilgjengelig").to_string();
+    let bytes = |value: Option<u64>| value.map(|v| fmt_bytes(v as f64)).unwrap_or_else(unknown);
+    let count = |value: Option<u64>| value.map(|v| v.to_string()).unwrap_or_else(unknown);
+    let health = match device.smart.health { Health::Passed => l("Passed", "Bestått"), Health::Failed => l("Failing", "Feil oppdaget"), Health::Unsupported => l("Not supported", "Ikke støttet"), Health::Unavailable => l("Unavailable", "Utilgjengelig") };
+    let location = match device.internal { Some(true) => l("Internal", "Intern"), Some(false) => l("External", "Ekstern"), None => l("Location unavailable", "Plassering utilgjengelig") };
+    let media = match device.solid_state { Some(true) => "SSD", Some(false) => l("Rotating disk", "Roterende disk"), None => l("Media type unavailable", "Medietype utilgjengelig") };
+    let flow = |title: &'static str, rate: Option<f64>, history: &[f64]| {
+        card(dark)
+            .child(caption(title).text_color(t::ink_dim(dark)))
+            .child(div().text_2xl().font_weight(FontWeight::BOLD).child(rate.map(fmt_rate).unwrap_or_else(unknown)))
+            .when(!history.is_empty(), |d| d.child(area_chart(history, 60.0, Metric::Disk.accent(dark), None)))
+    };
+    div().flex().flex_col().gap_3()
+        .child(card(dark)
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(device.name.clone()))
+            .child(sub(format!("{} · {} · {} · {}", device.id, location, media, device.protocol.as_deref().unwrap_or(l("Protocol unavailable", "Protokoll utilgjengelig")))).text_color(t::ink_dim(dark))))
+        .child(div().grid().grid_cols(4).gap_3()
+            .child(stat_card(l("Device capacity", "Enhetskapasitet"), bytes(device.size), None, dark))
+            .child(stat_card("SMART", health.to_string(), None, dark))
+            .child(stat_card(l("Temperature", "Temperatur"), device.smart.temperature_c.map(|v| format!("{v:.1} °C")).unwrap_or_else(unknown), None, dark))
+            .child(stat_card(l("Endurance used", "Brukt skrivelevetid"), device.smart.endurance_used.map(|v| format!("{v}%")).unwrap_or_else(unknown), None, dark)))
+        .when(device.smart.health == Health::Failed, |d| d.child(card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("SMART reports a failure. Back up important data and inspect this drive.", "SMART rapporterer en feil. Sikkerhetskopier viktige data og undersøk disken.")))))
+        .child(div().grid().grid_cols(2).gap_3()
+            .child(flow(l("Device read", "Enhetens lesing"), io.and_then(|v| v.read_rate), io.map(|v| v.read_history.as_slice()).unwrap_or(&[])))
+            .child(flow(l("Device write", "Enhetens skriving"), io.and_then(|v| v.write_rate), io.map(|v| v.write_history.as_slice()).unwrap_or(&[]))))
+        .child(sub(format!("IORegistry · {}: {} · {}: {}", l("Read counter", "Leseteller"), bytes(io.map(|v| v.read_total)), l("Write counter", "Skriveteller"), bytes(io.map(|v| v.write_total)))).text_color(t::ink_dim(dark)))
+        .child(sub(l("Device I/O counters reset when the device is reattached; they are not lifetime SMART totals. Rates need two fresh samples.", "Enhetens I/O-tellere nullstilles når enheten kobles til på nytt; de er ikke SMART-totaltall for levetiden. Hastigheter krever to ferske målinger.")).text_color(t::ink_dim(dark)))
+        .child(div().grid().grid_cols(4).gap_3()
+            .child(stat_card(l("Lifetime read", "Lest i levetiden"), bytes(device.smart.lifetime_read), None, dark))
+            .child(stat_card(l("Lifetime write", "Skrevet i levetiden"), bytes(device.smart.lifetime_write), None, dark))
+            .child(stat_card(l("Power-on hours", "Driftstimer"), count(device.smart.power_on_hours), None, dark))
+            .child(stat_card(l("Power cycles", "Strømsykluser"), count(device.smart.power_cycles), None, dark)))
+        .child(sub(if device.smart.extended { l("Extended source: read-only SMART log. Endurance used is a wear indicator, not a health score; it can exceed 100%.", "Utvidet kilde: skrivebeskyttet SMART-logg. Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore; den kan overstige 100 %.") } else { l("SMART status source: macOS. Extended SMART data is unavailable without a supported local reader and device. Missing data never means healthy.", "Kilde for SMART-status: macOS. Utvidede SMART-data er utilgjengelige uten en støttet lokal leser og enhet. Manglende data betyr aldri frisk.") }).text_color(t::ink_dim(dark)))
+        .child(section_header(l("Volumes and containers", "Volumer og beholdere"), "diskutil", dark))
+        .when(device.volumes.is_empty(), |d| d.child(sub(l("No readable volume information.", "Ingen lesbar voluminformasjon.")).text_color(t::ink_dim(dark))))
+        .children(device.volumes.iter().map(|volume| {
+            card(dark)
+                .child(div().flex().justify_between().gap_3().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(volume.name.clone())).child(sub(volume.id.clone()).text_color(t::ink_dim(dark))))
+                .child(sub(volume.mount.clone().unwrap_or_else(|| l("Not mounted", "Ikke montert").into())).text_color(t::ink_dim(dark)))
+                .when_some(volume.container.as_ref(), |d, container| d.child(sub(format!("APFS {} · {}", container, volume.stores.join(", "))).text_color(t::ink_dim(dark))))
+                .child(div().grid().grid_cols(3).gap_3().children([
+                    (if volume.container.is_some() { l("Container capacity", "Beholderkapasitet") } else { l("Volume capacity", "Volumkapasitet") }, bytes(volume.total)),
+                    (if volume.container.is_some() { l("Volume footprint", "Volumets plassbruk") } else { l("Used", "Brukt") }, bytes(volume.used)),
+                    (if volume.container.is_some() { l("Shared free", "Delt ledig plass") } else { l("Free", "Ledig") }, bytes(volume.free)),
+                ].into_iter().map(|(label, value)| div().flex().flex_col().gap_1().child(caption(label).text_color(t::ink_dim(dark))).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(value)))))
+        }))
+        .child(sub(l("APFS volumes share container space. Container capacity and shared free space are repeated for context, never summed as separate disks or per-volume free space.", "APFS-volumer deler beholderplass. Beholderkapasitet og delt ledig plass gjentas som kontekst, og summeres aldri som separate disker eller ledig plass per volum.")).text_color(t::ink_dim(dark)))
 }
 
 fn network_tab(s: &Snapshot, dark: bool) -> Div {

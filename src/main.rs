@@ -3,11 +3,13 @@
 mod app;
 mod audio;
 mod bluetooth;
+mod disks;
 mod engine;
 mod ffi;
 mod history;
 mod icons;
 mod instance;
+mod locale;
 mod metrics;
 mod processes;
 mod projects;
@@ -28,6 +30,7 @@ fn main() {
         Err(error) => { eprintln!("Cannot start Tidegauge: {error}"); return; }
     };
     env_logger_init();
+    disks::start();
     app::start_sampler();
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());
