@@ -8,10 +8,12 @@ mod ffi;
 mod history;
 mod icons;
 mod instance;
+mod locale;
 mod metrics;
 mod processes;
 mod projects;
 mod settings;
+mod sensors;
 mod statusbar;
 mod theme;
 mod ui;
@@ -28,6 +30,7 @@ fn main() {
         Err(error) => { eprintln!("Cannot start Tidegauge: {error}"); return; }
     };
     env_logger_init();
+    sensors::start();
     app::start_sampler();
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());

@@ -640,8 +640,14 @@ pub fn chip_info() -> ChipInfo {
 
 // ---- Thermal ----
 pub fn thermal_state() -> Option<&'static str> {
-    // NSProcessInfo.thermalState: 0 Nominal 1 Fair 2 Serious 3 Critical
-    None // filled in via objc2 in app layer to keep this module C-only
+    use crate::locale::text as l;
+    match objc2_foundation::NSProcessInfo::processInfo().thermalState().0 {
+        0 => Some(l("Nominal", "Normal")),
+        1 => Some(l("Fair", "Moderat")),
+        2 => Some(l("Serious", "Alvorlig")),
+        3 => Some(l("Critical", "Kritisk")),
+        _ => None,
+    }
 }
 
 

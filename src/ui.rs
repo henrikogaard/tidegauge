@@ -1044,6 +1044,7 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
                 .child(stat_card("Load 15m", format!("{:.2}", s.load_avg[2]), None, dark))
                 .child(stat_card("Cores", format!("{}", s.chip.cores), None, dark)),
         )
+        .child(sensor_panel(s, dark))
         .child(section_header("App", "CPU", dark))
         .child(list_card(
             rows.iter()
@@ -1053,6 +1054,43 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
                 .collect(),
             dark,
         ))
+}
+
+fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
+    use crate::locale::text as l;
+    let preview = crate::sensors::preview();
+    let sample = preview.clone().unwrap_or_else(crate::sensors::latest);
+    let fresh = sample.is_fresh();
+    let source = if !fresh && matches!(sample.source, crate::sensors::SourceState::Ready) {
+        l("Stale readings · waiting for an update", "Utdaterte målinger · venter på oppdatering").into()
+    } else { sample.source.label() };
+    let readings = |title: &'static str, values: &[crate::sensors::Reading], unit: &'static str, empty: &'static str| {
+        card(dark)
+            .child(section_header(title, unit, dark))
+            .when(values.is_empty(), |d| d.child(sub(empty).text_color(t::ink_dim(dark))))
+            .children(values.iter().map(|reading| {
+                div().flex().items_center().justify_between().gap_3()
+                    .child(div().text_sm().child(reading.key.clone()))
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                        reading.value.filter(|_| fresh).map(|v| if unit == "RPM" { format!("{:.0} RPM", v) } else { format!("{:.1} °C", v) })
+                            .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into())
+                    ))
+            }))
+    };
+    div().flex().flex_col().gap_3()
+        .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), l("Read-only", "Kun avlesning"), dark))
+        .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample sensor values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke sensormålinger")).text_color(t::ink_dim(dark)))))
+        .child(div().grid().grid_cols(2).gap_3()
+            .child(readings(l("Temperature channels", "Temperaturkanaler"), &sample.temperatures, "°C", l("No temperature channels exposed. This does not mean the Mac is cool.", "Ingen temperaturkanaler tilgjengelige. Dette betyr ikke at Macen er kjølig.")))
+            .child(readings(l("Fan speed", "Viftehastighet"), &sample.fans, "RPM", if sample.fan_count == Some(0) && fresh {
+                l("The controller reports no fans.", "Kontrolleren rapporterer ingen vifter.")
+            } else { l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.") })))
+        .child(div().flex().justify_between().gap_3()
+            .child(sub(source).text_color(t::ink_dim(dark)))
+            .child(sub(format!("{}: {}", l("macOS thermal state", "Termisk tilstand fra macOS"), s.thermal)).text_color(t::ink_dim(dark))))
+        .when(sample.discovering, |d| d.child(sub(l("Discovering sensor channels…", "Finner sensorkanaler…")).text_color(t::ink_dim(dark))))
+        .when(sample.inventory_limited, |d| d.child(sub(l("Sensor inventory is limited; some channels are not shown.", "Sensoroversikten er begrenset; enkelte kanaler vises ikke.")).text_color(t::ink_dim(dark))))
+        .child(sub(l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll.")).text_color(t::ink_dim(dark)))
 }
 
 fn memory_tab(s: &Snapshot, dark: bool) -> Div {
