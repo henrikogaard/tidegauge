@@ -32,6 +32,10 @@ Legacy system power estimates are not presented as measured watts. Per-app energ
 
 Only up to 60 app groups are stored per sample, using the existing recorded **name** rather than a stable bundle identifier. Identical names can collide. An absent app row does not establish that the app was stopped or using zero resources. Historical zero rates cannot establish that an older collector successfully measured every source. These are limits of the stored data, not an invitation to infer missing values.
 
+## Damaged databases
+
+SQLite corruption is reported separately from temporary read failures. Refreshing cannot repair a damaged database; the browser never repairs or replaces it automatically. Quit Tidegauge and preserve `history.db` together with any accompanying `history.db-wal` and `history.db-shm` files before attempting recovery. Work on a copy, not the only remaining database. Do not delete history merely to dismiss an error.
+
 ## Checks
 
 `cargo test history::` covers optional-measurement writes. `cargo test history_browser::` uses isolated databases to cover boundaries in every range, means, gaps, real zeroes, legacy data, safe app filtering, dense downsampling, read-only reopening, and preservation of source rows. Do not seed demonstration values into a user's live history database.

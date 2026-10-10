@@ -61,7 +61,7 @@ impl Episode {
             self.reset_episode();
             return None;
         };
-        if !enabled || !(value > threshold) {
+        if !enabled || value.partial_cmp(&threshold) != Some(std::cmp::Ordering::Greater) {
             self.reset_episode();
             return None;
         }
@@ -221,9 +221,10 @@ mod tests {
     }
 
     fn snapshot(at: f64) -> Snapshot {
-        let mut snapshot = Snapshot::default();
-        snapshot.at = at;
-        snapshot
+        Snapshot {
+            at,
+            ..Snapshot::default()
+        }
     }
 
     #[test]
