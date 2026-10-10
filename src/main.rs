@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "macos", allow(non_snake_case))]
 
 mod app;
+mod battery;
 mod audio;
 mod bluetooth;
 mod engine;
@@ -8,6 +9,7 @@ mod ffi;
 mod history;
 mod icons;
 mod instance;
+mod locale;
 mod metrics;
 mod processes;
 mod projects;

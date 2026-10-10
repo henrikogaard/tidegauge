@@ -48,8 +48,6 @@ pub fn record(s: &Snapshot) {
         ("net_in", s.net.rate_in),
         ("net_out", s.net.rate_out),
         ("gpu", s.gpu.utilization.unwrap_or(0.0)),
-        ("batt", s.battery.percent.unwrap_or(0.0)),
-        ("power", s.power_w),
     ];
     let mut stmt = match c.prepare("INSERT OR REPLACE INTO metric(ts,metric,value) VALUES(?,?,?)") {
         Ok(s) => s,
@@ -57,6 +55,11 @@ pub fn record(s: &Snapshot) {
     };
     for (m, v) in rows {
         let _ = stmt.execute(rusqlite::params![ts, m, v]);
+    }
+    for (metric, value) in [("batt", s.battery.percent), ("power", s.power_w)] {
+        if let Some(value) = value {
+            let _ = stmt.execute(rusqlite::params![ts, metric, value]);
+        }
     }
     drop(stmt);
     if let Ok(mut st) = c.prepare(
