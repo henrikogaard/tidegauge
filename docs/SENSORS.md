@@ -31,6 +31,8 @@ every two seconds without holding the UI or main-sampler lock. Discovery is
 incremental (up to 256 keys / 200 ms per pass), bounded to 8,192 keys and 128
 temperature channels. Partial inventory is labeled. The connection is renewed
 every minute for wake/recovery; unavailable connections retry every 30 seconds.
+Known channel identifiers and unfinished discovery progress survive connection
+renewal; values are always re-read, never carried forward as current readings.
 Samples older than ten seconds are hidden as stale.
 
 ## Validation

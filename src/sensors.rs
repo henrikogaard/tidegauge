@@ -2,6 +2,7 @@
 
 use crate::ffi::*;
 use crate::locale::text as l;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -81,23 +82,42 @@ pub fn start() {
         let out = state.clone();
         std::thread::Builder::new()
             .name("tidegauge-sensors".into())
-            .spawn(move || loop {
-                match Smc::open() {
-                    Ok(mut smc) => {
-                        let opened = Instant::now();
-                        while opened.elapsed() < Duration::from_secs(60) {
-                            let sample = smc.sample();
-                            *out.lock().unwrap() = sample;
-                            std::thread::sleep(Duration::from_secs(2));
+            .spawn(move || {
+                let mut known_keys = Vec::new();
+                let mut next_key = 0;
+                let mut key_count = None;
+                loop {
+                    match Smc::open() {
+                        Ok(mut smc) => {
+                            smc.temperature_keys = known_keys.clone();
+                            smc.next_key = next_key;
+                            smc.key_count = key_count;
+                            let opened = Instant::now();
+                            while opened.elapsed() < Duration::from_secs(60) {
+                                let sample = smc.sample();
+                                *out.lock().unwrap() = sample;
+                                std::thread::sleep(Duration::from_secs(2));
+                            }
+                            known_keys = smc.temperature_keys.clone();
+                            if smc
+                                .key_count
+                                .is_some_and(|count| smc.next_key >= count.min(8192))
+                            {
+                                next_key = 0;
+                                key_count = None;
+                            } else {
+                                next_key = smc.next_key;
+                                key_count = smc.key_count;
+                            }
                         }
-                    }
-                    Err(source) => {
-                        *out.lock().unwrap() = SensorSnapshot {
-                            source,
-                            collected_at: Some(Instant::now()),
-                            ..Default::default()
-                        };
-                        std::thread::sleep(Duration::from_secs(30));
+                        Err(source) => {
+                            *out.lock().unwrap() = SensorSnapshot {
+                                source,
+                                collected_at: Some(Instant::now()),
+                                ..Default::default()
+                            };
+                            std::thread::sleep(Duration::from_secs(30));
+                        }
                     }
                 }
             })
@@ -157,6 +177,7 @@ struct Smc {
     next_key: u32,
     key_count: Option<u32>,
     inventory_limited: bool,
+    transport_error: Cell<Option<i32>>,
 }
 
 impl Drop for Smc {
@@ -190,6 +211,7 @@ impl Smc {
                 next_key: 0,
                 key_count: None,
                 inventory_limited: false,
+                transport_error: Cell::new(None),
             })
         }
     }
@@ -214,6 +236,9 @@ impl Smc {
                 &mut size,
             )
         };
+        if result != 0 {
+            self.transport_error.set(Some(result));
+        }
         (result == 0 && size == size_of::<SmcData>() && output.result == 0).then_some(output)
     }
 
@@ -261,7 +286,10 @@ impl Smc {
             };
             self.next_key += 1;
             let key = out.key.to_be_bytes();
-            if key[0] != b'T' || !key.iter().all(u8::is_ascii_graphic) {
+            if key[0] != b'T'
+                || !key.iter().all(u8::is_ascii_graphic)
+                || self.temperature_keys.contains(&out.key)
+            {
                 continue;
             }
             if let Some(info) = self.key_info(out.key) {
@@ -281,6 +309,7 @@ impl Smc {
     }
 
     fn sample(&mut self) -> SensorSnapshot {
+        self.transport_error.set(None);
         self.discover();
         let temperatures = self
             .temperature_keys
@@ -310,7 +339,11 @@ impl Smc {
             })
             .collect();
         SensorSnapshot {
-            source: SourceState::Ready,
+            source: match self.transport_error.get() {
+                Some(code) if matches!(code as u32, 0xe00002c1 | 0xe00002e2) => SourceState::Denied,
+                Some(code) => SourceState::Failed(code),
+                None => SourceState::Ready,
+            },
             temperatures,
             fans,
             fan_count,

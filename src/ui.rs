@@ -1081,7 +1081,7 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
         .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), l("Read-only", "Kun avlesning"), dark))
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample sensor values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke sensormålinger")).text_color(t::ink_dim(dark)))))
         .child(div().grid().grid_cols(2).gap_3()
-            .child(readings(l("Temperature channels", "Temperaturkanaler"), &sample.temperatures, "°C", l("No temperature channels exposed. This does not mean the Mac is cool.", "Ingen temperaturkanaler tilgjengelige. Dette betyr ikke at Macen er kjølig.")))
+            .child(readings(l("Temperature channels", "Temperaturkanaler"), &sample.temperatures, "°C", if sample.discovering { l("Discovering temperature channels…", "Finner temperaturkanaler…") } else { l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.") }))
             .child(readings(l("Fan speed", "Viftehastighet"), &sample.fans, "RPM", if sample.fan_count == Some(0) && fresh {
                 l("The controller reports no fans.", "Kontrolleren rapporterer ingen vifter.")
             } else { l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.") })))
