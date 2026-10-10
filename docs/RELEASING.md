@@ -141,15 +141,22 @@ draft release tagged `vVERSION` at the dispatched commit. The draft contains
 only the versioned ZIP and checksum plus `appcast.xml` and its checksum. The
 workflow never publishes the draft automatically.
 
-Configure these seven GitHub Actions secrets before dispatch:
+Configure these GitHub Actions secrets before dispatch:
 
 - `TIDEGAUGE_SPARKLE_PRIVATE_KEY`
 - `APPLE_CERTIFICATE_P12_BASE64`
 - `APPLE_CERTIFICATE_PASSWORD`
 - `DEVELOPER_ID_APPLICATION`
-- `APPLE_ID`
 - `APPLE_TEAM_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPSTORE_API_PRIVATE_KEY` (the App Store Connect API `.p8` file contents)
+
+And configure these repository variables (not secret):
+
+- `APPSTORE_API_KEY_ID`
+- `APPSTORE_ISSUER_ID`
+
+Notarization authenticates with that App Store Connect API key, not an Apple
+ID and app-specific password.
 
 The Sparkle public key is committed at `packaging/sparkle-public-key.txt`; it
 is not a secret. The workflow imports the certificate into a temporary
