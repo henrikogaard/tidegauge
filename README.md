@@ -8,7 +8,15 @@ A menu-bar system monitor for macOS, written in Rust with [gpui-kit](https://cra
 
 ![Tidegauge dashboard](assets/dashboard.png)
 
-Dashboard preview in Graphite Night, rendered with generic sample data.
+Current dashboard in dark appearance, captured on a virtual Mac. Readings
+describe that development environment, not physical-hardware validation.
+
+| Light appearance | Dark appearance |
+|---|---|
+| ![CPU in light appearance](assets/screenshots/cpu-light.png) | ![CPU in dark appearance](assets/screenshots/cpu-dark.png) |
+
+The [screenshot archive](assets/README.md#screenshot-archive) includes capture
+provenance, Norwegian layouts, and explicitly labeled hardware fixtures.
 
 ## Project status
 
@@ -43,7 +51,7 @@ Create an ad-hoc preview bundle after the optimized build:
 packaging/package-app.sh preview
 ```
 
-The packaging modes, signing prerequisites, and optional notarization flow are
+The packaging modes, signing prerequisites, and required production notarization flow are
 documented in [Releasing](docs/RELEASING.md). Production packaging fails closed
 when its signing credentials are unavailable.
 
@@ -54,6 +62,7 @@ when its signing credentials are unavailable.
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
 | Overview | Summary tiles and memory and power breakdowns on neutral surfaces with colorful metric accents |
 | Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, and Battery |
+| Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
 | Sound | Output device and volume display, plus process audio state |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
@@ -129,6 +138,8 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 - [Contributing](CONTRIBUTING.md): checks, manual verification, and review expectations.
 - [Design](DESIGN.md): colors, layout, and menu-bar behavior.
 - [Releasing](docs/RELEASING.md): bundle modes, signing prerequisites, and update acceptance.
+- [Signing-key recovery](docs/RELEASING.md#signing-key-custody-and-recovery): portable backups, restore checks, and hosting migration.
+- [0.1.0 release notes](docs/RELEASE-0.1.0.md): included capabilities and remaining acceptance checks.
 - [Recovery manifest](RECOVERY-MANIFEST.md): provenance of the recovered files.
 - [Historical findings](tidegauge-findings.md) and [historical test plan](tidegauge-test-plan.md): evidence from an earlier environment, not validation of the current checkout.
 

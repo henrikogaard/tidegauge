@@ -2,14 +2,34 @@
 
 ## Logo
 
-- `logo.png`: the generated graphite activity-bar icon, 1254 × 1254 pixels, with transparency outside the rounded tile. The app embeds this image and uses it as its native application icon and in the dashboard footer.
-- `tidegauge.icns`: the same artwork packaged at the standard macOS icon sizes, including 16, 32, 128, 256, and 512 pixels and their double-resolution variants. It is ready for a future app-bundle packaging workflow.
+- `logo.png`: the generated graphite activity-bar icon, 1254 × 1254 pixels, with transparency outside the rounded tile. The app embeds this image as its native application icon; the dashboard footer has no icon tile.
+- `tidegauge.icns`: the same artwork packaged at the standard macOS icon sizes, including 16, 32, 128, 256, and 512 pixels and their double-resolution variants. The app-bundle packaging workflow includes it.
 
 The app icon does not change the compact template symbol in the menu bar. That symbol keeps its native tint and metric layout.
 
-## Dashboard screenshot
+## Screenshot archive
 
-`dashboard.png`, 1192 × 780 pixels, shows the native dashboard in Graphite Night. The documentation capture uses generic sample data and generic app labels to avoid exposing personal process information. The UI and embedded artwork are the app implementation; the screenshot is not a measurement of a particular machine.
+These selected native-window captures from the October 2026 layout and
+localization pass are stored in Git, not dependent on external attachment
+hosting. They show the implementation consolidated in [PR #19](https://github.com/henrikogaard/tidegauge/pull/19).
+The traffic lights are unobstructed. Captures exclude personal paths,
+credentials, device serial numbers, and unrelated desktop windows.
+
+| Capture | Appearance / language | Data and purpose |
+|---|---|---|
+| [Dashboard](dashboard.png) | Dark / English | Live virtual-Mac overview; GPU utilization and battery unavailable |
+| [CPU light](screenshots/cpu-light.png) | Light / English | Live virtual-Mac CPU summary, chart, and ranked processes |
+| [CPU dark](screenshots/cpu-dark.png) | Dark / English | Same layout in dark appearance; captured at a different sampling time |
+| [Battery](screenshots/battery-fixture-dark-nb.png) | Dark / Norwegian | Explicitly labeled development fixture, not battery measurements |
+| [Disk](screenshots/disk-fixture-min-dark-nb.png) | Dark / Norwegian | Explicitly labeled development fixture at minimum window size |
+| [Settings light](screenshots/settings-en-light-min.png) | Light / English | Minimum-size Settings, near the top of the scrollable form |
+| [Settings dark](screenshots/settings-nb-dark-min.png) | Dark / Norwegian | Minimum-size Settings, scrolled to the lower controls |
+
+CPU and overview values belong to the development VM and are not generic
+mock readings. The battery/disk fixture banners must remain visible when
+reusing those images. None of these captures establishes physical sensor,
+battery, SMART, or signed-update compatibility. Settings captures include the
+native window shadow; no remote-control overlay covers the window controls.
 
 ## Generation prompt
 

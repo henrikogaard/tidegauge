@@ -1,3 +1,9 @@
 /.cache/
 /build/
 /target/
+
+# Release credentials and portable private-key backups stay outside Git.
+*.p12
+*.pfx
+*.p8
+*.age
