@@ -31,35 +31,10 @@ pub fn start_sampler() {
                 if tick % 10 == 0 {
                     bt = crate::bluetooth::bt_info();
                 }
-                let projects = {
-                    // rebuild proc list for project detection (cheap reuse)
-                    let pids = crate::processes::list_pids();
-                    let mut procs = Vec::new();
-                    for pid in &pids {
-                        if let Some(b) = crate::processes::proc_bsd(*pid) {
-                            if let Some(r) = crate::processes::proc_rusage(*pid) {
-                                procs.push(crate::processes::ProcInfo {
-                                    pid: *pid,
-                                    ppid: b.pbi_ppid as i32,
-                                    uid: b.pbi_uid,
-                                    comm: unsafe {
-                                        std::ffi::CStr::from_ptr(b.pbi_comm.as_ptr())
-                                            .to_string_lossy()
-                                            .to_string()
-                                    },
-                                    exe_path: crate::processes::proc_path(*pid),
-                                    start_unix: b.pbi_start_tvsec as f64,
-                                    ..Default::default()
-                                });
-                                let _ = r;
-                            }
-                        }
-                    }
-                    crate::projects::detect_projects(&procs)
-                };
                 {
                     let mut e = eng.lock().unwrap();
-                    e.sample(procs_audio, bt.clone(), projects);
+                    e.sample(procs_audio, bt.clone());
+                    crate::engine::publish(&e.snap);
                     let new_alerts = alerts.check(&e.snap);
                     if !new_alerts.is_empty() {
                         ALERTS
@@ -81,10 +56,23 @@ pub fn start_sampler() {
 
 /// Called once per UI frame-pump (~500ms) from main: applies toggles and
 /// pushes fresh numbers into the menu bar.
-pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, cx: &mut gpui_kit::App) {
+pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, view: &gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut gpui_kit::App) {
     use crate::statusbar::*;
     use std::sync::atomic::Ordering;
     if TOGGLE_PANEL.swap(false, Ordering::SeqCst) {
+        view.update(cx, |view, cx| {
+            view.show_settings = false;
+            cx.notify();
+        });
+        toggle_panel(cx);
+    }
+    if SHOW_SETTINGS.swap(false, Ordering::SeqCst) {
+        view.update(cx, |view, cx| {
+            view.show_settings = true;
+            view.scroll = gpui_kit::ScrollHandle::new();
+            view.settings_error = None;
+            cx.notify();
+        });
         toggle_panel(cx);
     }
     if QUIT_APP.swap(false, Ordering::SeqCst) {
@@ -106,6 +94,7 @@ pub fn set_panel_handle(h: gpui_kit::AnyWindowHandle) {
 }
 
 pub fn toggle_panel(cx: &mut gpui_kit::App) {
+    cx.activate(true);
     let g = PANEL.get_or_init(|| Mutex::new(None)).lock().unwrap();
     if let Some(h) = g.as_ref() {
         let h2 = h.clone();

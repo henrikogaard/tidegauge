@@ -242,7 +242,7 @@ impl Engine {
     }
 
     /// One sampling pass. dt is measured so rates are exact.
-    pub fn sample(&mut self, audio_apps: Vec<AudioApp>, bt: BtInfo, projects: Vec<ProjectGroup>) {
+    pub fn sample(&mut self, audio_apps: Vec<AudioApp>, bt: BtInfo) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_at).as_secs_f64().max(0.1);
         self.last_at = now;
@@ -319,7 +319,7 @@ impl Engine {
             let Some(b) = proc_bsd(pid) else { continue };
             let Some(r) = proc_rusage(pid) else { continue };
             let start = b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6;
-            let cpu_ns = r.ri_user_time + r.ri_system_time;
+            let cpu_ns = mach_ticks_to_ns(r.ri_user_time.saturating_add(r.ri_system_time));
             let prev = self.prev.get(&pid);
             let (cpu_pct, rr, wr, pw) = if let Some(pv) = prev {
                 let alive = if pv.start_unix == start { dt } else { 0.0 };
@@ -376,7 +376,7 @@ impl Engine {
         self.prev.retain(|p, _| live.contains(p));
 
         s.proc_count = procs.len();
-        s.apps = group_procs(&procs);
+        s.apps = regroup_apps(&procs, &s.apps);
         s.app_count = s.apps.len();
 
         // attach per-app network via nettop (every other tick to save CPU)
@@ -401,7 +401,7 @@ impl Engine {
             s.audio.devices = crate::audio::output_device_names();
         }
         s.bt = bt;
-        s.projects = projects;
+        s.projects = crate::projects::detect_projects(&procs);
         s.uptime = self.started.elapsed();
 
         s.neural = None; // no public ANE counter; keep chart at 0 when unsupported
@@ -409,8 +409,20 @@ impl Engine {
     }
 }
 
+// UI readers share only the last completed sample, never the collection lock.
+static PUBLISHED: OnceLock<Mutex<Snapshot>> = OnceLock::new();
+
+fn published() -> &'static Mutex<Snapshot> {
+    PUBLISHED.get_or_init(|| Mutex::new(Snapshot::default()))
+}
+
+pub fn publish(snap: &Snapshot) {
+    let snapshot = snap.clone();
+    *published().lock().unwrap() = snapshot;
+}
+
 pub fn latest() -> Snapshot {
-    engine().lock().unwrap().snap.clone()
+    published().lock().unwrap().clone()
 }
 
 pub fn fmt_bytes(n: f64) -> String {
@@ -439,4 +451,109 @@ pub fn fmt_up(secs: f64) -> String {
     else if s < 5400 { format!("{} minutes", s / 60) }
     else if s < 129600 { format!("{} hours", s / 3600) }
     else { format!("{} days", s / 86400) }
+}
+
+
+fn regroup_apps(procs: &[ProcInfo], previous: &[AppGroup]) -> Vec<AppGroup> {
+    let previous: HashMap<&str, &AppGroup> = previous
+        .iter()
+        .map(|app| (app.key.as_str(), app))
+        .collect();
+    let mut apps = group_procs(procs);
+    for app in &mut apps {
+        if let Some(old) = previous.get(app.key.as_str()) {
+            // Do not transfer rates to a different process group with the same name.
+            if app.pids.len() == old.pids.len()
+                && app.pids.iter().all(|pid| old.pids.contains(pid))
+            {
+                app.net_in_rate = old.net_in_rate;
+                app.net_out_rate = old.net_out_rate;
+            }
+        }
+    }
+    apps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regrouping_does_not_transfer_rates_to_replacement_processes() {
+        let mut proc = ProcInfo {
+            pid: 42,
+            comm: "server".into(),
+            exe_path: "/usr/bin/server".into(),
+            ..Default::default()
+        };
+        let mut previous = group_procs(&[proc.clone()]);
+        previous[0].net_in_rate = 4096.0;
+        proc.pid = 43;
+        assert_eq!(regroup_apps(&[proc], &previous)[0].net_in_rate, 0.0);
+    }
+
+    #[test]
+    #[ignore = "starts a disposable Python listener and samples native process counters"]
+    fn native_projects_use_measured_cpu_memory_and_full_directory() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Child, Command, Stdio};
+        struct TestServer(Child);
+        impl Drop for TestServer {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut server = TestServer(Command::new("python3")
+            .args(["-u", "-c", "import socket\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen()\nmemory=bytearray(8*1024*1024)\nprint(s.getsockname()[1],flush=True)\nwhile True: sum(range(50000))"])
+            .stdout(Stdio::piped())
+            .spawn().unwrap());
+        let mut port = String::new();
+        BufReader::new(server.0.stdout.take().unwrap()).read_line(&mut port).unwrap();
+        let port: u16 = port.trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+        let mut sampler = Engine::new();
+        sampler.sample(Vec::new(), BtInfo::default());
+        let (project, process) = sampler.snap.projects.iter()
+            .flat_map(|project| project.servers.iter().map(move |server| (project, server)))
+            .find(|(_, process)| process.pid == server.0.id() as i32 && process.port == port)
+            .expect("disposable listener missing from project detection");
+        assert!(process.cpu_pct > 15.0, "busy server CPU was not measured: {}%", process.cpu_pct);
+        assert!(process.mem_bytes > 0, "server memory was not measured");
+        assert_eq!(process.status, "working");
+        assert!(!project.idle);
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(std::path::Path::new(&project.dir), cwd.as_path());
+        let app = sampler.snap.apps.iter().find(|app| app.pids.contains(&process.pid)).unwrap();
+        assert!(app.cpu_pct >= process.cpu_pct);
+        assert!(app.mem_bytes >= process.mem_bytes);
+    }
+
+    #[test]
+    fn regrouping_preserves_network_rates_on_skipped_collection_passes() {
+        let procs = vec![ProcInfo {
+            pid: 42,
+            comm: "server".into(),
+            exe_path: "/usr/bin/server".into(),
+            ..Default::default()
+        }];
+        let mut previous = group_procs(&procs);
+        previous[0].net_in_rate = 4096.0;
+        previous[0].net_out_rate = 1024.0;
+        let fresh = regroup_apps(&procs, &previous);
+        assert_eq!(fresh[0].net_in_rate, 4096.0);
+        assert_eq!(fresh[0].net_out_rate, 1024.0);
+    }
+
+    #[test]
+    fn snapshot_reads_do_not_wait_for_collection() {
+        let shared_engine = engine();
+        let guard = shared_engine.lock().unwrap();
+        let (send, recv) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || send.send(latest().at).unwrap());
+        let result = recv.recv_timeout(Duration::from_secs(1));
+        drop(guard);
+        reader.join().unwrap();
+        assert!(result.is_ok(), "snapshot read blocked behind collection");
+    }
 }

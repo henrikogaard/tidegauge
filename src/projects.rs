@@ -178,25 +178,17 @@ static NET_PREV: OnceLock<Mutex<HashMap<i32, (u64, u64, Instant)>>> = OnceLock::
 pub fn apply_nettop(apps: &mut [AppGroup]) {
     let map = NET_PREV.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(out) = std::process::Command::new("nettop")
-        .args(["-x", "-P", "-l", "1", "-J", "bytes_in,bytes_out"])
+        .args(["-x", "-P", "-L", "1", "-J", "bytes_in,bytes_out"])
         .output()
     else {
         return;
     };
+    if !out.status.success() {
+        return;
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     let now = Instant::now();
-    let mut totals: HashMap<i32, (u64, u64)> = HashMap::new();
-    for line in text.lines().skip(1) {
-        // "process.pid,bytes_in,bytes_out"
-        let mut it = line.split(',');
-        let Some(first) = it.next() else { continue };
-        let Some(pid) = first.rsplit('.').next().and_then(|s| s.parse::<i32>().ok()) else { continue };
-        let bin: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let bout: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let e = totals.entry(pid).or_default();
-        e.0 += bin;
-        e.1 += bout;
-    }
+    let Some(totals) = parse_nettop(&text) else { return };
     let mut prev = map.lock().unwrap();
     for app in apps.iter_mut() {
         let mut rin = 0.0;
@@ -213,5 +205,106 @@ pub fn apply_nettop(apps: &mut [AppGroup]) {
         }
         app.net_in_rate = rin;
         app.net_out_rate = rout;
+    }
+    prev.retain(|pid, _| totals.contains_key(pid));
+}
+
+
+fn parse_nettop(text: &str) -> Option<HashMap<i32, (u64, u64)>> {
+    let mut lines = text.lines();
+    let header = csv_fields(lines.next()?)?;
+    let process_col = header.iter().position(|h| h.is_empty() || h == "process")?;
+    let in_col = header.iter().position(|h| h == "bytes_in")?;
+    let out_col = header.iter().position(|h| h == "bytes_out")?;
+    let mut totals = HashMap::new();
+    for line in lines {
+        let Some(fields) = csv_fields(line) else { continue };
+        let Some(pid) = fields.get(process_col)
+            .and_then(|label| label.rsplit('.').next())
+            .and_then(|pid| pid.parse::<i32>().ok())
+            .filter(|pid| *pid > 0)
+        else { continue };
+        let Some(bytes_in) = fields.get(in_col).and_then(|v| v.parse::<u64>().ok())
+        else { continue };
+        let Some(bytes_out) = fields.get(out_col).and_then(|v| v.parse::<u64>().ok())
+        else { continue };
+        totals.insert(pid, (bytes_in, bytes_out));
+    }
+    Some(totals)
+}
+
+// Process labels can contain commas and escaped quotes in nettop's CSV output.
+fn csv_fields(line: &str) -> Option<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => fields.push(std::mem::take(&mut field)),
+            _ => field.push(ch),
+        }
+    }
+    if quoted { return None; }
+    fields.push(field);
+    Some(fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_parser_accepts_native_header_and_trailing_empty_column() {
+        let csv = ",bytes_in,bytes_out,\nworker.42,4096,1024,\n";
+        assert_eq!(parse_nettop(csv).unwrap().get(&42), Some(&(4096, 1024)));
+        assert!(parse_nettop("plain text output").is_none());
+    }
+
+    #[test]
+    fn csv_parser_uses_header_columns_and_quoted_process_labels() {
+        let csv = "time,process,bytes_out,bytes_in,\n10:20:30,\"worker, helper.42\",1024,4096,\n10:20:30,server.43,256,512,\n";
+        let totals = parse_nettop(csv).unwrap();
+        assert_eq!(totals.get(&42), Some(&(4096, 1024)));
+        assert_eq!(totals.get(&43), Some(&(512, 256)));
+    }
+
+    #[test]
+    fn csv_parser_skips_malformed_counters_without_inventing_zeroes() {
+        let csv = ",bytes_in,bytes_out,\nworker.42,invalid,1024,\nworker.43,512,256,\n";
+        let totals = parse_nettop(csv).unwrap();
+        assert!(!totals.contains_key(&42));
+        assert_eq!(totals.get(&43), Some(&(512, 256)));
+    }
+
+    #[test]
+    #[ignore = "runs nettop against a disposable loopback connection on macOS"]
+    fn native_network_rates_report_transferred_bytes() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let mut apps = vec![AppGroup {
+            key: "test-network".into(),
+            pids: vec![std::process::id() as i32],
+            ..Default::default()
+        }];
+        apply_nettop(&mut apps);
+        let reader = std::thread::spawn(move || {
+            let mut bytes = vec![0u8; 512 * 1024];
+            server.read_exact(&mut bytes).unwrap();
+            server
+        });
+        client.write_all(&vec![1u8; 512 * 1024]).unwrap();
+        let _server = reader.join().unwrap();
+        apply_nettop(&mut apps);
+        assert!(apps[0].net_in_rate > 0.0 || apps[0].net_out_rate > 0.0,
+            "transferred bytes were not measured");
     }
 }

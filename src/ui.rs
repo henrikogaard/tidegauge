@@ -82,6 +82,8 @@ pub struct TideGaugeView {
     pub focus: FocusHandle,
     pub snap: Snapshot,
     pub window: Option<AnyWindowHandle>,
+    pub show_settings: bool,
+    pub settings_error: Option<String>,
 }
 
 impl TideGaugeView {
@@ -95,6 +97,8 @@ impl TideGaugeView {
             focus,
             snap: latest(),
             window: None,
+            show_settings: false,
+            settings_error: None,
         };
         // 1s refresh loop
         cx.spawn(async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| {
@@ -177,13 +181,18 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
             let px_per = (w - 4.0) / (n - 1).max(1) as f32;
             let y_of = |v: f64| -> f32 { oy + (h - 4.0) - ((v / max).clamp(0.0, 1.0) as f32) * (h - 8.0) };
 
-            // filled area
-            let mut area = Path::new(point(px(ox + 2.0), px(oy + h - 2.0)));
-            for (i, v) in tail.iter().enumerate() {
-                area.line_to(point(px(ox + 2.0 + i as f32 * px_per), px(y_of(*v))));
+            // Fill each interval with a convex trapezoid. A single concave
+            // area path would be triangulated across the chart by GPUI.
+            for i in 1..n {
+                let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
+                let x1 = ox + 2.0 + i as f32 * px_per;
+                let mut area = Path::new(point(px(x0), px(oy + h - 2.0)));
+                area.line_to(point(px(x0), px(y_of(tail[i - 1]))));
+                area.line_to(point(px(x1), px(y_of(tail[i]))));
+                area.line_to(point(px(x1), px(oy + h - 2.0)));
+                area.line_to(point(px(x0), px(oy + h - 2.0)));
+                window.paint_path(area, color.opacity(0.18));
             }
-            area.line_to(point(px(ox + 2.0 + (n - 1) as f32 * px_per), px(oy + h - 2.0)));
-            window.paint_path(area, color.opacity(0.18));
 
             // stroke as thin quads (each segment its own sub-path)
             let mut stroke = Path::new(point(px(ox + 2.0), px(y_of(tail[0]))));
@@ -378,15 +387,19 @@ impl Render for TideGaugeView {
         // pills; active = metric accent text on accent@15% bg.
         let topbar = div()
             .w_full()
-            .border_b_1()
-            .border_color(t::line(dark))
-            .px_3()
-            .py_2()
+            .h(px(64.))
+            .flex_shrink_0()
+            .pl(px(92.))
+            .pr(px(24.))
             .flex()
             .items_center()
             .justify_center()
             .child(
                 div()
+                    .id("metric-tabs")
+                    .role(Role::TabList)
+                    .aria_label("Metrics")
+                    .tab_group()
                     .flex()
                     .items_center()
                     .gap_0p5()
@@ -402,17 +415,31 @@ impl Render for TideGaugeView {
                             .map(|m| m.accent(dark))
                             .unwrap_or_else(hex_acc);
                         let this = this.clone();
+                        let keyboard_target = this.clone();
                         div()
                             .id(SharedString::from(format!("tab-{}", tb.label())))
+                            .role(Role::Tab)
+                            .aria_label(tb.label())
+                            .aria_selected(active)
+                            .tab_index(tb as isize)
+                            .focus_visible(|d| d.border_color(accent).bg(accent.opacity(0.12)))
+                            .on_key_down(move |event, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    select_tab(&keyboard_target, tb, cx);
+                                    cx.stop_propagation();
+                                }
+                            })
                             .flex()
                             .items_center()
                             .gap(px(5.))
-                            .px(px(9.))
-                            .py(px(5.))
+                            .px(px(10.))
+                            .py(px(8.))
+                            .border_1()
+                            .border_color(gpui_kit::transparent_black())
                             .rounded_full()
                             .cursor_pointer()
                             .when(active, |d| {
-                                d.bg(accent.opacity(0.15)).text_color(accent)
+                                d.bg(accent.opacity(0.15)).border_color(accent).text_color(accent)
                             })
                             .when(!active, |d| {
                                 d.text_color(t::ink_dim(dark))
@@ -427,14 +454,30 @@ impl Render for TideGaugeView {
                                     .child(tb.label()),
                             )
                             .on_click(move |_, _w, cx| {
-                                this.update(cx, |v, cx| {
-                                    v.tab = tb;
-                                    v.scroll = ScrollHandle::new();
-                                    cx.notify();
-                                });
+                                select_tab(&this, tb, cx);
                             })
                     })),
             );
+
+        let topbar = if self.show_settings {
+            let back = this.clone();
+            let keyboard_back = this.clone();
+            div().h(px(64.)).flex_shrink_0().pl(px(104.)).pr(px(24.))
+                .flex().items_center().gap_3()
+                .child(div().id("back-to-overview").role(Role::Button).aria_label("Back to Overview")
+                    .tab_index(0).rounded_md().p_2().cursor_pointer()
+                    .hover(|d| d.bg(t::card_hi(dark))).focus_visible(|d| d.bg(t::card_hi(dark)))
+                    .child(icon_img("icons/arrow-left.svg", 16., t::ink(dark)))
+                    .on_key_down(move |event, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            select_tab(&keyboard_back, Tab::Overview, cx);
+                            cx.stop_propagation();
+                        }
+                    })
+                    .on_click(move |_, _, cx| select_tab(&back, Tab::Overview, cx)))
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Settings"))
+                .into_any_element()
+        } else { topbar.into_any_element() };
 
         let footer = div()
             .w_full()
@@ -457,13 +500,35 @@ impl Render for TideGaugeView {
             .h_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .p_4()
+            .px(px(20.))
+            .pb(px(16.))
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_tab(dark));
+            .child(self.render_tab(dark, this.clone()));
 
         div()
+            .id("dashboard")
+            .role(Role::Application)
+            .aria_label("Tidegauge")
+            .tab_group()
+            .tab_stop(false)
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.platform && event.keystroke.key == "q" {
+                    cx.quit();
+                    cx.stop_propagation();
+                } else if event.keystroke.modifiers.platform && event.keystroke.key == "," {
+                    view.show_settings = true;
+                    view.scroll = ScrollHandle::new();
+                    view.settings_error = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift { window.focus_prev(cx); }
+                    else { window.focus_next(cx); }
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -477,15 +542,28 @@ impl Render for TideGaugeView {
     }
 }
 
+fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
+    this.update(cx, |v, cx| {
+        v.tab = tab;
+        v.show_settings = false;
+        v.settings_error = None;
+        v.scroll = ScrollHandle::new();
+        cx.notify();
+    });
+}
+
 fn hex_acc() -> Hsla {
     gpui_kit::rgb(0x007aff).into()
 }
 
 impl TideGaugeView {
-    fn render_tab(&self, dark: bool) -> AnyElement {
+    fn render_tab(&self, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+        if self.show_settings {
+            return settings_panel(dark, this, self.settings_error.as_deref()).into_any_element();
+        }
         let s = &self.snap;
         match self.tab {
-            Tab::Overview => overview(s, dark).into_any_element(),
+            Tab::Overview => overview(s, dark, this).into_any_element(),
             Tab::Cpu => cpu_tab(s, dark).into_any_element(),
             Tab::Memory => memory_tab(s, dark).into_any_element(),
             Tab::Disk => disk_tab(s, dark).into_any_element(),
@@ -500,91 +578,262 @@ impl TideGaugeView {
     }
 }
 
-fn overview(s: &Snapshot, dark: bool) -> Div {
-    let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
-    let disk_pct = s.disk.used as f64 / s.disk.total.max(1) as f64 * 100.0;
-    let batt = if s.battery.present {
-        s.battery.percent.map(|p| format!("{:.0}%", p)).unwrap_or("—".into())
-    } else {
-        "—".into()
-    };
-    let mut cols = div().flex().flex_col().gap_3();
-    // row 1: cpu, memory, gpu
-    cols = cols.child(
-        div()
-            .grid()
-            .grid_cols(3)
-            .gap_3()
-            .child(mini_tile("CPU", format!("{:.0}%", s.cpu_pct), &s.cpu_hist, Metric::Cpu, dark, Some(100.0)))
-            .child(mini_tile("Memory", format!("{:.0}%", mem_pct), &s.mem_hist, Metric::Memory, dark, Some(100.0)))
-            .child(mini_tile(
-                "GPU",
-                s.gpu.utilization.map(|u| format!("{:.0}%", u)).unwrap_or("—".into()),
-                &s.gpu_hist,
-                Metric::Gpu,
-                dark,
-                Some(100.0),
-            )),
-    )
-    .child(
-        div()
-            .grid()
-            .grid_cols(3)
-            .gap_3()
-            .child(mini_tile("Disk", format!("{:.0}%", disk_pct), &s.disk_w_hist, Metric::Disk, dark, None))
-            .child(mini_tile(
-                "Network",
-                fmt_rate(s.net.rate_in + s.net.rate_out),
-                &s.net_in_hist,
-                Metric::Network,
-                dark,
-                None,
-            ))
-            .child(mini_tile("Battery", batt, &s.batt_hist, Metric::Battery, dark, Some(100.0))),
-    )
-    .child(
-        div()
-            .grid()
-            .grid_cols(3)
-            .gap_3()
-            .child(donut_card(
-                "Memory by Type",
-                vec![
-                    ("Apps".to_string(), s.mem.app as f64, Metric::Memory.accent(dark)),
-                    ("Wired".to_string(), s.mem.wired as f64, t::ink_dim(dark)),
-                    ("Compressed".to_string(), s.mem.compressed as f64, Metric::Cpu.accent(dark)),
-                    ("Cached/Free".to_string(), (s.mem.cached + s.mem.free) as f64, t::card_hi(dark)),
-                ],
-                format_bytes_mem(s.mem.used, s.mem.total),
-                dark,
-            ))
-            .child(top_apps_donut(s, dark))
-            .child(power_donut(s, dark)),
-    );
-    cols
+fn update_preference(
+    this: &Entity<TideGaugeView>, change: impl FnOnce(&mut crate::settings::Settings), cx: &mut App,
+) {
+    let result = crate::settings::mutate(change);
+    this.update(cx, |view, cx| {
+        view.settings_error = result.err().map(|error| format!("Could not save settings: {error}"));
+        cx.notify();
+    });
 }
 
-fn format_bytes_mem(u: u64, t: u64) -> String {
-    format!("{} / {}", crate::engine::fmt_bytes(u as f64), crate::engine::fmt_bytes(t as f64))
+fn settings_choice(
+    id: String, label: &str, description: String, active: bool, index: isize,
+    dark: bool, this: Entity<TideGaugeView>, change: impl Fn(&mut crate::settings::Settings) + 'static,
+) -> impl IntoElement {
+    let change = std::rc::Rc::new(change);
+    let keyboard_change = change.clone();
+    let keyboard_target = this.clone();
+    let accent = hex_acc();
+    div().id(SharedString::from(id)).role(Role::RadioButton)
+        .aria_label(SharedString::from(description))
+        .aria_toggled(if active { Toggled::True } else { Toggled::False })
+        .tab_index(index).rounded(px(8.)).px_3().py_2().border_1()
+        .border_color(if active { accent } else { t::line(dark) })
+        .bg(if active { accent.opacity(0.12) } else { t::card_hi(dark) })
+        .text_color(if active { accent } else { t::ink_dim(dark) })
+        .text_size(px(12.)).cursor_pointer()
+        .hover(|d| d.text_color(t::ink(dark)))
+        .focus_visible(|d| d.border_color(accent))
+        .child(label.to_string())
+        .on_key_down(move |event, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                update_preference(&keyboard_target, |settings| keyboard_change(settings), cx);
+                cx.stop_propagation();
+            }
+        })
+        .on_click(move |_, _, cx| update_preference(&this, |settings| change(settings), cx))
 }
 
-fn mini_tile(label: &str, value: String, hist: &Hist, m: Metric, dark: bool, max: Option<f64>) -> Div {
-    card(dark)
-        .child(
-            div()
-                .flex()
-                .justify_between()
-                .child(sub(label.to_uppercase()).text_color(t::ink_dim(dark)).font_weight(FontWeight::SEMIBOLD))
-                .child(div().text_sm().font_weight(FontWeight::BOLD).child(value)),
-        )
-        .child(area_chart(&hist.pts, 54.0, m.accent(dark), max))
+fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) -> Div {
+    use crate::settings::{Settings, MENU_METRICS, MENU_STYLES};
+    let settings = Settings::load();
+    let mut panel = div().flex().flex_col().gap_4()
+        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child("Menu bar"))
+        .child(div().text_sm().text_color(t::ink_dim(dark))
+            .child("Choose which readings appear in the menu bar. Changes are saved immediately."));
+    if let Some(error) = error {
+        panel = panel.child(div().text_sm().text_color(t::warn(dark)).child(error.to_string()));
+    }
+    panel = panel.child(card(dark).flex_row().items_center().justify_between()
+        .child(div().flex_1()
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Tidegauge icon"))
+            .child(div().text_xs().text_color(t::ink_dim(dark)).child("Open the app menu with one click.")))
+        .child(div().id("launcher-options").role(Role::RadioGroup).aria_label("Tidegauge icon")
+            .tab_group().flex().gap_2()
+            .children([(true, "Shown"), (false, "Hidden")].into_iter().enumerate().map(|(i, (shown, label))| {
+                settings_choice(format!("launcher-{shown}"), label, format!("Tidegauge icon: {label}"),
+                    settings.show_app_icon == shown, i as isize, dark, this.clone(),
+                    move |settings| settings.show_app_icon = shown)
+            }))));
+    let rows = MENU_METRICS.iter().enumerate().map(|(row, &(key, name))| {
+        let selected = settings.menu_items.iter().find(|item| item.metric == key)
+            .map(|item| item.style.as_str()).unwrap_or("off");
+        let choices = std::iter::once(("off", "Off")).chain(MENU_STYLES);
+        div().id(SharedString::from(format!("settings-{key}")))
+            .role(Role::RadioGroup).aria_label(name).tab_group()
+            .flex().items_center().justify_between().gap_4().py_2()
+            .when(row > 0, |d| d.border_t_1().border_color(t::line(dark)))
+            .child(div().w(px(140.)).text_sm().font_weight(FontWeight::MEDIUM).child(name))
+            .child(div().flex().gap_2().children(choices.enumerate().map(|(i, (style, label))| {
+                settings_choice(format!("{key}-{style}"), label, format!("{name}: {label}"),
+                    selected == style, i as isize, dark, this.clone(),
+                    move |settings| settings.set_menu_style(key, if style == "off" { None } else { Some(style) }))
+            })))
+    }).collect::<Vec<_>>();
+    panel.child(card(dark).gap_0().py_1().children(rows))
+        .child(div().text_xs().text_color(t::ink_dim(dark))
+            .child("Right-click any reading for Settings or Quit. At least one menu item stays visible."))
+        .child(div().flex().justify_end().gap_3()
+            .child(div().id("settings-app-menu").role(Role::Button).aria_label("App menu")
+                .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
+                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))
+                .child("App menu")
+                .on_key_down(|event, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
+                        cx.stop_propagation();
+                    }
+                })
+                .on_click(|_, _, _| crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst)))
+            .child(div().id("settings-quit").role(Role::Button).aria_label("Quit Tidegauge")
+                .tab_index(31).rounded_md().px_4().py_2().bg(t::card_hi(dark))
+                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))
+                .child("Quit Tidegauge")
+                .on_key_down(|event, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.quit(); }
+                })
+                .on_click(|_, _, cx| cx.quit())))
 }
 
-/// Simple conic donut built from wedge polygons.
-fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
-    let slices: Vec<(f64, Hsla)> = slices.to_vec();
+/// Compact bars use the latest 48 real samples, aligned to the right while
+/// the history fills. Empty slots are left blank rather than inventing activity.
+fn bar_chart(pts: &[f64], color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
+    let pts = pts.to_vec();
     canvas(
-        move |_, _, _| (),
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let w: f32 = bounds.size.width.into();
+            let h: f32 = bounds.size.height.into();
+            let ox: f32 = bounds.origin.x.into();
+            let oy: f32 = bounds.origin.y.into();
+            let n = pts.len().min(48);
+            let tail = &pts[pts.len() - n..];
+            let data_max = tail.iter().copied().fold(0.0f64, f64::max);
+            let max = max_hint.unwrap_or(data_max).max(data_max).max(1.0);
+            let slot = w / 48.0;
+            for (i, value) in tail.iter().enumerate() {
+                let height = ((*value / max).clamp(0.0, 1.0) as f32 * h).max(1.0);
+                let x = ox + (48 - n + i) as f32 * slot;
+                let width = (slot - 2.0).max(1.0);
+                let mut bar = Path::new(point(px(x), px(oy + h)));
+                bar.line_to(point(px(x), px(oy + h - height)));
+                bar.line_to(point(px(x + width), px(oy + h - height)));
+                bar.line_to(point(px(x + width), px(oy + h)));
+                bar.line_to(point(px(x), px(oy + h)));
+                window.paint_path(bar, color);
+            }
+        },
+    ).w_full().h_full()
+}
+
+fn metric_heading(tab: Tab, dark: bool) -> Div {
+    let color = tab.metric().map(|m| m.accent(dark)).unwrap_or_else(hex_acc);
+    div().flex().items_center().gap_2()
+        .child(div().size(px(22.)).rounded(px(7.)).bg(color.opacity(0.14))
+            .flex().items_center().justify_center().child(icon_img(tab.icon(), 13., color)))
+        .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM)
+            .text_color(color).child(tab.label()))
+}
+
+fn overview_card(
+    tab: Tab, context: String, value: String,
+    stats: [(&str, String); 3], hist: &Hist, max: Option<f64>,
+    dark: bool, this: Entity<TideGaugeView>,
+) -> impl IntoElement {
+    let color = tab.metric().unwrap().accent(dark);
+    let (number, unit) = value.rsplit_once(' ').unwrap_or((&value, ""));
+    let keyboard_target = this.clone();
+    div().id(SharedString::from(format!("overview-{}", tab.label())))
+        .role(Role::Button)
+        .aria_label(SharedString::from(format!("{}: {}. Open details", tab.label(), value)))
+        .tab_index(20 + tab as isize)
+        .border_1().border_color(gpui_kit::transparent_black())
+        .focus_visible(|d| d.border_color(color))
+        .on_key_down(move |event, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                select_tab(&keyboard_target, tab, cx);
+                cx.stop_propagation();
+            }
+        })
+        .min_w_0().h(px(222.)).p(px(18.)).rounded(px(18.))
+        .bg(t::card(dark)).flex().flex_col().justify_between()
+        .cursor_pointer().hover(|d| d.bg(t::card_hi(dark)))
+        .child(div().flex().items_center().justify_between()
+            .child(metric_heading(tab, dark))
+            .child(icon_img("icons/chevron-right.svg", 12., t::ink_dim(dark))))
+        .child(div()
+            .child(div().text_size(px(11.)).line_height(px(16.))
+                .text_color(t::ink_dim(dark)).child(context))
+            .child(div().flex().items_baseline().gap(px(6.))
+                .child(div().text_size(px(34.)).line_height(px(42.))
+                    .font_weight(FontWeight::BOLD).child(number.to_string()))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM)
+                    .text_color(t::ink_dim(dark)).child(unit.to_string()))))
+        .child(div().grid().grid_cols(3).gap_2().children(stats.into_iter().map(|(label, value)| {
+            div().min_w_0()
+                .child(div().text_size(px(10.)).line_height(px(16.))
+                    .text_color(t::ink_dim(dark)).child(label.to_string()))
+                .child(div().text_size(px(12.)).line_height(px(17.))
+                    .font_weight(FontWeight::MEDIUM).child(value))
+        })))
+        .child(div().h(px(38.)).rounded(px(8.)).px(px(6.)).py(px(5.))
+            .bg(color.opacity(0.09)).child(bar_chart(&hist.pts, color, max)))
+        .on_click(move |_, _, cx| {
+            select_tab(&this, tab, cx);
+        })
+}
+
+fn history_average(hist: &Hist) -> String {
+    if hist.pts.is_empty() { return "—".into(); }
+    fmt_pct(hist.pts.iter().sum::<f64>() / hist.pts.len() as f64)
+}
+
+fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let battery_context = if !s.battery.present { "No battery" }
+        else if s.battery.is_charging { "Charging" }
+        else if s.battery.on_battery { "On battery" } else { "On AC power" };
+    let remaining = s.battery.minutes_remaining.filter(|m| s.battery.on_battery && *m >= 0)
+        .map(|m| format!("{}h {}m", m / 60, m % 60)).unwrap_or("—".into());
+    let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
+    div().flex().flex_col().gap(px(16.))
+        .child(div().grid().grid_cols(3).gap(px(16.))
+            .child(overview_card(Tab::Cpu, "Now".into(), format!("{:.0} %", s.cpu_pct), [
+                ("Load · 1 min", format!("{:.2}", s.load_avg[0])),
+                ("Cores", s.chip.cores.to_string()),
+                ("Average", history_average(&s.cpu_hist)),
+            ], &s.cpu_hist, Some(100.), dark, this.clone()))
+            .child(overview_card(Tab::Memory, format!("In use of {}", fmt_bytes(s.mem.total as f64)),
+                fmt_bytes(s.mem.used as f64), [
+                    ("App", fmt_bytes(s.mem.app as f64)),
+                    ("Wired", fmt_bytes(s.mem.wired as f64)),
+                    ("Compressed", fmt_bytes(s.mem.compressed as f64)),
+                ], &s.mem_hist, Some(100.), dark, this.clone()))
+            .child(overview_card(Tab::Gpu, if s.gpu.utilization.is_some() { "GPU utilization" } else { "Utilization unavailable" }.into(),
+                s.gpu.utilization.map(|v| format!("{:.0} %", v)).unwrap_or("—".into()), [
+                    ("Memory", s.gpu.mem_in_use.map(|v| fmt_bytes(v as f64)).unwrap_or("—".into())),
+                    ("Average", if s.gpu.utilization.is_some() { history_average(&s.gpu_hist) } else { "—".into() }),
+                    ("Peak", if s.gpu.utilization.is_some() { fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max)) } else { "—".into() }),
+                ], &s.gpu_hist, Some(100.), dark, this.clone())))
+        .child(div().grid().grid_cols(3).gap(px(16.))
+            .child(overview_card(Tab::Disk, format!("Free of {}", fmt_bytes(s.disk.total as f64)),
+                fmt_bytes(s.disk.free as f64), [
+                    ("Reading", fmt_rate(s.disk.read_rate)),
+                    ("Writing", fmt_rate(s.disk.write_rate)),
+                    ("Used", fmt_bytes(s.disk.used as f64)),
+                ], &s.disk_w_hist, None, dark, this.clone()))
+            .child(overview_card(Tab::Network, "Downloading".into(), fmt_rate(s.net.rate_in), [
+                ("Uploading", fmt_rate(s.net.rate_out)),
+                ("Received¹", fmt_bytes(s.net.total_in as f64)),
+                ("Sent¹", fmt_bytes(s.net.total_out as f64)),
+            ], &s.net_in_hist, None, dark, this.clone()))
+            .child(overview_card(Tab::Battery, battery_context.into(),
+                s.battery.percent.map(|v| format!("{:.0} %", v)).unwrap_or("—".into()), [
+                    ("Remaining", remaining),
+                    ("Power draw", s.battery.power_w.map(fmt_watts).unwrap_or("—".into())),
+                    ("Health", s.battery.health.map(fmt_pct).unwrap_or("—".into())),
+                ], &s.batt_hist, Some(100.), dark, this)))
+        .child(div().grid().grid_cols(3).gap(px(16.))
+            .child(donut_card("Memory by Type", Tab::Memory, vec![
+                BreakdownEntry::new("App", s.mem.app as f64, Metric::Cpu.accent(dark)),
+                BreakdownEntry::new("Wired", s.mem.wired as f64, t::hex(0xe76635)),
+                BreakdownEntry::new("Compressed", s.mem.compressed as f64, Metric::Network.accent(dark)),
+                BreakdownEntry::new("Cached", s.mem.cached as f64, t::ink_dim(dark)),
+                BreakdownEntry::new("Free", s.mem.free as f64, t::card_hi(dark)),
+            ], format!("{:.0}%", mem_pct), "in use", fmt_bytes, dark))
+            .child(top_apps_donut(s, dark))
+            .child(power_donut(s, dark)))
+        .child(div().text_size(px(10.)).text_color(t::ink_dim(dark))
+            .child("¹ Network totals since boot. Averages and peaks cover this session."))
+}
+
+/// Draw a ring from convex quadrilaterals. GPUI triangulates filled paths
+/// as a fan, so a concave wedge would incorrectly paint across the center.
+fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
+    let slices = slices.to_vec();
+    canvas(
+        |_, _, _| (),
         move |bounds, _, window, _| {
             let w: f32 = bounds.size.width.into();
             let h: f32 = bounds.size.height.into();
@@ -593,138 +842,118 @@ fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
             let cx = ox + w / 2.0;
             let cy = oy + h / 2.0;
             let r = w.min(h) / 2.0 - 2.0;
-            let r_in = r * 0.62;
-            let total: f64 = slices.iter().map(|s| s.0).sum::<f64>().max(1.0);
+            let r_in = r * 0.70;
+            let total: f64 = slices.iter().map(|s| s.0).sum();
+            let ring = if total > 0. { slices.clone() }
+                else { vec![(1., gpui_kit::rgb(0x86868b).into())] };
+            let total = if total > 0. { total } else { 1. };
             let mut angle = -std::f64::consts::FRAC_PI_2;
-            for (v, color) in &slices {
-                let sweep = (*v / total) * std::f64::consts::TAU;
-                if sweep <= 0.001 {
-                    continue;
-                }
-                let steps = (sweep / 0.12).ceil().max(2.0) as usize;
-                let mut path = Path::new(point(
-                    px((cx + r * angle.cos() as f32)),
-                    px((cy + r * angle.sin() as f32)),
-                ));
-                for i in 1..=steps {
+            let at = |radius: f32, angle: f64| point(
+                px(cx + radius * angle.cos() as f32),
+                px(cy + radius * angle.sin() as f32),
+            );
+            for (value, color) in &ring {
+                let sweep = (*value / total) * std::f64::consts::TAU;
+                if sweep <= 0. { continue; }
+                let steps = (sweep / 0.04).ceil().max(1.) as usize;
+                for i in 0..steps {
                     let a = angle + sweep * i as f64 / steps as f64;
-                    path.line_to(point(
-                        px((cx + r * a.cos() as f32)),
-                        px((cy + r * a.sin() as f32)),
-                    ));
-                }
-                for i in (0..=steps).rev() {
-                    let a = angle + sweep * i as f64 / steps as f64;
-                    path.line_to(point(
-                        px((cx + r_in * a.cos() as f32)),
-                        px((cy + r_in * a.sin() as f32)),
-                    ));
+                    let b = angle + sweep * (i + 1) as f64 / steps as f64;
+                    let mut segment = Path::new(at(r, a));
+                    segment.line_to(at(r, b));
+                    segment.line_to(at(r_in, b));
+                    segment.line_to(at(r_in, a));
+                    segment.line_to(at(r, a));
+                    window.paint_path(segment, *color);
                 }
                 angle += sweep;
-                window.paint_path(path, *color);
             }
-            let _ = size;
         },
-    )
-    .size(px(size))
+    ).size(px(size))
 }
 
-fn donut_card(label: &str, slices: Vec<(String, f64, Hsla)>, center: String, dark: bool) -> Div {
-    let total: f64 = slices.iter().map(|s| s.1).sum::<f64>().max(1.0);
-    let legend = slices
-        .iter()
-        .map(|(n, v, c)| {
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(div().size(px(8.)).rounded_full().bg(*c))
-                .child(div().flex_1().text_xs().child(n.clone()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(t::ink_dim(dark))
-                        .child(format!("{:.0}%", *v / total * 100.0)),
-                )
-        })
-        .collect::<Vec<_>>();
-    card(dark)
-        .items_center()
-        .child(sub(label.to_uppercase()).text_color(t::ink_dim(dark)).font_weight(FontWeight::SEMIBOLD))
-        .child(
-            div()
-                .relative()
-                .child(donut(
-                    &slices.iter().map(|(_, v, c)| (*v, *c)).collect::<Vec<_>>(),
-                    110.0,
-                ))
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_center()
-                                .child(center),
-                        ),
-                ),
-        )
-        .child(div().w_full().flex().flex_col().gap_1().children(legend))
+struct BreakdownEntry {
+    name: String,
+    value: f64,
+    color: Hsla,
+    app: Option<AppGroup>,
+}
+
+impl BreakdownEntry {
+    fn new(name: &str, value: f64, color: Hsla) -> Self {
+        Self { name: name.into(), value, color, app: None }
+    }
+}
+
+fn donut_card(
+    label: &str, tab: Tab, slices: Vec<BreakdownEntry>, center: String,
+    center_label: &str, format: fn(f64) -> String, dark: bool,
+) -> Div {
+    let chart = slices.iter().map(|s| (s.value, s.color)).collect::<Vec<_>>();
+    let legend = slices.iter().map(|entry| {
+        div().flex().items_center().gap(px(6.)).h(px(23.))
+            .child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(entry.color))
+            .when_some(entry.app.as_ref(), |d, app| d.child(app_icon(app, dark)))
+            .child(div().flex_1().min_w_0().text_size(px(11.)).truncate().child(entry.name.clone()))
+            .child(div().flex_shrink_0().text_size(px(11.)).text_color(t::ink_dim(dark))
+                .child(format(entry.value)))
+    }).collect::<Vec<_>>();
+    div().min_w_0().h(px(184.)).rounded(px(18.)).bg(t::card(dark)).p(px(18.))
+        .flex().flex_col().gap(px(14.))
+        .child(div().flex().items_center().gap_2()
+            .child(div().size(px(22.)).rounded(px(7.)).bg(tab.metric().unwrap().soft(dark))
+                .flex().items_center().justify_center()
+                .child(icon_img(tab.icon(), 13., tab.metric().unwrap().accent(dark))))
+            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM)
+                .text_color(tab.metric().unwrap().accent(dark)).child(label.to_string())))
+        .child(div().flex().items_center().gap(px(16.))
+            .child(div().relative().size(px(92.)).flex_shrink_0()
+                .child(donut(&chart, 92.))
+                .child(div().absolute().inset_0().flex().flex_col().items_center().justify_center()
+                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(center))
+                    .child(div().text_size(px(9.)).text_color(t::ink_dim(dark)).child(center_label.to_string()))))
+            .child(div().flex_1().min_w_0().flex().flex_col().children(legend)))
 }
 
 fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
-    let palette = [
-        Metric::Memory.accent(dark),
-        Metric::Cpu.accent(dark),
-        Metric::Disk.accent(dark),
-        Metric::Network.accent(dark),
-        Metric::Gpu.accent(dark),
-        t::card_hi(dark),
-    ];
+    let color = Metric::Memory.accent(dark);
     let mut top: Vec<&AppGroup> = s.apps.iter().collect();
     top.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
-    let mut slices: Vec<(String, f64, Hsla)> = Vec::new();
-    for (i, a) in top.iter().take(5).enumerate() {
-        slices.push((a.name.clone(), a.mem_bytes as f64, palette[i]));
+    let total: f64 = top.iter().map(|a| a.mem_bytes as f64).sum();
+    let mut slices = Vec::new();
+    for (i, app) in top.iter().take(4).enumerate() {
+        slices.push(BreakdownEntry {
+            name: app.name.clone(), value: app.mem_bytes as f64,
+            color: color.opacity(1.0 - i as f32 * 0.16), app: Some((*app).clone()),
+        });
     }
-    let other: u64 = top.iter().skip(5).map(|a| a.mem_bytes).sum();
-    if other > 0 {
-        slices.push(("Other".to_string(), other as f64, palette[5]));
-    }
-    donut_card(
-        "Memory by App",
-        slices,
-        fmt_bytes(top.first().map(|a| a.mem_bytes).unwrap_or(0) as f64),
-        dark,
-    )
+    let other: f64 = top.iter().skip(4).map(|a| a.mem_bytes as f64).sum();
+    if other > 0. { slices.push(BreakdownEntry::new("Other", other, color.opacity(0.35))); }
+    donut_card("Memory by App", Tab::Memory, slices, fmt_bytes(total), "all apps", fmt_bytes, dark)
+}
+
+fn breakdown_watts(watts: f64) -> String {
+    if watts <= 0. { "0 W".into() }
+    else if watts < 0.001 { "<1 mW".into() }
+    else if watts < 1. { format!("{:.0} mW", watts * 1000.) }
+    else { fmt_watts(watts) }
 }
 
 fn power_donut(s: &Snapshot, dark: bool) -> Div {
-    let palette = [
-        Metric::Battery.accent(dark),
-        Metric::Cpu.accent(dark),
-        Metric::Disk.accent(dark),
-        Metric::Network.accent(dark),
-        Metric::Gpu.accent(dark),
-        t::card_hi(dark),
-    ];
-    let mut top: Vec<&AppGroup> = s.apps.iter().collect();
-    top.sort_by(|a, b| b.power_w.partial_cmp(&a.power_w).unwrap());
+    let color = Metric::Power.accent(dark);
+    let mut top: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w > 0.).collect();
+    top.sort_by(|a, b| b.power_w.total_cmp(&a.power_w));
+    let total: f64 = top.iter().map(|a| a.power_w).sum();
     let mut slices = Vec::new();
-    for (i, a) in top.iter().take(5).enumerate() {
-        if a.power_w > 0.01 {
-            slices.push((a.name.clone(), a.power_w, palette[i]));
-        }
+    for (i, app) in top.iter().take(4).enumerate() {
+        slices.push(BreakdownEntry {
+            name: app.name.clone(), value: app.power_w,
+            color: color.opacity(1.0 - i as f32 * 0.16), app: Some((*app).clone()),
+        });
     }
-    if slices.is_empty() {
-        slices.push(("System".to_string(), s.power_w.max(0.1), palette[5]));
-    }
-    donut_card("Power by App", slices, fmt_watts(s.power_w), dark)
+    let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
+    if other > 0. { slices.push(BreakdownEntry::new("Other", other, color.opacity(0.35))); }
+    donut_card("Power by App", Tab::Battery, slices, breakdown_watts(total), "estimated", breakdown_watts, dark)
 }
 
 // ---------- metric tabs ----------
@@ -766,7 +995,7 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
             vec![
                 ("Load average".to_string(), format!("{:.2} {:.2} {:.2}", s.load_avg[0], s.load_avg[1], s.load_avg[2])),
                 ("Processes".to_string(), format!("{}", s.proc_count)),
-                ("Uptime".to_string(), crate::engine::fmt_up(s.uptime.as_secs_f64())),
+                ("Session uptime".to_string(), crate::engine::fmt_up(s.uptime.as_secs_f64())),
             ],
             Some(100.0),
         ))
@@ -1331,9 +1560,9 @@ fn projects_tab(s: &Snapshot, dark: bool) -> Div {
                                 .flex_1()
                                 .text_sm()
                                 .child(if all_idle {
-                                    format!("{} dev servers are running but idle", total)
+                                    format!("{} dev {} {} running but idle", total, if total == 1 { "server" } else { "servers" }, if total == 1 { "is" } else { "are" })
                                 } else {
-                                    format!("{} dev servers running", total)
+                                    format!("{} dev {} running", total, if total == 1 { "server" } else { "servers" })
                                 }),
                         )
                         .child(
@@ -1347,7 +1576,7 @@ fn projects_tab(s: &Snapshot, dark: bool) -> Div {
                                 .text_color(t::warn(dark))
                                 .id("stop-all")
                                 .cursor_pointer()
-                                .child("Stop All…")
+                                .child("Stop All")
                                 .on_click(|_, _, _| {
                                     for g in latest().projects {
                                         for s in g.servers {

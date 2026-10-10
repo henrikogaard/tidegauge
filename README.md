@@ -4,7 +4,7 @@ A menu-bar system monitor for macOS, written in Rust with [gpui-kit](https://cra
 
 ## Project status
 
-Tidegauge is an early development build. This repository contains the app source and recovered development notes. Packaging, automated tests, and some controls are incomplete. See the limitations below before relying on a metric or action.
+Tidegauge is an early development build. This repository contains the app source and recovered development notes. Packaging and some controls are incomplete. Collector regression tests cover the fixes described in [CONTRIBUTING](CONTRIBUTING.md). See the limitations below before relying on a metric or action.
 
 ## Build and run
 
@@ -27,7 +27,7 @@ cargo build --release
 ./target/release/tidegauge
 ```
 
-The app opens a floating panel and adds readouts to the menu bar. It runs without a Dock icon. Click a readout to bring the panel forward. When using `cargo run`, stop the app with Ctrl-C in the launching terminal.
+The app opens a resizable dashboard and adds readouts to the menu bar. It runs without a Dock icon. Click a readout to bring the dashboard forward. Closing the window hides it while collection continues. Click the Tidegauge icon, or right-click any readout, for Open Dashboard, Settings, and Quit. Settings is also available with Command-comma, and Command-Q quits while the dashboard is focused. A per-user lock prevents duplicate instances; launching again leaves the existing app running.
 
 There is currently no bundle script, `.app` packaging, signing, or notarization workflow in this repository.
 
@@ -35,7 +35,7 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 
 | Area | Current implementation |
 |---|---|
-| Menu bar | CPU, memory, and network readouts by default; other metrics can be selected in the settings file |
+| Menu bar | CPU, memory, and network readouts by default; choose metrics and Icon, Value, Graph, or Value + graph in Settings |
 | Overview | Summary tiles and memory and power breakdowns |
 | Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, and Battery |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
@@ -47,15 +47,11 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 
 ## Current limitations
 
-- System disk throughput and per-app network rates need correction in their collectors. Treat these readouts as incomplete.
-- Project directory detection and CPU-based idle detection need correction. Project status may report idle even while a server is busy.
 - Project Stop and Stop All actions send SIGTERM immediately. They have no confirmation dialog.
 - Sound is currently a display. Volume and per-app mute controls are not connected to the UI, and the level meter is an indicative value rather than a measured signal level.
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
-- The CPU tab's uptime is time since the sampler started, rather than system uptime.
-- Menu-item styles, custom alert thresholds, and launch-at-login settings are stored but not applied. Clicking a menu item brings the panel forward; it does not hide it.
+- Custom alert thresholds and launch-at-login settings are stored but not applied. Clicking a menu item brings the panel forward; it does not hide it.
 - History is written to disk, but the panel shows in-memory charts. There is no history browser, and pruning is periodic rather than a strict 30-day cutoff.
-- There is no user-facing Quit menu. Keep the launching terminal available during development.
 
 ## Settings and local data
 
@@ -65,11 +61,14 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 | History | `~/Library/Application Support/no.ogard.tidegauge/history.db` |
 | Cached app icons | `~/Library/Caches/no.ogard.tidegauge/icons/` |
 
-The app uses defaults when the settings file is absent or cannot be parsed. There is currently no settings screen. To select menu-bar metrics, create a complete settings file such as:
+Open Settings from the app menu or with Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Changes are saved immediately and applied on the next menu-bar refresh. You can hide the Tidegauge icon while a metric is enabled; it stays visible if every metric is Off so Settings and Quit remain reachable. Graphs fall back to a metric icon until enough samples are available.
+
+The app uses defaults when the settings file is absent or cannot be parsed. You can also edit the file directly:
 
 ```json
 {
   "dark": null,
+  "show_app_icon": true,
   "menu_items": [
     { "metric": "cpu", "style": "both" },
     { "metric": "memory", "style": "value" },
@@ -87,11 +86,12 @@ History includes app names and resource usage. The sampler records headline metr
 
 ## Architecture
 
-The sampler runs on a background thread. It collects metrics into a shared `Snapshot`, which the panel and status-bar pump read. Each pass waits two seconds after its work completes; external utilities can lengthen that interval. Bluetooth collection runs every ten passes, per-app network collection every other pass, and history persistence every five passes.
+The sampler runs on a background thread. It publishes each completed `Snapshot` for the panel and status-bar pump to read without waiting for the collectors. Per-app network rates persist between network sampling passes. Each pass waits two seconds after its work completes; external utilities can lengthen that interval. Bluetooth collection runs every ten passes, per-app network collection every other pass, and history persistence every five passes.
 
 | File | Responsibility |
 |---|---|
 | `src/main.rs` | Application entry point, panel creation, status-bar pump |
+| `src/instance.rs` | Per-user process lock preventing duplicate monitors |
 | `src/app.rs` | Sampler lifecycle, shared panel handle, notifications |
 | `src/engine.rs` | Counter deltas, snapshot model, in-memory chart histories |
 | `src/ffi.rs` | Raw macOS C API declarations and layouts |
@@ -109,7 +109,7 @@ The sampler runs on a background thread. It collects metrics into a shared `Snap
 ## Development documentation
 
 - [Contributing](CONTRIBUTING.md): checks, manual verification, and review expectations.
-- [Design](DESIGN.md): colors, layout, and intended menu-bar behavior.
+- [Design](DESIGN.md): colors, layout, and menu-bar behavior.
 - [Recovery manifest](RECOVERY-MANIFEST.md): provenance of the recovered files.
 - [Historical findings](tidegauge-findings.md) and [historical test plan](tidegauge-test-plan.md): evidence from an earlier environment, not validation of the current checkout.
 

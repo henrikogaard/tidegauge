@@ -17,6 +17,24 @@ pub fn now_unix() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Process rusage CPU times are Mach ticks; normalize them before computing rates.
+pub fn mach_ticks_to_ns(ticks: u64) -> u64 {
+    static TIMEBASE: OnceLock<mach_timebase_info_data_t> = OnceLock::new();
+    let timebase = TIMEBASE.get_or_init(|| {
+        let mut info = mach_timebase_info_data_t::default();
+        if unsafe { mach_timebase_info(&mut info) } == KERN_SUCCESS && info.denom > 0 {
+            info
+        } else {
+            mach_timebase_info_data_t { numer: 1, denom: 1 }
+        }
+    });
+    ticks_to_ns(ticks, timebase.numer, timebase.denom)
+}
+
+fn ticks_to_ns(ticks: u64, numer: u32, denom: u32) -> u64 {
+    (ticks as u128 * numer as u128 / denom as u128).min(u64::MAX as u128) as u64
+}
+
 pub fn sysctl_u64(name: &str) -> Option<u64> {
     let n = CString::new(name).ok()?;
     unsafe {
@@ -358,11 +376,11 @@ pub fn entry_prop(entry: io_registry_entry_t, key: &str) -> CFTypeRef {
     v
 }
 
-// ---- IOMedia disk I/O totals ----
+// ---- Storage-driver disk I/O totals ----
 pub fn disk_io_totals() -> (u64, u64) {
     let mut read = 0u64;
     let mut write = 0u64;
-    for e in matching_services("IOMedia") {
+    for e in matching_services("IOBlockStorageDriver") {
         let stats = entry_prop(e, "Statistics");
         if !stats.is_null() {
             read += cf_to_i64(dict_get(stats as CFDictionaryRef, "Bytes (Read)"))
@@ -624,4 +642,21 @@ pub fn chip_info() -> ChipInfo {
 pub fn thermal_state() -> Option<&'static str> {
     // NSProcessInfo.thermalState: 0 Nominal 1 Fair 2 Serious 3 Critical
     None // filled in via objc2 in app layer to keep this module C-only
+}
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cpu_time_conversion_uses_the_platform_timebase() {
+        assert_eq!(super::ticks_to_ns(24_000_000, 125, 3), 1_000_000_000);
+        assert_eq!(super::ticks_to_ns(1_000_000_000, 1, 1), 1_000_000_000);
+    }
+
+    #[test]
+    #[ignore = "requires a Mac with IOBlockStorageDriver counters"]
+    fn native_disk_counters_report_activity_since_boot() {
+        let (read, write) = super::disk_io_totals();
+        assert!(read > 0 || write > 0, "no disk bytes were collected");
+    }
 }

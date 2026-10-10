@@ -20,14 +20,14 @@ pub const LIGHT: Palette = Palette {
     card: 0xf5f5f7,
     card_hi: 0xe8e8ed,
     ink: 0x1d1d1f,
-    ink_dim: 0x86868b,
+    ink_dim: 0x6b6b73,
     line: 0x000000, // used with opacity via rgba
     accent: 0x007aff,
 };
 
 pub const DARK: Palette = Palette {
-    bg: 0x131315,
-    card: 0x1f1f22,
+    bg: 0x1b1b1e,
+    card: 0x202023,
     card_hi: 0x27272b,
     ink: 0xf5f5f7,
     ink_dim: 0x86868b,
@@ -42,8 +42,8 @@ pub fn hex(c: u32) -> Hsla {
 pub fn ink(dark: bool) -> Hsla {
     hex(if dark { DARK.ink } else { LIGHT.ink })
 }
-pub fn ink_dim(_: bool) -> Hsla {
-    hex(0x86868b)
+pub fn ink_dim(dark: bool) -> Hsla {
+    hex(if dark { DARK.ink_dim } else { LIGHT.ink_dim })
 }
 pub fn card(dark: bool) -> Hsla {
     hex(if dark { DARK.card } else { LIGHT.card })
