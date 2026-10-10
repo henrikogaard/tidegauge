@@ -64,6 +64,14 @@ validate_https_url() {
 
 case "$MODE" in
     production)
+        if [ -z "${TIDEGAUGE_SPARKLE_PUBLIC_KEY:-}" ]; then
+            PUBLIC_KEY_FILE="$ROOT/packaging/sparkle-public-key.txt"
+            if [ ! -f "$PUBLIC_KEY_FILE" ]; then
+                printf 'Production public key file not found: %s\n' "$PUBLIC_KEY_FILE" >&2
+                exit 1
+            fi
+            TIDEGAUGE_SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < "$PUBLIC_KEY_FILE")"
+        fi
         validate_public_key TIDEGAUGE_SPARKLE_PUBLIC_KEY
         if [ -z "${DEVELOPER_ID_APPLICATION:-}" ]; then
             printf '%s\n' "Production packaging requires DEVELOPER_ID_APPLICATION." >&2

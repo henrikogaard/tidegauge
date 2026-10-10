@@ -4,9 +4,10 @@
 #![cfg(target_os = "macos")]
 
 use crate::engine::Snapshot;
+use crate::locale::text as l;
 #[cfg(test)]
 use crate::settings::MenuItem;
-use crate::settings::{Settings, MENU_METRICS};
+use crate::settings::{localized_metric_label, Settings, MENU_METRICS};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, ClassType};
 use objc2_app_kit::*;
@@ -45,9 +46,9 @@ fn mtm() -> MainThreadMarker {
 fn context_menu(target: &TideGaugeTarget) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm());
     for (title, action, key) in [
-        ("Open Dashboard", sel!(toggle:), ""),
-        ("Settings…", sel!(settings:), ","),
-        ("Quit Tidegauge", sel!(quit:), "q"),
+        (l("Open Dashboard", "Åpne oversikten"), sel!(toggle:), ""),
+        (l("Settings…", "Innstillinger…"), sel!(settings:), ","),
+        (l("Quit Tidegauge", "Avslutt Tidegauge"), sel!(quit:), "q"),
     ] {
         if key == "q" {
             menu.addItem(&NSMenuItem::separatorItem(mtm()));
@@ -123,14 +124,24 @@ impl StatusBar {
     pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
         let readouts = menu_readouts(settings, snap);
         let show_icon = settings.show_app_icon || readouts.is_empty();
+        let menu_hint = l(
+            "Click for Open Dashboard, Settings, and Quit.",
+            "Klikk for å åpne oversikten, innstillinger eller avslutte.",
+        );
         let description = if readouts.is_empty() {
-            "Tidegauge. Click for Open Dashboard, Settings, and Quit.".to_string()
+            format!("Tidegauge. {menu_hint}")
         } else {
             format!(
-                "Tidegauge. {}. Click for Open Dashboard, Settings, and Quit.",
+                "Tidegauge. {}. {menu_hint}",
                 readouts
                     .iter()
-                    .map(|r| format!("{} {}", r.label, r.value))
+                    .map(|r| {
+                        format!(
+                            "{} {}",
+                            localized_metric_label(r.metric).unwrap_or(l("Metric", "Måling")),
+                            r.value
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("; ")
             )

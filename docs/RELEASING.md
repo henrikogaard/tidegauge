@@ -1,8 +1,8 @@
 # Releasing Tidegauge
 
 This project packages a native macOS app bundle and uses Sparkle 2.9.6 for
-signed update checks. Packaging never publishes a GitHub release or creates a
-tag.
+signed update checks. Local packaging never publishes a GitHub release or
+creates a tag. The manual release workflow creates a tagged draft only.
 
 ## Pinned updater distribution
 
@@ -57,10 +57,13 @@ The QA feed must use HTTPS and must not be the production feed. Replace the
 example URL with a real test feed before QA; no test key or feed is stored in
 this repository.
 
-Production packaging fails closed unless these are present and valid:
+Production packaging reads its public key from the committed
+`packaging/sparkle-public-key.txt` by default. Set
+`TIDEGAUGE_SPARKLE_PUBLIC_KEY` only for an intentional key rotation or
+verification setup. Previews do not require a public key. Production packaging
+also requires a Developer ID identity:
 
 ```sh
-export TIDEGAUGE_SPARKLE_PUBLIC_KEY='<base64 32-byte Ed25519 public key>'
 export DEVELOPER_ID_APPLICATION='Developer ID Application: ...'
 ```
 
@@ -89,29 +92,76 @@ packaging/release.sh
 ```
 
 `release.sh` defaults to production and requires the production public key and
-Developer ID identity before packaging. Sparkle's appcast tool reads the
-private key from the configured keychain account, defaulting to `ed25519`, or
-from the `TIDEGAUGE_SPARKLE_PRIVATE_KEY` environment variable through standard
-input. A generated candidate appcast is accepted only if every enclosure has a
-nonempty base64 EdDSA signature decoding to 64 bytes and an enclosure matches
-the current archive's filename and byte length. Validation happens before the
-candidate can replace the final appcast or its checksum. This is structural
-validation only; it does not cryptographically verify that signatures match
-the bundle's public key. Private key material is never printed or written by
-these scripts. Set `TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT` to override the keychain
-account.
-`NOTARY_PROFILE` is optional:
+Developer ID identity before packaging. It requires `NOTARY_PROFILE`; signed,
+non-notarized output is not accepted. Sparkle's appcast tool reads the private
+key from the configured keychain account, defaulting to
+`no.ogard.tidegauge.sparkle`, or from `TIDEGAUGE_SPARKLE_PRIVATE_KEY` through
+standard input. Set `TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT` to override the
+keychain account.
+
+The release helper submits and staples the app, then validates the ticket with
+`stapler validate` and assesses it with `spctl`. It isolates the current ZIP
+as the only appcast input and generates version-specific enclosure URLs; the
+feed URL in the bundle remains the stable `releases/latest/download/appcast.xml`
+address. The candidate must pass both structural checks (a valid 64-byte
+base64 EdDSA signature on every enclosure and the current archive's filename
+and byte length) and CryptoKit signature verification against the public key
+in the packaged `Info.plist`. The final appcast and its checksum are replaced
+only after both validations succeed. Structural validation alone is not a
+cryptographic signature check.
+
+Private key material is passed to the appcast generator through standard input
+and is never printed or written by these scripts. For local notarization,
+configure a `notarytool` profile:
 
 ```sh
 export NOTARY_PROFILE='configured-notarytool-profile'
+# Optional when the profile is stored in a custom keychain:
+export NOTARY_KEYCHAIN="$HOME/Library/Keychains/tidegauge-notary.keychain-db"
 packaging/release.sh
 ```
 
-When set, the helper submits the archive to Apple's notarization service, waits
-for notarization, and staples the ticket. Without it, the output is signed but
-explicitly not notarized. The helper does not publish a GitHub release, upload
-release artifacts, or create tags. Notarization is the explicit exception that
-contacts Apple when `NOTARY_PROFILE` is configured.
+The helper does not publish a GitHub release, upload release assets, or create
+tags. Notarization contacts Apple's service when the required profile is
+configured. `NOTARY_KEYCHAIN` is optional; when supplied, it selects the
+keychain containing the notarization profile.
+
+## GitHub release workflow
+
+The `Packaging checks` workflow runs packaging Python tests and shell syntax
+checks on pull requests and pushes to `main`. It does not build Rust code or
+exercise macOS packaging and signing.
+
+The manual `Draft release` workflow can be dispatched only from `main`. It
+requires a numeric version newer than the latest published release and refuses
+to proceed if that tag or a release already exists. It checks all required
+secrets before the macOS build, asserts an Apple Silicon runner, runs the locked
+Rust tests and release build, packages and notarizes the app, and creates a
+draft release tagged `vVERSION` at the dispatched commit. The draft contains
+only the versioned ZIP and checksum plus `appcast.xml` and its checksum. The
+workflow never publishes the draft automatically.
+
+Configure these seven GitHub Actions secrets before dispatch:
+
+- `TIDEGAUGE_SPARKLE_PRIVATE_KEY`
+- `APPLE_CERTIFICATE_P12_BASE64`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `DEVELOPER_ID_APPLICATION`
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+
+The Sparkle public key is committed at `packaging/sparkle-public-key.txt`; it
+is not a secret. The workflow imports the certificate into a temporary
+keychain, grants noninteractive signing access, stores notarization credentials
+there, removes the P12 file immediately after import, and deletes the keychain
+even if the job fails.
+
+Keep a secure offline backup of the stable private key. Do not replace it
+casually: changing the key requires a planned update path for already-installed
+clients. A draft release is not evidence of production update delivery; feed
+hosting, publishing, and end-to-end update acceptance remain release-owner
+responsibilities.
 
 ## Upgrade acceptance
 

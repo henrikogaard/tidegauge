@@ -113,6 +113,24 @@ class AppcastValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(AppcastValidationError, "current archive"):
             validate_appcast(appcast, self.current_zip)
 
+    @unittest.skipUnless(
+        sys.platform == "darwin" and shutil.which("swift"),
+        "CryptoKit verifier test requires macOS and Swift; skipped on this platform",
+    )
+    def test_crypto_verifier_accepts_valid_and_rejects_tampering_or_wrong_key(self):
+        result = subprocess.run(
+            [
+                shutil.which("swift"),
+                str(REPO_ROOT / "packaging/test_verify_appcast_signatures.swift"),
+                str(REPO_ROOT / "packaging/verify_appcast_signatures.swift"),
+                shutil.which("swift"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_unsigned_generator_output_does_not_replace_existing_feed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fixture_root = Path(temp_dir) / "fixture"
@@ -155,6 +173,8 @@ class AppcastValidationTests(unittest.TestCase):
             generator = distribution / "bin/generate_appcast"
             generator.write_text(
                 f"#!{sys.executable}\n"
+                "import base64\n"
+                "import os\n"
                 "import pathlib\n"
                 "import sys\n"
                 "from urllib.parse import quote\n"
@@ -163,10 +183,12 @@ class AppcastValidationTests(unittest.TestCase):
                 "input_dir = pathlib.Path(arguments[-1])\n"
                 "archive = next(input_dir.glob('*.zip'))\n"
                 "url = quote(archive.name, safe='')\n"
+                "signature = '' if os.environ.get('TEST_UNSIGNED_GENERATOR') == '1' else base64.b64encode(bytes(range(64))).decode('ascii')\n"
+                "signature_attribute = '' if not signature else ' sparkle:edSignature=\"' + signature + '\"'\n"
                 "output.write_text(\n"
-                "    '<rss><channel><item><enclosure url=\"' + url\n"
+                "    '<rss xmlns:sparkle=\"' + 'http://www.andymatuschak.org/xml-namespaces/sparkle' + '\"><channel><item><enclosure url=\"' + url\n"
                 "    + '\" length=\"' + str(archive.stat().st_size)\n"
-                "    + '\" /></item></channel></rss>', encoding='utf-8')\n",
+                "    + '\"' + signature_attribute + ' /></item></channel></rss>', encoding='utf-8')\n",
                 encoding="utf-8",
             )
             generator.chmod(0o755)
@@ -187,6 +209,32 @@ class AppcastValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             shasum_stub.chmod(0o755)
+
+            xcrun_stub = fake_bin / "xcrun"
+            xcrun_stub.write_text(
+                "#!/bin/bash\n"
+                'printf "%s\\n" "$*" >> "$TEST_XCRUN_LOG"\n'
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            xcrun_stub.chmod(0o755)
+
+            spctl_stub = fake_bin / "spctl"
+            spctl_stub.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+            spctl_stub.chmod(0o755)
+
+            swift_stub = fake_bin / "swift"
+            swift_stub.write_text(
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                ': > "$TEST_VERIFY_MARKER"\n'
+                'if [ "${FAIL_APPCAST_SIGNATURE_VERIFICATION:-0}" = "1" ]; then\n'
+                '    printf "%s\\n" "Appcast signature verification failed" >&2\n'
+                "    exit 1\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            swift_stub.chmod(0o755)
 
             old_archive = make_archive(output_root / "Tidegauge 1.2.2.zip")
             appcast = output_root / "appcast.xml"
@@ -214,11 +262,16 @@ class AppcastValidationTests(unittest.TestCase):
                     "TIDEGAUGE_SPARKLE_PUBLIC_KEY": "test public key",
                     "TIDEGAUGE_SPARKLE_SIGNING_ACCOUNT": "test-account",
                     "TIDEGAUGE_VERSION": "1.2.3",
+                    "NOTARY_KEYCHAIN": str(fixture_root / "test-notary.keychain-db"),
+                    "NOTARY_PROFILE": "test-notary-profile",
+                    "TEST_VERIFY_MARKER": str(fixture_root / "verifier-called"),
+                    "TEST_XCRUN_LOG": str(fixture_root / "xcrun.log"),
                 }
             )
             for signing_mode in ("keychain", "private-key"):
                 with self.subTest(signing_mode=signing_mode):
                     environment = base_environment.copy()
+                    environment["TEST_UNSIGNED_GENERATOR"] = "1"
                     if signing_mode == "private-key":
                         environment["TIDEGAUGE_SPARKLE_PRIVATE_KEY"] = (
                             "test-only-dummy-private-key"
@@ -237,8 +290,92 @@ class AppcastValidationTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertIn("Appcast validation failed", result.stderr)
                     self.assertEqual(appcast.read_bytes(), previous_feed)
-                    self.assertEqual(checksum.read_bytes(), previous_checksum)
-                    self.assertEqual(list(output_root.glob(".appcast.*")), [])
+                self.assertEqual(checksum.read_bytes(), previous_checksum)
+                self.assertEqual(list(output_root.glob(".release.*")), [])
+                self.assertEqual(list(output_root.glob(".notary.*")), [])
+
+            with self.subTest(success="validated appcast and relative ZIP checksum"):
+                environment = base_environment.copy()
+                environment["TEST_UNSIGNED_GENERATOR"] = "0"
+                Path(environment["TEST_XCRUN_LOG"]).write_text("", encoding="utf-8")
+                zip_path = output_root / "Tidegauge-1.2.3.zip"
+                zip_checksum = output_root / f"{zip_path.name}.sha256"
+                result = subprocess.run(
+                    ["/bin/bash", str(packaging / "release.sh")],
+                    cwd=fixture_root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(appcast.read_bytes(), previous_feed)
+                validate_appcast(appcast, zip_path)
+                self.assertEqual(
+                    zip_checksum.read_text(encoding="utf-8"),
+                    f"mock-checksum  {zip_path.name}\n",
+                )
+                self.assertNotIn(str(output_root), zip_checksum.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    list(output_root.glob(".release.*")),
+                    [],
+                )
+                self.assertEqual(
+                    list(output_root.glob(".notary.*")),
+                    [],
+                )
+                self.assertIn(
+                    f"--keychain {environment['NOTARY_KEYCHAIN']}",
+                    Path(environment["TEST_XCRUN_LOG"]).read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    checksum.read_text(encoding="utf-8"),
+                    "mock-checksum  appcast.xml\n",
+                )
+
+            appcast.write_bytes(previous_feed)
+            checksum.write_bytes(previous_checksum)
+            with self.subTest(failure="missing notarization profile"):
+                environment = base_environment.copy()
+                environment.pop("NOTARY_PROFILE")
+                Path(environment["TEST_VERIFY_MARKER"]).unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["/bin/bash", str(packaging / "release.sh")],
+                    cwd=fixture_root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("NOTARY_PROFILE", result.stderr)
+                self.assertEqual(appcast.read_bytes(), previous_feed)
+                self.assertEqual(checksum.read_bytes(), previous_checksum)
+                self.assertFalse(Path(environment["TEST_VERIFY_MARKER"]).exists())
+
+            appcast.write_bytes(previous_feed)
+            checksum.write_bytes(previous_checksum)
+            with self.subTest(failure="signature verification"):
+                environment = base_environment.copy()
+                environment["TEST_UNSIGNED_GENERATOR"] = "0"
+                environment["FAIL_APPCAST_SIGNATURE_VERIFICATION"] = "1"
+                marker = Path(environment["TEST_VERIFY_MARKER"])
+                marker.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["/bin/bash", str(packaging / "release.sh")],
+                    cwd=fixture_root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("Appcast signature verification failed", result.stderr)
+                self.assertTrue(marker.exists())
+                self.assertEqual(appcast.read_bytes(), previous_feed)
+                self.assertEqual(checksum.read_bytes(), previous_checksum)
+                self.assertEqual(list(output_root.glob(".release.*")), [])
+                self.assertEqual(list(output_root.glob(".notary.*")), [])
 
 
 if __name__ == "__main__":

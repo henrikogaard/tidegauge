@@ -487,7 +487,7 @@ impl Render for TideGaugeView {
                         }
                     })
                     .on_click(move |_, _, cx| select_tab(&back, tab, cx)))
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Settings"))
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Settings", "Innstillinger")))
                 .into_any_element()
         } else { topbar.into_any_element() };
 
@@ -502,13 +502,13 @@ impl Render for TideGaugeView {
                 .child({
                     let click_target = this.clone();
                     let key_target = this.clone();
-                    div().id("dashboard-settings").role(Role::Button).aria_label("Settings")
+                    div().id("dashboard-settings").role(Role::Button).aria_label(l("Settings", "Innstillinger"))
                         .tab_index(11).flex().items_center().gap_1().px_2().py_1().rounded_md()
                         .cursor_pointer().text_xs().text_color(t::ink_dim(dark))
                         .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
                         .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
                         .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
-                        .child("Settings")
+                        .child(l("Settings", "Innstillinger"))
                         .on_click(move |_, _, cx| open_settings(&click_target, cx))
                         .on_key_down(move |event, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -522,7 +522,13 @@ impl Render for TideGaugeView {
                 div()
                     .text_size(px(10.))
                     .text_color(t::ink_dim(dark))
-                    .child(format!("{} apps · {} processes", s.app_count, s.proc_count)),
+                    .child(format!(
+                        "{} {} · {} {}",
+                        s.app_count,
+                        l("apps", "apper"),
+                        s.proc_count,
+                        l("processes", "prosesser")
+                    )),
             );
 
         let content = div()
@@ -623,7 +629,13 @@ fn update_preference(
 ) {
     let result = crate::settings::mutate(change);
     this.update(cx, |view, cx| {
-        view.settings_error = result.err().map(|error| format!("Could not save settings: {error}"));
+        view.settings_error = result.err().map(|_| {
+            l(
+                "Settings could not be saved. Try again.",
+                "Innstillingene kunne ikke lagres. Prøv igjen.",
+            )
+            .to_string()
+        });
         cx.notify();
     });
 }
@@ -657,30 +669,47 @@ fn settings_choice(
 }
 
 fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) -> Div {
-    use crate::settings::{Settings, MENU_METRICS, MENU_STYLES};
+    use crate::settings::{
+        localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
+    };
     let settings = Settings::load();
     let mut panel = div().flex().flex_col().gap_4()
-        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child("Menu bar"))
+        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(l("Menu bar", "Menylinje")))
         .child(div().text_sm().text_color(t::ink_dim(dark))
-            .child("One compact menu-bar item. Add readings below, or keep just the Tidegauge icon."));
+            .child(l(
+                "One compact menu-bar item. Add readings below, or keep just the Tidegauge icon.",
+                "Ett kompakt menylinjeelement. Legg til målinger nedenfor, eller behold bare Tidegauge-ikonet.",
+            )));
     if let Some(error) = error {
         panel = panel.child(div().text_sm().text_color(t::warn(dark)).child(error.to_string()));
     }
+    let icon_name = l("Tidegauge icon", "Tidegauge-ikon");
     panel = panel.child(card(dark).flex_row().items_center().justify_between()
         .child(div().flex_1()
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Tidegauge icon"))
-            .child(div().text_xs().text_color(t::ink_dim(dark)).child("Open the app menu with one click.")))
-        .child(div().id("launcher-options").role(Role::RadioGroup).aria_label("Tidegauge icon")
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(icon_name))
+            .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
+                "Open the app menu with one click.",
+                "Åpne appmenyen med ett klikk.",
+            ))))
+        .child(div().id("launcher-options").role(Role::RadioGroup).aria_label(l("Tidegauge icon", "Tidegauge-ikon"))
             .tab_group().flex().gap_2()
-            .children([(true, "Shown"), (false, "Hidden")].into_iter().enumerate().map(|(i, (shown, label))| {
-                settings_choice(format!("launcher-{shown}"), label, format!("Tidegauge icon: {label}"),
+            .children([
+                (true, l("Shown", "Vises")),
+                (false, l("Hidden", "Skjult")),
+            ].into_iter().enumerate().map(|(i, (shown, label))| {
+                settings_choice(format!("launcher-{shown}"), label, format!("{icon_name}: {label}"),
                     settings.show_app_icon == shown, i as isize, dark, this.clone(),
                     move |settings| settings.show_app_icon = shown)
             }))));
-    let rows = MENU_METRICS.iter().enumerate().map(|(row, &(key, name))| {
+    let rows = MENU_METRICS.iter().enumerate().map(|(row, &(key, _))| {
+        let name = localized_metric_label(key).expect("menu metric has a localized label");
         let selected = settings.menu_items.iter().find(|item| item.metric == key)
             .map(|item| item.style.as_str()).unwrap_or("off");
-        let choices = std::iter::once(("off", "Off")).chain(MENU_STYLES);
+        let choices = std::iter::once(("off", l("Off", "Av"))).chain(
+            MENU_STYLES
+                .iter()
+                .map(|(style, _)| (*style, localized_style_label(style).expect("menu style has a localized label"))),
+        );
         div().id(SharedString::from(format!("settings-{key}")))
             .role(Role::RadioGroup).aria_label(name).tab_group()
             .flex().items_center().justify_between().gap_4().py_2()
@@ -694,15 +723,18 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
     }).collect::<Vec<_>>();
     panel.child(card(dark).gap_0().py_1().children(rows))
         .child(div().text_xs().text_color(t::ink_dim(dark))
-            .child("Click the menu-bar item for Open Dashboard, Settings, or Quit. Changes are saved immediately."))
+            .child(l(
+                "Click the menu-bar item for Open Dashboard, Settings, or Quit. Changes are saved immediately.",
+                "Klikk på menylinjeelementet for å åpne oversikten, endre innstillinger eller avslutte. Endringer lagres med en gang.",
+            )))
         .child(div().flex().justify_end().gap_3()
             .child({
                 let click_target = this.clone();
                 let key_target = this.clone();
-                div().id("settings-icon-only").role(Role::Button).aria_label("Reset to icon only")
+                div().id("settings-icon-only").role(Role::Button).aria_label(l("Reset to icon only", "Tilbakestill til bare ikon"))
                     .tab_index(29).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
                     .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                    .child("Reset to icon only")
+                    .child(l("Reset to icon only", "Tilbakestill til bare ikon"))
                     .on_key_down(move |event, _, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             update_preference(&key_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, cx);
@@ -711,10 +743,10 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                     })
                     .on_click(move |_, _, cx| update_preference(&click_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, cx))
             })
-            .child(div().id("settings-app-menu").role(Role::Button).aria_label("App menu")
+            .child(div().id("settings-app-menu").role(Role::Button).aria_label(l("App menu", "Appmeny"))
                 .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
                 .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                .child("App menu")
+                .child(l("App menu", "Appmeny"))
                 .on_key_down(|event, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -722,10 +754,10 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                     }
                 })
                 .on_click(|_, _, _| crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst)))
-            .child(div().id("settings-quit").role(Role::Button).aria_label("Quit Tidegauge")
+            .child(div().id("settings-quit").role(Role::Button).aria_label(l("Quit Tidegauge", "Avslutt Tidegauge"))
                 .tab_index(31).rounded_md().px_4().py_2().bg(t::card_hi(dark))
                 .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                .child("Quit Tidegauge")
+                .child(l("Quit Tidegauge", "Avslutt Tidegauge"))
                 .on_key_down(|event, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.quit(); }
                 })
@@ -782,7 +814,12 @@ fn overview_card(
     let keyboard_target = this.clone();
     div().id(SharedString::from(format!("overview-{}", tab.label())))
         .role(Role::Button)
-        .aria_label(SharedString::from(format!("{}: {}. Open details", tab.label(), value)))
+        .aria_label(SharedString::from(format!(
+            "{}: {}. {}",
+            tab.label(),
+            value,
+            l("Open details", "Åpne detaljer")
+        )))
         .tab_index(20 + tab as isize)
         .border_1().border_color(gpui_kit::transparent_black())
         .focus_visible(|d| d.border_color(color))
