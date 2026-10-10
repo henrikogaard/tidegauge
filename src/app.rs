@@ -80,8 +80,7 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, view: &gpui_kit::E
     }
     let settings = Settings::load();
     let snap = crate::engine::latest();
-    let dark = crate::statusbar::menu_bar_dark();
-    bar.sync(&settings, &snap, dark);
+    bar.sync(&settings, &snap);
     for a in drain_alerts() {
         notify(&a.message);
     }

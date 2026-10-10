@@ -486,7 +486,26 @@ impl Render for TideGaugeView {
             .px_3()
             .py_1()
             .flex()
-            .justify_end()
+            .items_center()
+            .justify_between()
+            .child({
+                let click_target = this.clone();
+                let key_target = this.clone();
+                div().id("dashboard-settings").role(Role::Button).aria_label("Settings")
+                    .tab_index(11).flex().items_center().gap_1().px_2().py_1().rounded_md()
+                    .cursor_pointer().text_xs().text_color(t::ink_dim(dark))
+                    .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
+                    .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
+                    .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
+                    .child("Settings")
+                    .on_click(move |_, _, cx| open_settings(&click_target, cx))
+                    .on_key_down(move |event, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            open_settings(&key_target, cx);
+                            cx.stop_propagation();
+                        }
+                    })
+            })
             .child(
                 div()
                     .text_size(px(10.))
@@ -540,6 +559,15 @@ impl Render for TideGaugeView {
             .child(content)
             .child(footer)
     }
+}
+
+fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
+    this.update(cx, |view, cx| {
+        view.show_settings = true;
+        view.scroll = ScrollHandle::new();
+        view.settings_error = None;
+        cx.notify();
+    });
 }
 
 fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
@@ -622,7 +650,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
     let mut panel = div().flex().flex_col().gap_4()
         .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child("Menu bar"))
         .child(div().text_sm().text_color(t::ink_dim(dark))
-            .child("Choose which readings appear in the menu bar. Changes are saved immediately."));
+            .child("One compact menu-bar item. Add readings below, or keep just the Tidegauge icon."));
     if let Some(error) = error {
         panel = panel.child(div().text_sm().text_color(t::warn(dark)).child(error.to_string()));
     }
@@ -654,8 +682,23 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
     }).collect::<Vec<_>>();
     panel.child(card(dark).gap_0().py_1().children(rows))
         .child(div().text_xs().text_color(t::ink_dim(dark))
-            .child("Right-click any reading for Settings or Quit. At least one menu item stays visible."))
+            .child("Click the menu-bar item for Open Dashboard, Settings, or Quit. Changes are saved immediately."))
         .child(div().flex().justify_end().gap_3()
+            .child({
+                let click_target = this.clone();
+                let key_target = this.clone();
+                div().id("settings-icon-only").role(Role::Button).aria_label("Reset to icon only")
+                    .tab_index(29).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
+                    .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))
+                    .child("Reset to icon only")
+                    .on_key_down(move |event, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            update_preference(&key_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, cx);
+                            cx.stop_propagation();
+                        }
+                    })
+                    .on_click(move |_, _, cx| update_preference(&click_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, cx))
+            })
             .child(div().id("settings-app-menu").role(Role::Button).aria_label("App menu")
                 .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
                 .text_sm().cursor_pointer().focus_visible(|d| d.border_color(hex_acc()))

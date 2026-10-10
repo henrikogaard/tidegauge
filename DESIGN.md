@@ -48,7 +48,9 @@ Overview bar charts display at most 48 real samples and leave unfilled history s
 
 ## Menu bar
 
-- Settings selects enabled metrics and `icon`, `value`, `graph`, or `both` styles. Changes persist in `settings.json` and apply on the next refresh. Sparklines are 34×16 `NSImage` drawings, with a 1.2 px stroke and the last 60 samples. A metric icon fills the graph slot until samples are available.
-- The Tidegauge icon opens a native menu with Open Dashboard, Settings, and Quit. Right-click or Control-click any metric to open the same menu. At least one menu item remains visible, including when all metrics and the optional icon are disabled.
-- Command-comma opens Settings; Command-Q quits from the dashboard. A per-user file lock prevents duplicate monitors. Settings provides keyboard-accessible choices and reports persistence errors.
-- Click a readout to bring the panel forward. Hiding the panel on a second click is not implemented.
+- Exactly one native `NSStatusItem` stays registered. Its default content is a 16 px Tidegauge wave icon. Clicking anywhere opens Open Dashboard, Settings, and Quit.
+- Readings are opt-in through Settings, with `icon`, `value`, `graph`, and `both` styles. Existing preferences are preserved; Reset to icon only clears optional readings.
+- Enabled metrics share one transparent template image. Labels use 9 px system medium, values use 11 px system medium with monospaced digits, and slots have fixed widths. Spacing between readings is 10 px. Native template tint follows the menu bar and selected state.
+- Value and graph readings include CPU, MEM, GPU, DSK, NET, BAT, or PWR labels. Sparklines are 24×10 px with a 1 px stroke and at most 60 real samples. Missing samples show a dash.
+- The icon remains visible when all readings are off, even if its preference is Hidden. The native item is removed when the monitor exits.
+- Every dashboard tab has a labeled, keyboard-accessible Settings button in the footer. Command-comma also opens Settings; global Command-Q quits from the dashboard. A per-user file lock prevents duplicate monitors. Settings provides keyboard-accessible choices and reports persistence errors.

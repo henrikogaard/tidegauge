@@ -19,12 +19,32 @@ const SERVER_NAMES: &[&str] = &[
 ];
 
 fn likely_server(comm: &str, exe: &str) -> bool {
-    let n = comm.to_lowercase();
-    if SERVER_NAMES.iter().any(|s| n.contains(s)) {
-        return true;
+    let executable = std::path::Path::new(exe).file_name().and_then(|name| name.to_str()).unwrap_or("");
+    [comm, executable].iter().any(|name| {
+        let name = name.to_lowercase();
+        SERVER_NAMES.contains(&name.as_str()) || name.strip_prefix("python")
+            .is_some_and(|version| !version.is_empty()
+                && version.chars().all(|ch| ch.is_ascii_digit() || ch == '.'))
+    })
+}
+
+fn development_project(process: &ProcInfo, cwd: &str, current_uid: u32) -> Option<String> {
+    // macOS framework Python runs its CLI through an interpreter bundle.
+    let framework_python = process.exe_path.ends_with("/Resources/Python.app/Contents/MacOS/Python")
+        && std::path::Path::new(&process.exe_path).components()
+            .any(|part| part.as_os_str() == "Python.framework");
+    if process.uid != current_uid || (bundle_root(&process.exe_path).is_some() && !framework_python) {
+        return None;
     }
-    let e = exe.to_lowercase();
-    e.contains("node_modules") || e.contains(".bun") || e.contains("/bin/vite")
+    let root = project_root(cwd)?;
+    // A custom server executable built inside the project is also eligible.
+    if likely_server(&process.comm, &process.exe_path)
+        || std::path::Path::new(&process.exe_path).starts_with(&root)
+    {
+        Some(root)
+    } else {
+        None
+    }
 }
 
 /// pid -> set of listening TCP ports, via `lsof` (batch, cached per tick).
@@ -82,17 +102,13 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
     let idle_map = IDLE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut seen_servers: HashSet<i32> = HashSet::new();
     let mut dirs: HashMap<String, Vec<DevServer>> = HashMap::new();
+    let current_uid = unsafe { libc::geteuid() };
 
     for (pid, ports) in &listeners {
         let Some(p) = procs.iter().find(|p| p.pid == *pid) else { continue };
-        // keep only user-space dev processes (skip system daemons by uid/path)
-        if !likely_server(&p.comm, &p.exe_path) && !p.exe_path.contains("/Users/") {
-            continue;
-        }
-        seen_servers.insert(*pid);
         let cwd = proc_cwd(*pid);
-        let dir = if cwd.is_empty() { "~".into() } else { cwd };
-        let group_key = project_root(&dir);
+        let Some(group_key) = development_project(p, &cwd, current_uid) else { continue };
+        seen_servers.insert(*pid);
         let mut im = idle_map.lock().unwrap();
         let e = im.entry(*pid).or_insert(IdleTrack { since: Instant::now(), cpu: p.cpu_pct });
         if p.cpu_pct > 8.0 {
@@ -151,19 +167,23 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
     groups
 }
 
-/// Collapse a cwd to its project root (nearest dir containing .git or
-/// package.json within 4 levels), else the dir itself.
-fn project_root(dir: &str) -> String {
+/// Require a project marker near the cwd; arbitrary listeners are not projects.
+fn project_root(dir: &str) -> Option<String> {
     let mut d = std::path::PathBuf::from(dir);
+    if !d.is_absolute() { return None; }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     for _ in 0..4 {
-        if d.join(".git").exists() || d.join("package.json").exists() {
-            return d.to_string_lossy().to_string();
+        if d.parent().is_none() || home.as_deref() == Some(d.as_path()) { break; }
+        if [".git", "package.json", "Cargo.toml", "pyproject.toml", "go.mod", "Gemfile", "composer.json"]
+            .iter().any(|marker| d.join(marker).exists())
+        {
+            return Some(d.to_string_lossy().to_string());
         }
         if !d.pop() {
             break;
         }
     }
-    dir.to_string()
+    None
 }
 
 pub fn kill_pid(pid: i32) {
@@ -258,6 +278,48 @@ fn csv_fields(line: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_process_names_do_not_match_short_runtime_substrings() {
+        assert!(!likely_server("LogoSync", "/Applications/Example.app/Contents/MacOS/LogoSync"));
+        assert!(!likely_server("JavaScriptEditor", "/Users/example/Applications/Editor"));
+        assert!(likely_server("node", "/opt/bin/node"));
+        assert!(likely_server("python3.12", "/opt/bin/python3.12"));
+    }
+
+    #[test]
+    fn projects_require_markers_and_exclude_desktop_bundles_and_other_users() {
+        let temporary = std::env::temp_dir().join(format!("tidegauge-project-test-{}", std::process::id()));
+        std::fs::create_dir_all(temporary.join("workspace/src")).unwrap();
+        let root = temporary.join("workspace");
+        std::fs::write(root.join("Cargo.toml"), "").unwrap();
+        let cwd = root.join("src").to_string_lossy().into_owned();
+        let mut process = ProcInfo { uid: 501, comm: "node".into(), exe_path: "/opt/bin/node".into(), ..Default::default() };
+        assert_eq!(development_project(&process, &cwd, 501), Some(root.to_string_lossy().into_owned()));
+        assert_eq!(development_project(&process, temporary.to_str().unwrap(), 501), None);
+        assert_eq!(development_project(&process, "/", 501), None);
+        assert_eq!(development_project(&process, "", 501), None);
+        assert_eq!(development_project(&process, "~", 501), None);
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(development_project(&process, &home.to_string_lossy(), 501), None);
+        }
+        assert_eq!(development_project(&process, &cwd, 502), None);
+        process.exe_path = "/Users/example/Applications/Example.app/Contents/MacOS/node".into();
+        assert_eq!(development_project(&process, &cwd, 501), None);
+        process.comm = "Python".into();
+        process.exe_path = "/opt/lib/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python".into();
+        assert!(development_project(&process, &cwd, 501).is_some());
+        process.exe_path = "/Applications/Python.app/Contents/MacOS/Python".into();
+        assert_eq!(development_project(&process, &cwd, 501), None);
+        process.comm = "LogoSync".into();
+        process.exe_path = "/Users/example/bin/LogoSync".into();
+        assert_eq!(development_project(&process, &cwd, 501), None);
+        process.exe_path = root.join("target/debug/custom-server").to_string_lossy().into_owned();
+        assert!(development_project(&process, &cwd, 501).is_some());
+        process.exe_path = format!("{}-other/server", root.display());
+        assert_eq!(development_project(&process, &cwd, 501), None);
+        std::fs::remove_dir_all(temporary).unwrap();
+    }
 
     #[test]
     fn csv_parser_accepts_native_header_and_trailing_empty_column() {

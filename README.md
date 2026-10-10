@@ -27,7 +27,7 @@ cargo build --release
 ./target/release/tidegauge
 ```
 
-The app opens a resizable dashboard and adds readouts to the menu bar. It runs without a Dock icon. Click a readout to bring the dashboard forward. Closing the window hides it while collection continues. Click the Tidegauge icon, or right-click any readout, for Open Dashboard, Settings, and Quit. Settings is also available with Command-comma, and Command-Q quits while the dashboard is focused. A per-user lock prevents duplicate instances; launching again leaves the existing app running.
+The app opens a resizable dashboard and adds one item to the menu bar. It runs without a Dock icon. Click the menu-bar item and choose Open Dashboard to bring it forward. Closing the window hides it while collection continues. The single menu-bar item opens a native menu with Open Dashboard, Settings, and Quit. Every dashboard tab has a Settings button in the footer. Command-comma also opens Settings, and Command-Q quits while the dashboard is focused. A per-user lock prevents duplicate instances; launching again leaves the existing app running.
 
 There is currently no bundle script, `.app` packaging, signing, or notarization workflow in this repository.
 
@@ -35,13 +35,13 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 
 | Area | Current implementation |
 |---|---|
-| Menu bar | CPU, memory, and network readouts by default; choose metrics and Icon, Value, Graph, or Value + graph in Settings |
+| Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
 | Overview | Summary tiles and memory and power breakdowns |
 | Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, and Battery |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
 | Sound | Output device and volume display, plus process audio state |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
-| Projects | Listening processes grouped by project directory, with Stop actions |
+| Projects | Development listeners owned by the current user, grouped by project directory, with Stop actions |
 | History | SQLite samples of headline metrics and up to 60 apps, with a 30-day retention target |
 | Alerts | Notifications for sustained CPU, memory, disk, and network thresholds, with a shared 10-minute cooldown |
 
@@ -50,8 +50,10 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 - Project Stop and Stop All actions send SIGTERM immediately. They have no confirmation dialog.
 - Sound is currently a display. Volume and per-app mute controls are not connected to the UI, and the level meter is an indicative value rather than a measured signal level.
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
-- Custom alert thresholds and launch-at-login settings are stored but not applied. Clicking a menu item brings the panel forward; it does not hide it.
+- Custom alert thresholds and launch-at-login settings are stored but not applied. Closing the dashboard hides it while collection continues.
 - History is written to disk, but the panel shows in-memory charts. There is no history browser, and pruning is periodic rather than a strict 30-day cutoff.
+
+Projects requires a working directory within four levels of a Git root or a recognized manifest (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, or `composer.json`). Known development runtimes and custom executables inside that project qualify. Desktop app bundles, other users' processes, root/home directories, and listeners without a project marker are excluded. Servers launched from unrelated folders will not appear.
 
 ## Settings and local data
 
@@ -61,7 +63,9 @@ There is currently no bundle script, `.app` packaging, signing, or notarization 
 | History | `~/Library/Application Support/no.ogard.tidegauge/history.db` |
 | Cached app icons | `~/Library/Caches/no.ogard.tidegauge/icons/` |
 
-Open Settings from the app menu or with Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Changes are saved immediately and applied on the next menu-bar refresh. You can hide the Tidegauge icon while a metric is enabled; it stays visible if every metric is Off so Settings and Quit remain reachable. Graphs fall back to a metric icon until enough samples are available.
+Open Settings using the dashboard footer, the app menu, or Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Optional readings appear together in one native item, with labels for values and graphs, consistent spacing, and fixed widths for changing values. Changes are saved immediately and applied on the next refresh. Use Reset to icon only to clear extra readings. Existing preferences are preserved on upgrade.
+
+You can hide the Tidegauge icon while a metric is enabled; it stays visible if every metric is Off so Settings and Quit remain reachable. Graphs show a dash until enough samples are available. K/s, M/s, G/s, and T/s are byte rates using powers of 1024.
 
 The app uses defaults when the settings file is absent or cannot be parsed. You can also edit the file directly:
 
@@ -69,11 +73,7 @@ The app uses defaults when the settings file is absent or cannot be parsed. You 
 {
   "dark": null,
   "show_app_icon": true,
-  "menu_items": [
-    { "metric": "cpu", "style": "both" },
-    { "metric": "memory", "style": "value" },
-    { "metric": "network", "style": "value" }
-  ],
+  "menu_items": [],
   "alert_cpu_pct": 90.0,
   "alert_mem_pct": 92.0,
   "launch_at_login": false

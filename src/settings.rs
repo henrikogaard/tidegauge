@@ -27,11 +27,7 @@ impl Default for Settings {
         Settings {
             dark: None,
             show_app_icon: true,
-            menu_items: vec![
-                MenuItem { metric: "cpu".into(), style: "both".into() },
-                MenuItem { metric: "memory".into(), style: "value".into() },
-                MenuItem { metric: "network".into(), style: "value".into() },
-            ],
+            menu_items: Vec::new(),
             alert_cpu_pct: 90.0,
             alert_mem_pct: 92.0,
             launch_at_login: false,
@@ -94,6 +90,13 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_menu_bar_is_icon_only() {
+        let settings = Settings::default();
+        assert!(settings.show_app_icon);
+        assert!(settings.menu_items.is_empty());
+    }
 
     #[test]
     fn old_settings_keep_defaults_and_metric_changes_do_not_duplicate_items() {
