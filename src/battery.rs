@@ -279,6 +279,17 @@ mod tests {
     }
 
     #[test]
+    fn cfnumber_preserves_unsigned_current_bit_patterns() {
+        use objc2_foundation::NSNumber;
+        for raw in [u64::MAX - 999, u32::MAX as u64 - 999] {
+            let number = NSNumber::numberWithUnsignedLongLong(raw);
+            let value = cf_to_i64((&*number as *const NSNumber).cast()).and_then(signed_current);
+            assert_eq!(value, Some(-1000));
+            assert_eq!(terminal_power(value, Some(12000)), Some(-12.0));
+        }
+    }
+
+    #[test]
     fn battery_percent_rejects_unknown_and_out_of_range() {
         assert_eq!(percentage(80, 100), Some(80.0));
         assert_eq!(percentage(0, 100), Some(0.0));
