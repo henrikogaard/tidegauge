@@ -314,7 +314,21 @@ mod tests {
     fn native_keepawake_assertion_round_trip() {
         start(Some(Duration::from_secs(1))).unwrap();
         assert!(status().active);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while status().active && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let expired = status();
+        assert!(!expired.active);
+        assert!(expired.error.is_none());
+
+        start(None).unwrap();
+        let indefinite = status();
+        assert!(indefinite.active);
+        assert_eq!(indefinite.remaining, None);
         stop().unwrap();
-        assert!(!status().active);
+        let stopped = status();
+        assert!(!stopped.active);
+        assert!(stopped.error.is_none());
     }
 }

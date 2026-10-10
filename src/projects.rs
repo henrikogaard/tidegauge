@@ -46,6 +46,7 @@ const SERVER_NAMES: &[&str] = &[
     "http-server",
     "serve",
 ];
+const PROCESS_STATUS_ZOMBIE: u32 = 5;
 
 fn likely_server(comm: &str, exe: &str) -> bool {
     let executable = std::path::Path::new(exe)
@@ -167,6 +168,12 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
         let Some(group_key) = development_project(p, &cwd, current_uid) else {
             continue;
         };
+        let group_key = canonical_project(&group_key)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or(group_key);
+        let recorded_cwd = canonical_project(&cwd)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cwd.clone());
         seen_servers.insert(*pid);
         let mut im = idle_map.lock().unwrap();
         let e = im.entry(*pid).or_insert(IdleTrack {
@@ -196,6 +203,8 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
                     .file_name()
                     .map(|x| x.to_string_lossy().to_string())
                     .unwrap_or_else(|| p.comm.clone()),
+                exe_path: p.exe_path.clone(),
+                cwd: recorded_cwd.clone(),
                 runtime: runtime_of(&p.comm, &p.exe_path),
                 port: *port,
                 status: status.clone(),
@@ -386,6 +395,10 @@ fn refused(target: &StopTarget, english: &'static str, norwegian: &'static str) 
     )
 }
 
+fn refusal(english: &'static str, norwegian: &'static str) -> StopOutcome {
+    StopOutcome::Refused(crate::locale::text(english, norwegian).into())
+}
+
 fn process_comm(info: &crate::ffi::proc_bsdinfo) -> String {
     unsafe {
         std::ffi::CStr::from_ptr(info.pbi_comm.as_ptr())
@@ -418,8 +431,12 @@ fn target_ports(target: &StopTarget) -> Vec<u16> {
 fn same_identity(left: &StopTarget, right: &StopTarget) -> bool {
     left.server.pid == right.server.pid
         && left.server.name == right.server.name
+        && left.server.exe_path == right.server.exe_path
+        && left.server.cwd == right.server.cwd
         && left.server.up_since == right.server.up_since
-        && canonical_project(&left.project_dir) == canonical_project(&right.project_dir)
+        && canonical_project(&left.project_dir)
+            .zip(canonical_project(&right.project_dir))
+            .is_some_and(|(left, right)| left == right)
 }
 
 fn canonical_project(project: &str) -> Option<std::path::PathBuf> {
@@ -439,6 +456,57 @@ fn kill_probe(pid: i32) -> Result<bool, StopOutcome> {
         libc::EPERM => Err(StopOutcome::Permission),
         error => Err(StopOutcome::Error(error)),
     }
+}
+
+fn validate_process_identity(
+    target: &StopTarget,
+    info: &crate::ffi::proc_bsdinfo,
+    project: &std::path::Path,
+) -> Result<(), StopOutcome> {
+    if !matches_server(&target.server, info, unsafe { libc::geteuid() }) {
+        return Err(refusal(
+            "the process identity no longer matches.",
+            "prosessidentiteten samsvarer ikke lenger.",
+        ));
+    }
+    let path = proc_path(target.server.pid);
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy());
+    if path.is_empty()
+        || path != target.server.exe_path
+        || name.as_deref() != Some(target.server.name.as_str())
+    {
+        return Err(refusal(
+            "the executable identity no longer matches.",
+            "den kjørbare identiteten samsvarer ikke lenger.",
+        ));
+    }
+    let cwd = canonical_project(&proc_cwd(target.server.pid));
+    let recorded_cwd = canonical_project(&target.server.cwd);
+    let Some(cwd) = cwd else {
+        return Err(refusal(
+            "the process working directory is unavailable.",
+            "arbeidsmappen til prosessen er ikke tilgjengelig.",
+        ));
+    };
+    if recorded_cwd.as_ref() != Some(&cwd) {
+        return Err(refusal(
+            "the process working directory no longer matches.",
+            "arbeidsmappen til prosessen samsvarer ikke lenger.",
+        ));
+    }
+    let process = process_info(target.server.pid, info, path);
+    let discovered_project =
+        development_project(&process, &cwd.to_string_lossy(), unsafe { libc::geteuid() })
+            .and_then(|root| canonical_project(&root));
+    if discovered_project.as_deref() != Some(project) {
+        return Err(refusal(
+            "the process is not a recognized development server in the selected project.",
+            "prosessen er ikke en gjenkjent utviklingsserver i det valgte prosjektet.",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_target(target: &StopTarget) -> Result<crate::ffi::proc_bsdinfo, StopOutcome> {
@@ -473,60 +541,7 @@ fn validate_target(target: &StopTarget) -> Result<crate::ffi::proc_bsdinfo, Stop
             Err(outcome) => outcome,
         });
     };
-    if !matches_server(&target.server, &info, unsafe { libc::geteuid() }) {
-        return Err(StopOutcome::Refused(
-            crate::locale::text(
-                "the process identity no longer matches.",
-                "prosessidentiteten samsvarer ikke lenger.",
-            )
-            .into(),
-        ));
-    }
-    let path = proc_path(target.server.pid);
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy());
-    if path.is_empty() || name.as_deref() != Some(target.server.name.as_str()) {
-        return Err(StopOutcome::Refused(
-            crate::locale::text(
-                "the executable identity no longer matches.",
-                "den kjørbare identiteten samsvarer ikke lenger.",
-            )
-            .into(),
-        ));
-    }
-    let cwd = canonical_project(&proc_cwd(target.server.pid));
-    let Some(cwd) = cwd else {
-        return Err(StopOutcome::Refused(
-            crate::locale::text(
-                "the process working directory is unavailable.",
-                "arbeidsmappen til prosessen er utilgjengelig.",
-            )
-            .into(),
-        ));
-    };
-    if cwd != project {
-        return Err(StopOutcome::Refused(
-            crate::locale::text(
-                "the process is no longer in the selected project.",
-                "prosessen er ikke lenger i det valgte prosjektet.",
-            )
-            .into(),
-        ));
-    }
-    let process = process_info(target.server.pid, &info, path);
-    let expected_project = project.to_string_lossy().to_string();
-    if development_project(&process, &cwd.to_string_lossy(), unsafe { libc::geteuid() }).as_deref()
-        != Some(expected_project.as_str())
-    {
-        return Err(StopOutcome::Refused(
-            crate::locale::text(
-                "the process is not a recognized development server.",
-                "prosessen er ikke en gjenkjent utviklingsserver.",
-            )
-            .into(),
-        ));
-    }
+    validate_process_identity(target, &info, &project)?;
     let ports = listening_ports();
     if !target_ports(target).iter().any(|port| {
         ports
@@ -564,8 +579,7 @@ fn stop_one(target: &StopTarget) -> StopResult {
         };
         return result_for(target, outcome);
     };
-    if !matches_server(&target.server, &final_info, unsafe { libc::geteuid() })
-        || final_info.pbi_start_tvsec != identity.pbi_start_tvsec
+    if final_info.pbi_start_tvsec != identity.pbi_start_tvsec
         || final_info.pbi_start_tvusec != identity.pbi_start_tvusec
     {
         return refused(
@@ -574,42 +588,17 @@ fn stop_one(target: &StopTarget) -> StopResult {
             "prosessen endret seg før stoppforespørselen.",
         );
     }
-    let final_path = proc_path(target.server.pid);
-    let final_cwd = canonical_project(&proc_cwd(target.server.pid));
-    let expected_project = canonical_project(&target.project_dir);
-    let final_name = std::path::Path::new(&final_path)
-        .file_name()
-        .map(|name| name.to_string_lossy());
-    if final_path.is_empty()
-        || final_name.as_deref() != Some(target.server.name.as_str())
-        || final_cwd != expected_project
-    {
-        return refused(
+    let Some(expected_project) = canonical_project(&target.project_dir) else {
+        return result_for(
             target,
-            "the executable or project identity changed before the stop request.",
-            "den kjørbare filen eller prosjektidentiteten endret seg før stoppforespørselen.",
-        );
-    }
-    let final_process = process_info(target.server.pid, &final_info, final_path);
-    let Some(final_project) = final_cwd.as_ref() else {
-        return refused(
-            target,
-            "the project identity became unavailable before the stop request.",
-            "prosjektidentiteten ble utilgjengelig før stoppforespørselen.",
+            refusal(
+                "the project folder is unavailable.",
+                "prosjektmappen er ikke tilgjengelig.",
+            ),
         );
     };
-    let final_project_string = final_project.to_string_lossy().to_string();
-    if development_project(&final_process, &final_project_string, unsafe {
-        libc::geteuid()
-    })
-    .as_deref()
-        != Some(final_project_string.as_str())
-    {
-        return refused(
-            target,
-            "the development-server identity changed before the stop request.",
-            "utviklingsserverens identitet endret seg før stoppforespørselen.",
-        );
+    if let Err(outcome) = validate_process_identity(target, &final_info, &expected_project) {
+        return result_for(target, outcome);
     }
     if unsafe { libc::kill(target.server.pid, libc::SIGTERM) } != 0 {
         let outcome = match std::io::Error::last_os_error()
@@ -625,14 +614,15 @@ fn stop_one(target: &StopTarget) -> StopResult {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let current_info = proc_bsd(target.server.pid);
-        if current_info
-            .as_ref()
-            .is_some_and(|info| info.pbi_status == 5)
-        {
-            return result_for(target, StopOutcome::Exited);
-        }
-        if current_info.is_none() && proc_path(target.server.pid).is_empty() {
-            return result_for(target, StopOutcome::Exited);
+        if let Some(info) = current_info.as_ref() {
+            let changed_start = info.pbi_start_tvsec > 0
+                && (info.pbi_start_tvsec != identity.pbi_start_tvsec
+                    || info.pbi_start_tvusec != identity.pbi_start_tvusec);
+            if info.pbi_pid == target.server.pid as u32
+                && (info.pbi_status == PROCESS_STATUS_ZOMBIE || changed_start)
+            {
+                return result_for(target, StopOutcome::Exited);
+            }
         }
         match kill_probe(target.server.pid) {
             Ok(false) => return result_for(target, StopOutcome::Exited),
@@ -648,18 +638,23 @@ fn stop_one(target: &StopTarget) -> StopResult {
 
 pub fn stop_targets(targets: Vec<StopTarget>) -> Vec<StopResult> {
     let mut unique: Vec<StopTarget> = Vec::new();
+    let mut conflicts = HashSet::new();
     let mut results = Vec::new();
     for target in targets {
+        if conflicts.contains(&target.server.pid) {
+            continue;
+        }
         if let Some(index) = unique
             .iter()
             .position(|existing| existing.server.pid == target.server.pid)
         {
-            let existing = &mut unique[index];
-            if same_identity(existing, &target) {
-                existing.ports.extend(target_ports(&target));
+            if same_identity(&unique[index], &target) {
+                unique[index].ports.extend(target_ports(&target));
             } else {
+                let first = unique.swap_remove(index);
+                conflicts.insert(target.server.pid);
                 results.push(refused(
-                    &target,
+                    &first,
                     "conflicting stop requests for this PID were refused.",
                     "motstridende stoppforespørsler for denne PID-en ble avvist.",
                 ));
@@ -672,20 +667,6 @@ pub fn stop_targets(targets: Vec<StopTarget>) -> Vec<StopResult> {
         results.push(stop_one(&target));
     }
     results
-}
-
-pub fn stop_server(server: &DevServer) -> bool {
-    let target = StopTarget {
-        server: server.clone(),
-        project_dir: String::new(),
-        ports: vec![server.port],
-    };
-    matches!(
-        stop_targets(vec![target])
-            .first()
-            .map(|result| &result.outcome),
-        Some(StopOutcome::Exited)
-    )
 }
 
 #[cfg(test)]
@@ -714,23 +695,50 @@ mod stop_tests {
 
     #[test]
     #[ignore = "launches and terminates a disposable owned process"]
-    fn native_stop_rejects_non_development_listener_before_signalling() {
+    fn native_stop_rejects_non_development_identity_before_signalling() {
+        let project = std::env::temp_dir().join(format!(
+            "tidegauge-stop-nondevelopment-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("Cargo.toml"),
+            b"[package]\nname=\"stop-test\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
+            .current_dir(&project)
             .spawn()
             .unwrap();
         let pid = child.id() as i32;
         let info = proc_bsd(pid).unwrap();
-        let started = info.pbi_start_tvsec as f64 + info.pbi_start_tvusec as f64 / 1_000_000.0;
+        let path = proc_path(pid);
         let server = DevServer {
             pid,
-            up_since: started + 1.0,
+            name: "sleep".into(),
+            exe_path: path,
+            cwd: canonical_project(&project.to_string_lossy())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            up_since: info.pbi_start_tvsec as f64 + info.pbi_start_tvusec as f64 / 1_000_000.0,
             ..Default::default()
         };
-        assert!(!stop_server(&server));
+        let target = StopTarget {
+            server,
+            project_dir: project.to_string_lossy().into_owned(),
+            ports: vec![],
+        };
+        let canonical_project = canonical_project(&target.project_dir).unwrap();
+        assert!(matches!(
+            validate_process_identity(&target, &info, &canonical_project),
+            Err(StopOutcome::Refused(_))
+        ));
         assert!(child.try_wait().unwrap().is_none());
         child.kill().unwrap();
         let _ = child.wait();
+        let _ = std::fs::remove_dir_all(project);
     }
 
     #[test]
@@ -738,7 +746,8 @@ mod stop_tests {
     fn native_stop_owned_project_listener_and_rejects_stale_identity() {
         let project =
             std::env::temp_dir().join(format!("tidegauge-stop-project-{}", std::process::id()));
-        std::fs::create_dir_all(&project).unwrap();
+        let nested_cwd = project.join("nested");
+        std::fs::create_dir_all(&nested_cwd).unwrap();
         std::fs::write(
             project.join("Cargo.toml"),
             b"[package]\nname=\"stop-test\"\nversion=\"0.1.0\"\n",
@@ -748,9 +757,9 @@ mod stop_tests {
             .args([
                 "-u",
                 "-c",
-                "import socket,time\ns=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); print(s.getsockname()[1],flush=True)\ntime.sleep(30)",
+                "import socket,time\ns=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); t=socket.socket(); t.bind(('127.0.0.1',0)); t.listen(); print(s.getsockname()[1],t.getsockname()[1],flush=True)\ntime.sleep(30)",
             ])
-            .current_dir(&project)
+            .current_dir(&nested_cwd)
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
@@ -759,11 +768,19 @@ mod stop_tests {
         std::io::BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut port_text)
             .unwrap();
-        let port: u16 = port_text.trim().parse().unwrap();
+        let mut ports = port_text
+            .split_whitespace()
+            .map(|port| port.parse().unwrap());
+        let port: u16 = ports.next().unwrap();
+        let second_port: u16 = ports.next().unwrap();
         std::thread::sleep(Duration::from_millis(100));
         let pid = child.id() as i32;
         let info = proc_bsd(pid).unwrap();
         let path = proc_path(pid);
+        let recorded_cwd = canonical_project(&nested_cwd.to_string_lossy())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let server = DevServer {
             pid,
             name: std::path::Path::new(&path)
@@ -771,32 +788,93 @@ mod stop_tests {
                 .unwrap()
                 .to_string_lossy()
                 .into(),
+            exe_path: path,
+            cwd: recorded_cwd,
             port,
             up_since: info.pbi_start_tvsec as f64 + info.pbi_start_tvusec as f64 / 1_000_000.0,
             ..Default::default()
         };
-        let stale = StopTarget {
+        let target = StopTarget {
+            server: server.clone(),
+            project_dir: project.to_string_lossy().into(),
+            ports: vec![port],
+        };
+        assert!(stop_targets(Vec::new()).is_empty());
+        assert!(child.try_wait().unwrap().is_none());
+
+        let stale_start = StopTarget {
             server: DevServer {
                 up_since: server.up_since + 1.0,
                 ..server.clone()
             },
-            project_dir: project.to_string_lossy().into(),
-            ports: vec![port],
+            ..target.clone()
         };
-        assert!(matches!(
-            stop_targets(vec![stale])
-                .first()
-                .map(|result| &result.outcome),
-            Some(StopOutcome::Refused(_))
-        ));
+        let stale_executable = StopTarget {
+            server: DevServer {
+                exe_path: format!("/unrelated/{}", server.name),
+                ..server.clone()
+            },
+            ..target.clone()
+        };
+        let stale_cwd = StopTarget {
+            server: DevServer {
+                cwd: project.to_string_lossy().into(),
+                ..server.clone()
+            },
+            ..target.clone()
+        };
+        for stale in [stale_start, stale_executable, stale_cwd] {
+            assert!(matches!(
+                stop_targets(vec![stale])
+                    .first()
+                    .map(|result| &result.outcome),
+                Some(StopOutcome::Refused(_))
+            ));
+            assert!(child.try_wait().unwrap().is_none());
+        }
+
+        let conflicting = StopTarget {
+            server: DevServer {
+                cwd: project.to_string_lossy().into(),
+                ..server.clone()
+            },
+            ..target.clone()
+        };
+        let results = stop_targets(vec![target.clone(), conflicting]);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0].outcome, StopOutcome::Refused(_)));
         assert!(child.try_wait().unwrap().is_none());
-        let target = StopTarget {
-            server,
-            project_dir: project.to_string_lossy().into(),
-            ports: vec![port],
+
+        let compatible = StopTarget {
+            ports: vec![second_port],
+            ..target.clone()
         };
-        assert_eq!(stop_targets(vec![target])[0].outcome, StopOutcome::Exited);
-        let _ = child.wait();
+        let results = stop_targets(vec![target, compatible]);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].ports.contains(&port));
+        assert!(results[0].ports.contains(&second_port));
+        if !matches!(
+            &results[0].outcome,
+            StopOutcome::Exited | StopOutcome::StillRunningAfterSigterm
+        ) {
+            child.kill().unwrap();
+            let _ = child.wait();
+            panic!("unexpected stop outcome: {:?}", results[0].outcome);
+        }
+        use std::os::unix::process::ExitStatusExt;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let _ = child.wait();
+                panic!("the owned project listener did not exit after SIGTERM");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
         let _ = std::fs::remove_dir_all(project);
     }
 }

@@ -101,6 +101,8 @@ pub struct ProjectGroup {
 pub struct DevServer {
     pub pid: i32,
     pub name: String,
+    pub exe_path: String,
+    pub cwd: String,
     pub runtime: String,
     pub port: u16,
     pub status: String,

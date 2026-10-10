@@ -107,7 +107,7 @@ pub fn default_output_device() -> AudioObjectID {
         get(
             K_AUDIO_OBJECT_SYSTEM_OBJECT,
             &addr(
-                K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
+                K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
                 K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
             ),
             &mut id,
@@ -122,13 +122,13 @@ pub fn device_name(id: AudioObjectID) -> String {
         K_AUDIO_DEVICE_PROPERTY_DEVICE_NAME_CFSTRING,
         K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
     )
-    .unwrap_or_else(|| "Output".into())
+    .unwrap_or_else(|| crate::locale::text("Output", "Utgang").into())
 }
 
 pub fn default_output_name() -> String {
     let d = default_output_device();
     if d == 0 {
-        "Default output".into()
+        crate::locale::text("Default output", "Standardutgang").into()
     } else {
         device_name(d)
     }
@@ -151,18 +151,14 @@ unsafe fn property_settable(
     }
     let mut settable: Boolean = 0;
     let status = AudioObjectIsPropertySettable(id, address, &mut settable);
-    if status == 0 {
-        Ok(settable != 0)
-    } else {
-        Err(status)
-    }
+    readonly_settable_result(status, settable)
 }
 
 pub fn output_state() -> OutputState {
     let id = default_output_device();
     if id == 0 {
         return OutputState {
-            name: "Default output".into(),
+            name: crate::locale::text("Default output", "Standardutgang").into(),
             ..Default::default()
         };
     }
@@ -171,7 +167,9 @@ pub fn output_state() -> OutputState {
     unsafe {
         let mut volume = 0.0f32;
         let mut muted = 0u32;
-        let volume = get(id, &volume_address, &mut volume).then_some(volume);
+        let volume = get(id, &volume_address, &mut volume)
+            .then_some(volume)
+            .filter(|volume| valid_volume(*volume));
         let muted = get(id, &mute_address, &mut muted).then_some(muted != 0);
         let can_volume = property_settable(id, &volume_address).unwrap_or(false);
         let can_mute = property_settable(id, &mute_address).unwrap_or(false);
@@ -232,7 +230,7 @@ pub fn set_output_volume(expected_id: u32, value: f32) -> Result<(), String> {
         .into());
     }
     let state = output_state();
-    if state.id == 0 || state.id != expected_id {
+    if !target_is_current(expected_id, state.id) {
         return Err(stale_output_error());
     }
     let address = output_property(K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR);
@@ -260,7 +258,7 @@ pub fn set_output_volume(expected_id: u32, value: f32) -> Result<(), String> {
 
 pub fn set_output_mute(expected_id: u32, value: bool) -> Result<(), String> {
     let state = output_state();
-    if state.id == 0 || state.id != expected_id {
+    if !target_is_current(expected_id, state.id) {
         return Err(stale_output_error());
     }
     let address = output_property(K_AUDIO_DEVICE_PROPERTY_MUTE);
@@ -295,7 +293,6 @@ fn target_is_current(expected_id: u32, current_id: u32) -> bool {
     expected_id != 0 && expected_id == current_id
 }
 
-#[allow(dead_code)]
 fn readonly_settable_result(status: OSStatus, settable: Boolean) -> Result<bool, OSStatus> {
     if status == 0 {
         Ok(settable != 0)
@@ -357,7 +354,7 @@ pub fn output_device_names() -> Vec<String> {
         }
     }
     if out.is_empty() {
-        out.push("Default output".into());
+        out.push(crate::locale::text("Default output", "Standardutgang").into());
     }
     out
 }

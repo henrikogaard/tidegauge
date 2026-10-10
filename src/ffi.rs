@@ -253,8 +253,7 @@ pub const K_AUDIO_OBJECT_PROPERTY_SCOPE_OUTPUT: u32 = u32::from_be_bytes(*b"outp
 pub const K_AUDIO_OBJECT_PROPERTY_SCOPE_INPUT: u32 = u32::from_be_bytes(*b"inpt");
 pub const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
 pub const K_AUDIO_HARDWARE_PROPERTY_DEVICES: u32 = u32::from_be_bytes(*b"dev#");
-pub const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE: u32 =
-    u32::from_be_bytes(*b"dOut");
+pub const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE: u32 = u32::from_be_bytes(*b"dOut");
 pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 = u32::from_be_bytes(*b"prs#");
 pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_INPUT_MUTE: u32 = u32::from_be_bytes(*b"pmin");
 pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_IS_AUDIBLE: u32 = u32::from_be_bytes(*b"pmut");
