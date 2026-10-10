@@ -815,6 +815,7 @@ fn overview_card(
         })))
         .when(!hist.pts.is_empty(), |d| d.child(div().h(px(38.)).rounded(px(8.)).px(px(6.)).py(px(5.))
             .bg(color.opacity(0.09)).child(bar_chart(&hist.pts, color, max))))
+        .when(hist.pts.is_empty(), |d| d.child(div().h(px(38.)).flex_shrink_0()))
         .on_click(move |_, _, cx| {
             select_tab(&this, tab, cx);
         })
@@ -1313,7 +1314,7 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
     let supported = s.gpu.supported;
     if s.gpu.utilization.is_none() {
         return card(dark)
-            .child(section_header("GPU", l("Read-only", "Kun avlesning"), dark))
+            .child(section_header("GPU", l("Read-only", "Kun avlesning"), dark).px_0())
             .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(l("Utilization unavailable", "Utnyttelse utilgjengelig")))
             .child(sub(l("The current collector does not expose GPU utilization on this Mac. Missing readings are not zero usage.", "Den aktive datakilden viser ikke GPU-utnyttelse på denne Macen. Manglende målinger betyr ikke null bruk.")).text_color(t::ink_dim(dark)))
             .when_some(s.gpu.mem_in_use, |d, bytes| d.child(sub(format!("{}: {}", l("GPU memory", "GPU-minne"), fmt_bytes(bytes as f64))).text_color(t::ink_dim(dark))));
@@ -1352,7 +1353,7 @@ fn neural_tab(s: &Snapshot, dark: bool) -> Div {
     let supported = cores > 0;
     if s.neural.is_none() {
         return card(dark)
-            .child(section_header("Neural Engine", l("Read-only", "Kun avlesning"), dark))
+            .child(section_header("Neural Engine", l("Read-only", "Kun avlesning"), dark).px_0())
             .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(l("Utilization unavailable", "Utnyttelse utilgjengelig")))
             .child(sub(l("Neural Engine utilization is not implemented by the current collector. A core count does not imply live utilization support.", "Den aktive datakilden støtter ikke måling av Neural Engine-utnyttelse. Et antall kjerner betyr ikke at direkte måling er støttet.")).text_color(t::ink_dim(dark)))
             .when(supported, |d| d.child(sub(format!("{}: {}", l("Reported cores", "Rapporterte kjerner"), cores)).text_color(t::ink_dim(dark))));
