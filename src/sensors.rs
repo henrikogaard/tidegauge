@@ -90,8 +90,10 @@ pub fn start() {
                     match Smc::open() {
                         Ok(mut smc) => {
                             smc.temperature_keys = known_keys.clone();
-                            smc.next_key = next_key;
-                            smc.key_count = key_count;
+                            let fresh_count = smc.read_key_count();
+                            let (cursor, count) = resume_cursor(key_count, next_key, fresh_count);
+                            smc.next_key = cursor;
+                            smc.key_count = count;
                             let opened = Instant::now();
                             while opened.elapsed() < Duration::from_secs(60) {
                                 let sample = smc.sample();
@@ -180,6 +182,18 @@ struct Smc {
     transport_error: Cell<Option<i32>>,
 }
 
+fn resume_cursor(
+    previous_count: Option<u32>,
+    cursor: u32,
+    fresh_count: Option<u32>,
+) -> (u32, Option<u32>) {
+    if previous_count == fresh_count && fresh_count.is_some_and(|count| cursor < count.min(8192)) {
+        (cursor, fresh_count)
+    } else {
+        (0, fresh_count)
+    }
+}
+
 impl Drop for Smc {
     fn drop(&mut self) {
         unsafe {
@@ -260,12 +274,31 @@ impl Smc {
             .map(|out| (info, out.bytes))
     }
 
+    fn read_key_count(&mut self) -> Option<u32> {
+        let key = fcc(b"#KEY");
+        let count = self.read(key).and_then(|(info, bytes)| {
+            (info.data_type == fcc(b"ui32") && info.size == 4)
+                .then(|| u32::from_be_bytes(bytes[..4].try_into().unwrap()))
+        });
+        if count.is_none() {
+            self.info.remove(&key);
+        }
+        count
+    }
+
+    fn reset_discovery(&mut self) {
+        self.next_key = 0;
+        self.key_count = None;
+        self.info.remove(&fcc(b"#KEY"));
+    }
+
     fn discover(&mut self) {
         if self.key_count.is_none() {
-            self.key_count = self.read(fcc(b"#KEY")).and_then(|(info, bytes)| {
-                (info.data_type == fcc(b"ui32") && info.size == 4)
-                    .then(|| u32::from_be_bytes(bytes[..4].try_into().unwrap()))
-            });
+            self.key_count = self.read_key_count();
+            if self.key_count.is_none() {
+                self.reset_discovery();
+                return;
+            }
         }
         let Some(total) = self.key_count else {
             return;
@@ -282,6 +315,7 @@ impl Smc {
                 self.next_key,
                 KeyInfo::default(),
             ) else {
+                self.reset_discovery();
                 break;
             };
             self.next_key += 1;
@@ -473,6 +507,30 @@ mod tests {
         assert!(sample.is_fresh());
         sample.collected_at = Some(Instant::now() - Duration::from_secs(11));
         assert!(!sample.is_fresh());
+    }
+
+    #[test]
+    fn discovery_cursor_resumes_for_same_count_partial_scan() {
+        assert_eq!(resume_cursor(Some(100), 64, Some(100)), (64, Some(100)));
+    }
+
+    #[test]
+    fn discovery_cursor_restarts_when_inventory_shrinks() {
+        assert_eq!(resume_cursor(Some(100), 64, Some(80)), (0, Some(80)));
+    }
+
+    #[test]
+    fn discovery_cursor_restarts_when_inventory_grows() {
+        assert_eq!(resume_cursor(Some(100), 64, Some(120)), (0, Some(120)));
+    }
+
+    #[test]
+    fn discovery_cursor_restarts_when_position_is_out_of_bounds() {
+        assert_eq!(resume_cursor(Some(100), 100, Some(100)), (0, Some(100)));
+        assert_eq!(
+            resume_cursor(Some(9_000), 8_192, Some(9_000)),
+            (0, Some(9_000))
+        );
     }
 
     #[test]
