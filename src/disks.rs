@@ -47,6 +47,7 @@ pub struct Volume {
 #[derive(Clone, Debug, Default)]
 pub struct Device {
     pub id: String,
+    pub registry_id: Option<u64>,
     pub name: String,
     pub protocol: Option<String>,
     pub internal: Option<bool>,
@@ -54,6 +55,15 @@ pub struct Device {
     pub size: Option<u64>,
     pub smart: Smart,
     pub volumes: Vec<Volume>,
+}
+
+impl Device {
+    pub fn identity_matches(&self, io: &HashMap<String, IoSample>) -> bool {
+        self.registry_id.is_none_or(|id| {
+            io.get(&self.id)
+                .is_some_and(|sample| sample.entry_id == id && sample.fresh())
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -287,6 +297,10 @@ fn diskutil(args: &[&str]) -> Option<Value> {
 
 fn collect() -> Inventory {
     let started = Instant::now();
+    let identities: HashMap<_, _> = native_counters()
+        .into_iter()
+        .map(|(id, entry, _, _)| (id, entry))
+        .collect();
     let Some(list) = diskutil(&["list", "-plist"]) else {
         return Inventory {
             collected_at: Some(started),
@@ -379,6 +393,16 @@ fn collect() -> Inventory {
             }
         }
     }
+    let current: HashMap<_, _> = native_counters()
+        .into_iter()
+        .map(|(id, entry, _, _)| (id, entry))
+        .collect();
+    devices.retain_mut(|device| {
+        device.registry_id = identities.get(&device.id).copied();
+        let unchanged = device.registry_id == current.get(&device.id).copied();
+        partial |= !unchanged;
+        unchanged
+    });
     Inventory {
         devices,
         collected_at: Some(started),
@@ -492,6 +516,7 @@ fn parse_inventory(list: &Value, apfs: &Value, infos: &HashMap<String, Value>) -
         });
         devices.push(Device {
             id: id.into(),
+            registry_id: None,
             name: string(info, "MediaName")
                 .or_else(|| string(info, "IORegistryEntryName"))
                 .unwrap_or_else(|| id.into()),
@@ -632,6 +657,7 @@ pub fn preview() -> Option<(Inventory, HashMap<String, IoSample>)> {
         let at = Instant::now();
         let first = Device {
             id: "disk0".into(),
+            registry_id: Some(1),
             name: "Sample internal SSD".into(),
             protocol: Some("NVMe".into()),
             internal: Some(true),
@@ -660,6 +686,7 @@ pub fn preview() -> Option<(Inventory, HashMap<String, IoSample>)> {
         };
         let second = Device {
             id: "disk3".into(),
+            registry_id: None,
             name: "Sample external SSD".into(),
             internal: Some(false),
             protocol: Some("USB".into()),
@@ -747,6 +774,15 @@ mod tests {
         let first = advance(None, 10, 100, 200, at);
         assert_eq!(first.read_rate, None);
         let next = advance(Some(&first), 10, 300, 600, at + Duration::from_secs(2));
+        let device = Device {
+            id: "disk1".into(),
+            registry_id: Some(10),
+            ..Default::default()
+        };
+        assert!(device.identity_matches(&HashMap::from([("disk1".into(), first.clone())])));
+        assert!(!device.identity_matches(&HashMap::new()));
+        let replacement = advance(None, 11, 100, 200, at);
+        assert!(!device.identity_matches(&HashMap::from([("disk1".into(), replacement)])));
         assert_eq!(
             (next.read_rate, next.write_rate),
             (Some(100.0), Some(200.0))

@@ -1133,14 +1133,23 @@ fn disk_tab(s: &Snapshot, dark: bool, selected: Option<&str>, cx: &mut Context<T
         .gap_3()
         .child(section_header(l("Storage devices", "Lagringsenheter"), l("Read-only", "Kun avlesning"), dark))
         .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
-        .child(div().flex().flex_wrap().gap_2().children(inventory.devices.iter().map(|device| {
+        .child(div().id("disk-device-picker").role(Role::RadioGroup).aria_label(l("Storage devices", "Lagringsenheter")).tab_group().flex().flex_wrap().gap_2().children(inventory.devices.iter().enumerate().map(|(index, device)| {
             let id = device.id.clone();
+            let key_id = id.clone();
             div().id(SharedString::from(format!("disk-{}", id)))
+                .role(Role::RadioButton).aria_label(SharedString::from(format!("{} · {}", id, device.name)))
+                .aria_toggled(if selected_id == Some(id.as_str()) { Toggled::True } else { Toggled::False }).tab_index(20 + index as isize)
                 .px_3().py_2().rounded_md().border_1().border_color(t::line(dark))
                 .bg(if selected_id == Some(id.as_str()) { t::card_hi(dark) } else { t::card(dark) })
+                .hover(|d| d.bg(t::card_hi(dark))).focus_visible(|d| d.bg(t::card_hi(dark)))
                 .cursor_pointer().max_w(px(320.))
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(device.id.clone()))
                 .child(sub(device.name.clone()).text_color(t::ink_dim(dark)))
+                .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        view.selected_disk = Some(key_id.clone()); cx.notify(); cx.stop_propagation();
+                    }
+                }))
                 .on_click(cx.listener(move |view, _, _, cx| { view.selected_disk = Some(id.clone()); cx.notify(); }))
         })))
         .when(!inventory.fresh(), |d| d.child(card(dark).child(sub(if inventory.collected_at.is_none() {
@@ -1148,7 +1157,8 @@ fn disk_tab(s: &Snapshot, dark: bool, selected: Option<&str>, cx: &mut Context<T
         } else { l("Disk inventory unavailable or stale. No capacity or health is assumed.", "Diskoversikten er utilgjengelig eller utdatert. Ingen kapasitet eller helsetilstand antas.") }).text_color(t::ink_dim(dark)))))
         .when(inventory.partial, |d| d.child(sub(l("Partial inventory · some device information could not be read.", "Delvis oversikt · enkelte enhetsopplysninger kunne ikke leses.")).text_color(t::ink_dim(dark))))
         .when(inventory.fresh() && device.is_none(), |d| d.child(card(dark).child(sub(l("Selected device unavailable, or no supported devices found.", "Valgt enhet er utilgjengelig, eller ingen støttede enheter ble funnet.")).text_color(t::ink_dim(dark)))))
-        .when_some(device.filter(|_| inventory.fresh()), |d, device| d.child(disk_detail(device, io.get(&device.id).filter(|sample| sample.fresh()), dark)))
+        .when(device.is_some_and(|device| !device.identity_matches(&io)), |d| d.child(card(dark).child(sub(l("Device disconnected, replaced, or temporarily unavailable. Waiting for a fresh inventory.", "Enheten er frakoblet, erstattet eller midlertidig utilgjengelig. Venter på en ny oversikt.")).text_color(t::ink_dim(dark)))))
+        .when_some(device.filter(|device| inventory.fresh() && device.identity_matches(&io)), |d, device| d.child(disk_detail(device, io.get(&device.id).filter(|sample| sample.fresh()), dark)))
         .child(sub(l("Inventory refreshes every 30 seconds. Virtual disk images are omitted. No mount, eject, erase, or SMART-setting operations are performed.", "Oversikten oppdateres hvert 30. sekund. Virtuelle diskbilder utelates. Ingen montering, utmating, sletting eller endring av SMART-innstillinger utføres.")).text_color(t::ink_dim(dark)))
         .child(section_header(l("All apps · all devices", "Alle apper · alle enheter"), l("Disk activity", "Diskaktivitet"), dark))
         .child(sub(l("App activity below is system-wide, not attributed to the selected drive.", "Appaktiviteten nedenfor gjelder hele systemet, ikke bare den valgte disken.")).text_color(t::ink_dim(dark)))

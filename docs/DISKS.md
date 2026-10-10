@@ -23,6 +23,10 @@ are used. Missing values stay unavailable.
   to the wrong drive. Counters cover that device's current kernel lifetime,
   not its hardware lifetime. Rates require two fresh samples; changed registry
   IDs, reduced counters, or gaps of ten seconds reset rate/history baselines.
+  For mapped devices, a missing/changed driver identity hides old metadata
+  until inventory refreshes, so a reused BSD name cannot mix old health with
+  a replacement device's I/O. Identity changes during collection discard that
+  device's partial record.
 - Per-app activity remains system-wide and is explicitly labeled as such.
 - Basic SMART status comes from macOS. Unknown/not-supported is never healthy.
 - An already-installed optional local SMART reader can provide a read-only
