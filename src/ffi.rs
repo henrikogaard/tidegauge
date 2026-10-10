@@ -254,9 +254,8 @@ pub const K_AUDIO_OBJECT_PROPERTY_SCOPE_INPUT: u32 = u32::from_be_bytes(*b"inpt"
 pub const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
 pub const K_AUDIO_HARDWARE_PROPERTY_DEVICES: u32 = u32::from_be_bytes(*b"dev#");
 pub const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE: u32 =
-    u32::from_be_bytes(*b"sOut");
-pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 =
-    u32::from_be_bytes(*b"prs#");
+    u32::from_be_bytes(*b"dOut");
+pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 = u32::from_be_bytes(*b"prs#");
 pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_INPUT_MUTE: u32 = u32::from_be_bytes(*b"pmin");
 pub const K_AUDIO_HARDWARE_PROPERTY_PROCESS_IS_AUDIBLE: u32 = u32::from_be_bytes(*b"pmut");
 pub const K_AUDIO_DEVICE_PROPERTY_DEVICE_NAME_CFSTRING: u32 = u32::from_be_bytes(*b"lnam");
@@ -295,7 +294,8 @@ extern "C" {
     pub fn vm_deallocate(target: mach_port_t, addr: usize, size: usize) -> kern_return_t;
     pub fn mach_task_self() -> mach_port_t;
 
-    pub fn proc_listpids(kind: c_uint, typeinfo: c_uint, buffer: *mut c_void, size: c_int) -> c_int;
+    pub fn proc_listpids(kind: c_uint, typeinfo: c_uint, buffer: *mut c_void, size: c_int)
+        -> c_int;
     pub fn proc_pidinfo(
         pid: c_int,
         flavor: c_int,
@@ -335,6 +335,13 @@ extern "C" {
     pub fn IOPSCopyPowerSourcesInfo() -> CFTypeRef;
     pub fn IOPSCopyPowerSourcesList(blob: CFTypeRef) -> CFArrayRef;
     pub fn IOPSGetPowerSourceDescription(blob: CFTypeRef, ps: CFTypeRef) -> CFDictionaryRef;
+    pub fn IOPMAssertionCreateWithName(
+        assertion_type: CFStringRef,
+        assertion_level: u32,
+        assertion_name: CFStringRef,
+        assertion_id: *mut u32,
+    ) -> kern_return_t;
+    pub fn IOPMAssertionRelease(assertion_id: u32) -> kern_return_t;
 
     // CoreAudio
     pub fn AudioObjectGetPropertyData(
@@ -364,18 +371,32 @@ extern "C" {
         object_id: AudioObjectID,
         address: *const AudioObjectPropertyAddress,
     ) -> Boolean;
+    pub fn AudioObjectIsPropertySettable(
+        object_id: AudioObjectID,
+        address: *const AudioObjectPropertyAddress,
+        out_is_settable: *mut Boolean,
+    ) -> OSStatus;
 
     // CoreFoundation minimal surface
     pub fn CFDictionaryGetValue(dict: CFDictionaryRef, key: CFTypeRef) -> CFTypeRef;
     pub fn CFArrayGetCount(arr: CFArrayRef) -> CFIndex;
     pub fn CFArrayGetValueAtIndex(arr: CFArrayRef, idx: CFIndex) -> CFTypeRef;
-    pub fn CFNumberGetValue(number: CFNumberRef, the_type: c_int, value_ptr: *mut c_void) -> Boolean;
+    pub fn CFNumberGetValue(
+        number: CFNumberRef,
+        the_type: c_int,
+        value_ptr: *mut c_void,
+    ) -> Boolean;
     pub fn CFStringGetCString(
         s: CFStringRef,
         buffer: *mut c_char,
         size: CFIndex,
         encoding: u32,
     ) -> Boolean;
+    pub fn CFStringCreateWithCString(
+        allocator: CFAllocatorRef,
+        c_string: *const c_char,
+        encoding: u32,
+    ) -> CFStringRef;
     pub fn CFRelease(cf: CFTypeRef);
     pub fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
     pub fn CFNumberGetTypeID() -> CFTypeID;
@@ -394,7 +415,6 @@ pub const K_CF_NUMBER_SINT32: c_int = 3;
 pub const fn fcc(s: &[u8; 4]) -> u32 {
     u32::from_be_bytes(*s)
 }
-
 
 #[cfg(test)]
 mod tests {

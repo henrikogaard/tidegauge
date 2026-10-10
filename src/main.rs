@@ -1,24 +1,28 @@
 #![cfg_attr(target_os = "macos", allow(non_snake_case))]
 
+mod alerts;
 mod app;
 mod appearance;
-mod battery;
 mod audio;
+mod battery;
 mod bluetooth;
+mod controls;
 mod disks;
 mod engine;
 mod ffi;
 mod history;
+mod history_browser;
 mod icons;
 mod instance;
+mod keepawake;
 mod locale;
 mod login;
 mod metrics;
 mod notifications;
 mod processes;
 mod projects;
-mod settings;
 mod sensors;
+mod settings;
 mod statusbar;
 mod theme;
 mod ui;
@@ -32,8 +36,14 @@ actions!(tidegauge, [Quit]);
 fn main() {
     let _instance = match instance::acquire() {
         Ok(Some(guard)) => guard,
-        Ok(None) => { eprintln!("Tidegauge is already running. Use its menu-bar item to open it."); return; }
-        Err(error) => { eprintln!("Cannot start Tidegauge: {error}"); return; }
+        Ok(None) => {
+            eprintln!("Tidegauge is already running. Use its menu-bar item to open it.");
+            return;
+        }
+        Err(error) => {
+            eprintln!("Cannot start Tidegauge: {error}");
+            return;
+        }
     };
     env_logger_init();
     sensors::start();
@@ -44,6 +54,10 @@ fn main() {
 
     app.run(|cx| {
         gpui_kit::init(cx);
+        cx.on_app_quit(|_| async {
+            crate::keepawake::shutdown();
+        })
+        .detach();
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         #[cfg(target_os = "macos")]
@@ -53,7 +67,9 @@ fn main() {
             use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSImage};
             use objc2_foundation::NSData;
             unsafe {
-                let application = NSApplication::sharedApplication(objc2_foundation::MainThreadMarker::new_unchecked());
+                let application = NSApplication::sharedApplication(
+                    objc2_foundation::MainThreadMarker::new_unchecked(),
+                );
                 application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
                 let data = NSData::with_bytes(include_bytes!("../assets/logo.svg"));
                 if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
@@ -107,7 +123,8 @@ fn main() {
                     let _ = cx.update(|cx: &mut App| app::pump_status_bar(&mut bar, &view, cx));
                     // Native menu tracking runs a nested event loop. Release the
                     // GPUI App borrow before allowing other UI tasks to run.
-                    if statusbar::SHOW_CONTEXT_MENU.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    if statusbar::SHOW_CONTEXT_MENU.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
                         statusbar::show_context_menu();
                     }
                 }
