@@ -319,7 +319,7 @@ fn hero(
                     .child(sub(sublabel).text_color(t::ink_dim(dark))),
             ),
         )
-        .child(area_chart(&hist.pts, 130.0, color, max_hint))
+        .when(!hist.pts.is_empty(), |d| d.child(area_chart(&hist.pts, 130.0, color, max_hint)))
         .child(
             div()
                 .flex()
@@ -1291,7 +1291,7 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
         .flex_col()
         .gap_3()
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample battery values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke batterimålinger")).text_color(t::ink_dim(dark)))))
-        .child(hero(
+        .when(b.present, |d| d.child(hero(
             l("Battery", "Batteri"),
             main,
             status.into(),
@@ -1306,7 +1306,7 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                     (if b.is_charging { b.minutes_to_full } else { b.minutes_remaining }).map(|m| format!("{} h {} min", m / 60, m % 60)).unwrap_or("—".into())),
             ],
             Some(100.0),
-        ))
+        )))
         .when(b.present, |d| d
             .child(section_header(l("Battery health", "Batterihelse"), l("Read-only", "Kun avlesning"), dark))
             .child(div().grid().grid_cols(3).gap_3()
@@ -1321,14 +1321,16 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                 .child(stat_card(l("Current", "Strømstyrke"), b.current_ma.map(|a| format!("{:+} mA", a)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Adapter rating", "Adapterkapasitet"), b.adapter_rating_w.map(|w| format!("{} W", w)).unwrap_or("—".into()), None, dark)))
             .child(sub(l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor.")).text_color(t::ink_dim(dark))))
-        .when(!b.present, |d| d.child(card(dark).child(div().text_sm().text_color(t::ink_dim(dark)).child(
+        .when(!b.present, |d| d.child(card(dark)
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(status))
+            .child(div().text_sm().text_color(t::ink_dim(dark)).child(
             if b.available { l("This Mac has no internal battery. Battery health and charge readings do not apply.", "Denne Macen har ikke et internt batteri. Batterihelse og lademålinger er ikke relevante.") }
             else { l("macOS did not provide battery information. No charge or health values are assumed.", "macOS ga ingen batteriinformasjon. Ingen verdier for ladenivå eller helse blir antatt.") }
         ))))
         .child(section_header(l("App", "App"), l("Estimated power usage", "Anslått strømforbruk"), dark))
-        .child(list_card(
+        .when(s.apps.iter().any(|a| a.power_w > 0.0), |d| d.child(list_card(
             {
-                let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
+                let mut rows: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w > 0.0).collect();
                 rows.sort_by(|a, b| b.power_w.partial_cmp(&a.power_w).unwrap());
                 let max = rows.first().map(|a| a.power_w).unwrap_or(1.0).max(0.01);
                 rows.iter()
@@ -1338,7 +1340,11 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                     .collect()
             },
             dark,
-        ))
+        )))
+        .when(!s.apps.iter().any(|a| a.power_w > 0.0), |d| d.child(card(dark).child(sub(l(
+            "No per-app energy estimates are currently available.",
+            "Ingen energianslag per app er tilgjengelige nå.",
+        )).text_color(t::ink_dim(dark)))))
 }
 
 // ---------- sound ----------
