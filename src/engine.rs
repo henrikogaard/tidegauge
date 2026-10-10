@@ -181,7 +181,7 @@ impl Default for Snapshot {
             chip: ChipInfo::default(),
             power_w: None,
             power_hist: h(),
-            thermal: "Nominal".into(),
+            thermal: "—".into(),
             neural: None,
             neural_hist: h(),
             uptime: Duration::ZERO,
@@ -262,6 +262,7 @@ impl Engine {
         self.last_ticks = ticks;
         s.cpu_hist.push(s.cpu_pct);
         s.load_avg = load_avg();
+        s.thermal = thermal_state().unwrap_or("—").into();
 
         // Memory
         s.mem = mem_stats();
