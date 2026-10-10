@@ -14,6 +14,7 @@ mod instance;
 mod locale;
 mod login;
 mod metrics;
+mod notifications;
 mod processes;
 mod projects;
 mod settings;
@@ -59,6 +60,7 @@ fn main() {
                     application.setApplicationIconImage(Some(&icon));
                 }
             }
+            notifications::initialize();
             updater::initialize();
         }
 

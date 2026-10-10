@@ -50,4 +50,15 @@ It validates layout only, not native battery readings.
 
 Record the commit, commands, results, and any hardware-dependent checks that could not run. A build pass, a rendered check, and verification on physical hardware are separate results.
 
+For notification branding checks, run `cargo build`, then package the debug binary with
+`TIDEGAUGE_BINARY="$PWD/target/debug/tidegauge" packaging/package-app.sh preview`.
+Install the bundle in Applications and quit any existing Tidegauge process. Run its
+executable with `TIDEGAUGE_NOTIFICATION_PREVIEW=1` to send a clearly labeled test
+alert through the normal notification path. This switch is debug-only and does
+not simulate high CPU usage or add sample metrics to history. Check the app name,
+six-bar icon, foreground/background delivery, and Allow/Don't Allow permission
+behavior. Notifications require an app bundle; `cargo run` deliberately skips
+them rather than attributing alerts to a script host. macOS notification settings
+and Focus can suppress banners.
+
 Recovered notes in `docs/recovered/` and the historical test files document a previous environment. They can explain implementation choices, but their paths, build results, and packaging claims are not current setup instructions.

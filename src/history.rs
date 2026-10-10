@@ -128,7 +128,12 @@ impl AlertEngine {
             if t - self.cpu_since > 20.0 && t - self.last_sent > 600.0 {
                 out.push(Alert {
                     metric: "cpu".into(),
-                    message: format!("High CPU usage: {:.0}% for over 20 seconds", s.cpu_pct),
+                    message: format!(
+                        "{}: {:.0}% {}",
+                        crate::locale::text("High CPU usage", "Høy CPU-bruk"),
+                        s.cpu_pct,
+                        crate::locale::text("for over 20 seconds", "i over 20 sekunder")
+                    ),
                     at: t,
                 });
                 self.last_sent = t;
@@ -141,7 +146,12 @@ impl AlertEngine {
             if t - self.mem_since > 20.0 && t - self.last_sent > 600.0 {
                 out.push(Alert {
                     metric: "memory".into(),
-                    message: format!("Memory pressure high: {:.0}% used", mem_pct),
+                    message: format!(
+                        "{}: {:.0}% {}",
+                        crate::locale::text("Memory pressure high", "Høyt minnepress"),
+                        mem_pct,
+                        crate::locale::text("used", "brukt")
+                    ),
                     at: t,
                 });
                 self.last_sent = t;
@@ -154,8 +164,10 @@ impl AlertEngine {
                 out.push(Alert {
                     metric: "disk".into(),
                     message: format!(
-                        "Heavy disk activity: {} read+write",
-                        crate::engine::fmt_rate(s.disk.read_rate + s.disk.write_rate)
+                        "{}: {} {}",
+                        crate::locale::text("Heavy disk activity", "Stor diskaktivitet"),
+                        crate::engine::fmt_rate(s.disk.read_rate + s.disk.write_rate),
+                        crate::locale::text("read+write", "lesing+skriving")
                     ),
                     at: t,
                 });
@@ -169,7 +181,8 @@ impl AlertEngine {
                 out.push(Alert {
                     metric: "network".into(),
                     message: format!(
-                        "Heavy network activity: {}",
+                        "{}: {}",
+                        crate::locale::text("Heavy network activity", "Stor nettverksaktivitet"),
                         crate::engine::fmt_rate(s.net.rate_in + s.net.rate_out)
                     ),
                     at: t,
