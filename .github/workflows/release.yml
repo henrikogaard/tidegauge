@@ -193,6 +193,8 @@ jobs:
           path: |
             ${{ runner.temp }}/tidegauge-release/Tidegauge-${{ needs.preflight.outputs.version }}.zip
             ${{ runner.temp }}/tidegauge-release/Tidegauge-${{ needs.preflight.outputs.version }}.zip.sha256
+            ${{ runner.temp }}/tidegauge-release/Tidegauge-${{ needs.preflight.outputs.version }}.dmg
+            ${{ runner.temp }}/tidegauge-release/Tidegauge-${{ needs.preflight.outputs.version }}.dmg.sha256
             ${{ runner.temp }}/tidegauge-release/appcast.xml
             ${{ runner.temp }}/tidegauge-release/appcast.xml.sha256
           if-no-files-found: error
@@ -287,6 +289,8 @@ jobs:
             const assets = [
               ["Tidegauge-" + version + ".zip", "application/zip"],
               ["Tidegauge-" + version + ".zip.sha256", "text/plain"],
+              ["Tidegauge-" + version + ".dmg", "application/x-apple-diskimage"],
+              ["Tidegauge-" + version + ".dmg.sha256", "text/plain"],
               ["appcast.xml", "application/xml"],
               ["appcast.xml.sha256", "text/plain"],
             ];

@@ -93,6 +93,7 @@ pub struct TideGaugeView {
 
 impl TideGaugeView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::appearance::apply(window, crate::settings::Settings::load().dark);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let v = TideGaugeView {
@@ -389,10 +390,10 @@ fn list_card(rows: Vec<Div>, dark: bool) -> Div {
 
 impl Render for TideGaugeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.dark = matches!(
+        self.dark = crate::settings::Settings::load().dark.unwrap_or(matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
+        ));
         let dark = self.dark;
         let s = &self.snap;
         let tab = self.tab;
@@ -625,9 +626,12 @@ impl TideGaugeView {
 }
 
 fn update_preference(
-    this: &Entity<TideGaugeView>, change: impl FnOnce(&mut crate::settings::Settings), cx: &mut App,
+    this: &Entity<TideGaugeView>, change: impl FnOnce(&mut crate::settings::Settings), window: &mut Window, cx: &mut App,
 ) {
     let result = crate::settings::mutate(change);
+    if result.is_ok() {
+        crate::appearance::apply(window, crate::settings::Settings::load().dark);
+    }
     this.update(cx, |view, cx| {
         view.settings_error = result.err().map(|_| {
             l(
@@ -659,13 +663,49 @@ fn settings_choice(
         .hover(|d| d.text_color(t::ink(dark)))
         .focus_visible(|d| d.border_color(accent))
         .child(label.to_string())
-        .on_key_down(move |event, _, cx| {
+        .on_key_down(move |event, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                update_preference(&keyboard_target, |settings| keyboard_change(settings), cx);
+                update_preference(&keyboard_target, |settings| keyboard_change(settings), window, cx);
                 cx.stop_propagation();
             }
         })
-        .on_click(move |_, _, cx| update_preference(&this, |settings| change(settings), cx))
+        .on_click(move |_, window, cx| update_preference(&this, |settings| change(settings), window, cx))
+}
+
+fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
+    let error = match crate::login::set_enabled(enabled) {
+        Ok(status) => crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
+            .err().map(|_| l(
+                "The login setting changed, but its local preference could not be saved.",
+                "Påloggingsinnstillingen ble endret, men kunne ikke lagres lokalt.",
+            ).to_string()),
+        Err(error) => Some(error.to_string()),
+    };
+    this.update(cx, |view, cx| { view.settings_error = error; cx.notify(); });
+}
+
+fn login_control(status: crate::login::LoginStatus, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+    if !status.can_change() {
+        return div().text_sm().text_color(t::ink_dim(dark))
+            .child(l("Unavailable", "Utilgjengelig")).into_any_element();
+    }
+    let active = status.is_registered();
+    let keyboard_target = this.clone();
+    div().id("launch-at-login").role(Role::Switch)
+        .aria_label(l("Launch at login", "Start ved pålogging"))
+        .aria_toggled(if active { Toggled::True } else { Toggled::False })
+        .tab_index(3).px_4().py_2().rounded(px(8.))
+        .bg(t::card_hi(dark)).border_1().border_color(t::line(dark))
+        .text_sm().text_color(t::ink(dark)).cursor_pointer()
+        .child(status.control_label())
+        .on_key_down(move |event, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                set_launch_at_login(!active, &keyboard_target, cx);
+                cx.stop_propagation();
+            }
+        })
+        .on_click(move |_, _, cx| set_launch_at_login(!active, &this, cx))
+        .into_any_element()
 }
 
 fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) -> Div {
@@ -674,15 +714,35 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
     };
     let settings = Settings::load();
     let mut panel = div().flex().flex_col().gap_4()
-        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(l("Menu bar", "Menylinje")))
-        .child(div().text_sm().text_color(t::ink_dim(dark))
-            .child(l(
-                "One compact menu-bar item. Add readings below, or keep just the Tidegauge icon.",
-                "Ett kompakt menylinjeelement. Legg til målinger nedenfor, eller behold bare Tidegauge-ikonet.",
-            )));
+        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(l("Settings", "Innstillinger")));
     if let Some(error) = error {
         panel = panel.child(div().text_sm().text_color(t::warn(dark)).child(error.to_string()));
     }
+    let login = crate::login::status();
+    panel = panel
+        .child(card(dark).flex_row().items_center().justify_between().gap_4()
+            .child(div().flex_1()
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Appearance", "Utseende")))
+                .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
+                    "Choose a theme, or follow your Mac.", "Velg et tema, eller følg Macens utseende.",
+                ))))
+            .child(div().id("appearance-options").role(Role::RadioGroup)
+                .aria_label(l("Appearance", "Utseende")).tab_group().flex().gap_2()
+                .children([(None, l("System", "System")), (Some(false), l("Light", "Lyst")), (Some(true), l("Dark", "Mørkt"))]
+                    .into_iter().enumerate().map(|(i, (value, label))| {
+                        settings_choice(format!("appearance-{i}"), label, format!("{}: {label}", l("Appearance", "Utseende")),
+                            settings.dark == value, i as isize, dark, this.clone(), move |settings| settings.dark = value)
+                    }))))
+        .child(card(dark).flex_row().items_center().justify_between().gap_4()
+            .child(div().flex_1()
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Launch at login", "Start ved pålogging")))
+                .child(div().text_xs().text_color(t::ink_dim(dark)).child(login.message())))
+            .child(login_control(login, dark, this.clone())))
+        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Menu bar", "Menylinje")))
+        .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
+            "One compact menu-bar item. Add readings below, or keep just the Tidegauge icon.",
+            "Ett kompakt menylinjeelement. Legg til målinger nedenfor, eller behold bare Tidegauge-ikonet.",
+        )));
     let icon_name = l("Tidegauge icon", "Tidegauge-ikon");
     panel = panel.child(card(dark).flex_row().items_center().justify_between()
         .child(div().flex_1()
@@ -735,13 +795,13 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                     .tab_index(29).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
                     .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
                     .child(l("Reset to icon only", "Tilbakestill til bare ikon"))
-                    .on_key_down(move |event, _, cx| {
+                    .on_key_down(move |event, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            update_preference(&key_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, cx);
+                            update_preference(&key_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, window, cx);
                             cx.stop_propagation();
                         }
                     })
-                    .on_click(move |_, _, cx| update_preference(&click_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, cx))
+                    .on_click(move |_, window, cx| update_preference(&click_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, window, cx))
             })
             .child(div().id("settings-app-menu").role(Role::Button).aria_label(l("App menu", "Appmeny"))
                 .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))

@@ -67,6 +67,35 @@ also requires a Developer ID identity:
 export DEVELOPER_ID_APPLICATION='Developer ID Application: ...'
 ```
 
+The same signed app can be wrapped in a local drag-and-drop disk image:
+
+```sh
+packaging/create-dmg.sh build/production/Tidegauge.app build/Tidegauge.dmg
+```
+
+The image contains only `Tidegauge.app`, an `Applications` shortcut, and the
+committed Finder layout. The helper refuses to overwrite an existing image and
+does not modify the source bundle. Release automation signs and notarizes the
+DMG, staples its ticket, and validates it before producing the checksum.
+
+To regenerate the deterministic Finder metadata during development, install
+the optional `ds_store==1.3.2` package in a local virtual environment and run:
+
+```sh
+python3.12 -m venv "$HOME/.venvs/tidegauge-dmg-layout"
+"$HOME/.venvs/tidegauge-dmg-layout/bin/pip" install 'ds_store==1.3.2'
+"$HOME/.venvs/tidegauge-dmg-layout/bin/python" packaging/write-dmg-layout.py
+```
+
+This Python dependency is not used by release packaging; `create-dmg.sh` uses
+the committed `packaging/dmg-layout.DS_Store`.
+
+On macOS 13 and later, launch at login is opt-in and uses the native login-item
+service. It can be enabled only when the signed app is installed in
+`/Applications` or `~/Applications`; a pending item must be approved in
+System Settings > General > Login Items. Settings offers System, Light, and
+Dark appearance for the dashboard without changing the menu bar appearance.
+
 The identity must be present in the local signing keychain. The production
 feed is fixed to:
 
@@ -138,7 +167,8 @@ to proceed if that tag or a release already exists. It checks all required
 secrets before the macOS build, asserts an Apple Silicon runner, runs the locked
 Rust tests and release build, packages and notarizes the app, and creates a
 draft release tagged `vVERSION` at the dispatched commit. The draft contains
-only the versioned ZIP and checksum plus `appcast.xml` and its checksum. The
+the versioned ZIP and checksum, the matching DMG and checksum, plus
+`appcast.xml` and its checksum. The
 workflow never publishes the draft automatically.
 
 Configure these GitHub Actions secrets before dispatch:

@@ -117,6 +117,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn appearance_round_trip_preserves_menu_items_and_login_preference() {
+        for dark in [None, Some(false), Some(true)] {
+            let mut settings = Settings { dark, launch_at_login: true, ..Settings::default() };
+            settings.set_menu_style("cpu", Some("both"));
+            let loaded: Settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+            assert_eq!(loaded.dark, dark);
+            assert!(loaded.launch_at_login);
+            assert_eq!(loaded.menu_items.len(), 1);
+            assert_eq!(loaded.menu_items[0].metric, "cpu");
+            assert_eq!(loaded.menu_items[0].style, "both");
+        }
+    }
+
+    #[test]
     fn default_menu_bar_is_icon_only() {
         let settings = Settings::default();
         assert!(settings.show_app_icon);

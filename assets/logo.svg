@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254">
+  <title>Tidegauge</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#292a2c"/>
+      <stop offset=".55" stop-color="#161618"/>
+      <stop offset="1" stop-color="#111113"/>
+    </linearGradient>
+    <linearGradient id="white" x1="0" y1="0" x2=".7" y2="1">
+      <stop stop-color="#fafafb"/>
+      <stop offset="1" stop-color="#e0e1e4"/>
+    </linearGradient>
+    <linearGradient id="silver" x1="0" y1="0" x2=".6" y2="1">
+      <stop stop-color="#b7b8bd"/>
+      <stop offset="1" stop-color="#85868b"/>
+    </linearGradient>
+  </defs>
+  <rect x="114" y="124" width="1024" height="1004" rx="225" fill="url(#tile)"/>
+  <g>
+    <rect x="239" y="547" width="108" height="350" rx="54" fill="url(#white)"/>
+    <rect x="374" y="420" width="108" height="477" rx="54" fill="url(#silver)"/>
+    <rect x="508" y="625" width="108" height="272" rx="54" fill="url(#white)"/>
+    <rect x="641" y="330" width="108" height="567" rx="54" fill="url(#white)"/>
+    <rect x="776" y="486" width="108" height="411" rx="54" fill="url(#silver)"/>
+    <rect x="907" y="589" width="108" height="308" rx="54" fill="url(#white)"/>
+  </g>
+</svg>

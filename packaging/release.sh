@@ -6,8 +6,10 @@ VERSION="${TIDEGAUGE_VERSION:-$(awk -F '"' '/^version = / { print $2; exit }' "$
 OUTPUT_ROOT="${TIDEGAUGE_OUTPUT_ROOT:-$ROOT/build/release}"
 APP="$OUTPUT_ROOT/production/Tidegauge.app"
 ZIP="$OUTPUT_ROOT/Tidegauge-${VERSION}.zip"
+DMG="$OUTPUT_ROOT/Tidegauge-${VERSION}.dmg"
 APPCAST="$OUTPUT_ROOT/appcast.xml"
 APPCAST_CHECKSUM="$APPCAST.sha256"
+DMG_CHECKSUM="$DMG.sha256"
 PRODUCTION_FEED="https://github.com/henrikogaard/tidegauge/releases/latest/download/appcast.xml"
 DOWNLOAD_URL_PREFIX="https://github.com/henrikogaard/tidegauge/releases/download/v${VERSION}/"
 
@@ -59,6 +61,23 @@ spctl --assess --type execute --verbose=2 "$APP"
 rm -rf "$NOTARY_TEMP"
 trap - EXIT
 
+"$ROOT/packaging/create-dmg.sh" "$APP" "$DMG"
+if [ -n "${NOTARY_KEYCHAIN:-}" ]; then
+    xcrun notarytool submit "$DMG" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --keychain "$NOTARY_KEYCHAIN" \
+        --wait
+else
+    xcrun notarytool submit "$DMG" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait
+fi
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+DMG_BASENAME="$(basename "$DMG")"
+(cd "$OUTPUT_ROOT" && shasum -a 256 "$DMG_BASENAME" > "$DMG_CHECKSUM")
+
 RELEASE_TEMP_DIR="$(mktemp -d "$OUTPUT_ROOT/.release.XXXXXX")"
 trap 'rm -rf "$RELEASE_TEMP_DIR"' EXIT
 APPCAST_CANDIDATE="$RELEASE_TEMP_DIR/appcast.xml"
@@ -92,6 +111,7 @@ mv "$APPCAST_CHECKSUM_CANDIDATE" "$APPCAST_CHECKSUM"
 printf '%s\n' "Notarized and stapled: $APP"
 
 printf '%s\n' "Release bundle: $APP"
+printf '%s\n' "Installer: $DMG"
 printf '%s\n' "Update archive: $ZIP"
 printf '%s\n' "Appcast: $APPCAST"
 printf '%s\n' "Feed: $PRODUCTION_FEED"

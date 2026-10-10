@@ -6,6 +6,12 @@
 
 A menu-bar system monitor for macOS, written in Rust with [gpui-kit](https://crates.io/crates/gpui-kit). Tidegauge groups processes by their owning app and presents system activity in a compact panel.
 
+## Install
+
+Download a release DMG, open it, and drag `Tidegauge.app` onto the `Applications`
+shortcut. Launch Tidegauge from Applications. The release DMG is signed and
+notarized; a locally generated image is not automatically notarized.
+
 ![Tidegauge dashboard](assets/dashboard.png)
 
 Current dashboard in dark appearance, captured on a virtual Mac. Readings
@@ -55,6 +61,16 @@ The packaging modes, signing prerequisites, and required production notarization
 documented in [Releasing](docs/RELEASING.md). Production packaging fails closed
 when its signing credentials are unavailable.
 
+Create a local drag-and-drop disk image from the same app bundle:
+
+```sh
+packaging/create-dmg.sh build/preview/Tidegauge.app build/Tidegauge.dmg
+```
+
+The image contains only `Tidegauge.app`, an `Applications` shortcut, and the
+committed Finder layout. Only the release pipeline notarizes and staples its
+DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
+
 ## What the app contains
 
 | Area | Current implementation |
@@ -75,7 +91,10 @@ when its signing credentials are unavailable.
 - Project Stop and Stop All actions require confirmation. They send SIGTERM only after rechecking process ownership and start time; no force-kill escalation is performed.
 - Sound is read-only: it displays device volume and app playback/recording activity, not per-app volume or measured signal levels.
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
-- Custom alert thresholds and launch-at-login settings are stored but not applied. Closing the dashboard hides it while collection continues.
+- Custom alert thresholds are stored but not applied. Launch at login is
+  available on macOS 13+ only for a bundle installed in `/Applications` or
+  `~/Applications`; approval may be required in System Settings > General >
+  Login Items. Closing the dashboard hides it while collection continues.
 - History is written to disk, but the panel shows in-memory charts. There is no history browser, and pruning is periodic rather than a strict 30-day cutoff.
 
 Projects requires a working directory within four levels of a Git root or a recognized manifest (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, or `composer.json`). Known development runtimes and custom executables inside that project qualify. Desktop app bundles, other users' processes, root/home directories, and listeners without a project marker are excluded. Servers launched from unrelated folders will not appear.
@@ -105,7 +124,7 @@ The app uses defaults when the settings file is absent or cannot be parsed. You 
 }
 ```
 
-Available metric identifiers are `cpu`, `memory`, `network`, `disk`, `battery`, `gpu`, and `power`. The menu-bar pump reloads this file while the app runs. The `dark` preference is also not currently applied; the panel follows the macOS appearance.
+Available metric identifiers are `cpu`, `memory`, `network`, `disk`, `battery`, `gpu`, and `power`. The menu-bar pump reloads this file while the app runs. Appearance can be set to System, Light, or Dark for the dashboard.
 
 History includes app names and resource usage. The sampler records headline metrics and the first 60 app groups sorted by memory usage approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
 
