@@ -17,6 +17,15 @@ fn icons_dir() -> PathBuf {
     d
 }
 
+fn refresh_icon_file(
+    file: &std::path::Path,
+    extract: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<PathBuf> {
+    let png = extract()?;
+    std::fs::write(file, png).ok()?;
+    Some(file.to_path_buf())
+}
+
 static ICON_KEYS: OnceLock<Mutex<HashMap<String, Option<PathBuf>>>> = OnceLock::new();
 static PENDING_ICONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static ICON_WORKER: OnceLock<Option<SyncSender<String>>> = OnceLock::new();
@@ -87,15 +96,8 @@ pub fn icon_file_for_bundle(bundle_path: &str) -> Option<PathBuf> {
         }
     }
     let file = icons_dir().join(&key);
-    let result = if file.is_file() {
-        Some(file)
-    } else {
-        objc2::rc::autoreleasepool(|_| {
-            let png = extract_icon_png(bundle_path)?;
-            std::fs::write(&file, png).ok()?;
-            Some(file)
-        })
-    };
+    let result =
+        objc2::rc::autoreleasepool(|_| refresh_icon_file(&file, || extract_icon_png(bundle_path)));
     // Remember failures too, rather than retrying expensive extraction every sample.
     map.lock()
         .unwrap()
@@ -208,5 +210,24 @@ mod tests {
         }
         assert_eq!(cached_icon_for_bundle(ready), Some(path));
         assert_eq!(cached_icon_for_bundle(missing), None);
+    }
+
+    #[test]
+    fn uncached_icon_request_refreshes_existing_disk_file() {
+        let file = std::env::temp_dir().join(format!(
+            "tidegauge-icon-refresh-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&file, b"stale").unwrap();
+
+        let refreshed = refresh_icon_file(&file, || Some(b"fresh".to_vec()));
+
+        assert_eq!(refreshed.as_deref(), Some(file.as_path()));
+        assert_eq!(std::fs::read(&file).unwrap(), b"fresh");
+        std::fs::remove_file(file).unwrap();
     }
 }
