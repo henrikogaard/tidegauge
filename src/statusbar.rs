@@ -9,7 +9,7 @@ use crate::locale::text as l;
 use crate::settings::MenuItem;
 use crate::settings::{localized_metric_label, Settings, MENU_METRICS};
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, sel, ClassType};
+use objc2::{define_class, msg_send, sel, AllocAnyThread, ClassType};
 use objc2_app_kit::*;
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +18,13 @@ pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
 pub static SHOW_SETTINGS: AtomicBool = AtomicBool::new(false);
 pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static LOGO: Option<Retained<NSImage>> = {
+        let data = objc2_foundation::NSData::with_bytes(include_bytes!("../assets/menu-bar-icon.svg"));
+        NSImage::initWithData(NSImage::alloc(), &data)
+    };
+}
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -333,28 +340,6 @@ fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
     }
 }
 
-fn draw_wave_icon(x: f64) {
-    NSColor::blackColor().setStroke();
-    for y in [5., 10.] {
-        let path = NSBezierPath::bezierPath();
-        path.setLineWidth(1.4);
-        path.setLineCapStyle(NSLineCapStyle::Round);
-        for step in 0..=32 {
-            let dx = 0.7 + step as f64 / 32. * 14.6;
-            let point = objc2_foundation::NSPoint {
-                x: x + dx,
-                y: y + (dx / 16. * std::f64::consts::TAU).sin() * 1.7,
-            };
-            if step == 0 {
-                path.moveToPoint(point);
-            } else {
-                path.lineToPoint(point);
-            }
-        }
-        path.stroke();
-    }
-}
-
 fn draw_graph(history: &[f64], x: f64, metric: &str) {
     if history.len() < 2 {
         draw_text("—", x + 6., 10., false);
@@ -399,11 +384,20 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
         + if show_icon { 16. } else { 0. }
         + (readouts.len() + usize::from(show_icon)).saturating_sub(1) as f64 * ITEM_GAP;
     let readouts = readouts.to_vec();
+    let logo = LOGO.with(Clone::clone);
     // AppKit invokes the drawing block at the display's backing scale.
     let drawing = block2::RcBlock::new(move |_bounds: NSRect| {
         let mut x = 0.;
         if show_icon {
-            draw_wave_icon(x);
+            if let Some(logo) = logo.as_ref() {
+                logo.drawInRect_fromRect_operation_fraction(
+                    NSRect { origin: NSPoint { x, y: 0. }, size: NSSize { width: 16., height: 16. } },
+                    NSRect { origin: NSPoint { x: 0., y: 0. }, size: NSSize { width: 0., height: 0. } },
+                    NSCompositingOperation::SourceOver, 1.,
+                );
+            } else {
+                draw_text("T", x + 3., 12., true);
+            }
             x += 16. + ITEM_GAP;
         }
         for readout in &readouts {

@@ -147,6 +147,15 @@ class AppcastValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             shutil.copyfile(REPO_ROOT / "packaging/release.sh", packaging / "release.sh")
+            create_dmg = packaging / "create-dmg.sh"
+            create_dmg.write_text(
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                'mkdir -p "$(dirname "$2")"\n'
+                'printf "mock dmg" > "$2"\n',
+                encoding="utf-8",
+            )
+            create_dmg.chmod(0o755)
             shutil.copyfile(
                 REPO_ROOT / "packaging/validate_appcast.py",
                 packaging / "validate_appcast.py",
@@ -156,7 +165,8 @@ class AppcastValidationTests(unittest.TestCase):
             package_script.write_text(
                 "#!/bin/bash\n"
                 "set -euo pipefail\n"
-                'mkdir -p "$TIDEGAUGE_OUTPUT_ROOT/production/Tidegauge.app"\n',
+                'mkdir -p "$TIDEGAUGE_OUTPUT_ROOT/production/Tidegauge.app/Contents"\n'
+                'printf plist > "$TIDEGAUGE_OUTPUT_ROOT/production/Tidegauge.app/Contents/Info.plist"\n',
                 encoding="utf-8",
             )
             package_script.chmod(0o755)
@@ -300,6 +310,8 @@ class AppcastValidationTests(unittest.TestCase):
                 Path(environment["TEST_XCRUN_LOG"]).write_text("", encoding="utf-8")
                 zip_path = output_root / "Tidegauge-1.2.3.zip"
                 zip_checksum = output_root / f"{zip_path.name}.sha256"
+                dmg_path = output_root / "Tidegauge-1.2.3.dmg"
+                dmg_checksum = output_root / f"{dmg_path.name}.sha256"
                 result = subprocess.run(
                     ["/bin/bash", str(packaging / "release.sh")],
                     cwd=fixture_root,
@@ -317,6 +329,11 @@ class AppcastValidationTests(unittest.TestCase):
                 )
                 self.assertNotIn(str(output_root), zip_checksum.read_text(encoding="utf-8"))
                 self.assertEqual(
+                    dmg_checksum.read_text(encoding="utf-8"),
+                    f"mock-checksum  {dmg_path.name}\n",
+                )
+                self.assertIn(f"Installer: {dmg_path}", result.stdout)
+                self.assertEqual(
                     list(output_root.glob(".release.*")),
                     [],
                 )
@@ -332,6 +349,30 @@ class AppcastValidationTests(unittest.TestCase):
                     checksum.read_text(encoding="utf-8"),
                     "mock-checksum  appcast.xml\n",
                 )
+
+            with self.subTest(success="relative output root containing spaces"):
+                relative_root_name = "release output"
+                relative_root = fixture_root / relative_root_name
+                relative_environment = environment.copy()
+                relative_environment["TIDEGAUGE_OUTPUT_ROOT"] = relative_root_name
+                relative_zip = relative_root / "Tidegauge-1.2.3.zip"
+                relative_dmg = relative_root / "Tidegauge-1.2.3.dmg"
+                relative_dmg_checksum = relative_root / f"{relative_dmg.name}.sha256"
+                result = subprocess.run(
+                    ["/bin/bash", str(packaging / "release.sh")],
+                    cwd=fixture_root,
+                    env=relative_environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                validate_appcast(relative_root / "appcast.xml", relative_zip)
+                self.assertEqual(
+                    relative_dmg_checksum.read_text(encoding="utf-8"),
+                    f"mock-checksum  {relative_dmg.name}\n",
+                )
+                self.assertFalse((relative_root / relative_root_name).exists())
 
             appcast.write_bytes(previous_feed)
             checksum.write_bytes(previous_checksum)

@@ -2,10 +2,18 @@
 
 ## Logo
 
-- `logo.png`: the generated graphite activity-bar icon, 1254 × 1254 pixels, with transparency outside the rounded tile. The app embeds this image as its native application icon; the dashboard footer has no icon tile.
+- `logo.svg`: the vector recreation of the graphite six-bar app icon. This is the editable source; the app embeds it as its native application icon. The dashboard footer has no icon tile.
+- `logo.png`: the 1254 × 1254 pixel raster export, with transparency outside the rounded tile.
+- `menu-bar-icon.svg`: the same six-bar silhouette simplified into a 16-point monochrome template, without a background tile. AppKit supplies the menu bar's native tint independently of the dashboard theme. The app loads this vector once rather than decoding it every sampling cycle.
 - `tidegauge.icns`: the same artwork packaged at the standard macOS icon sizes, including 16, 32, 128, 256, and 512 pixels and their double-resolution variants. The app-bundle packaging workflow includes it.
 
-The app icon does not change the compact template symbol in the menu bar. That symbol keeps its native tint and metric layout.
+Regenerate the PNG and ICNS after editing the full logo on macOS:
+
+```sh
+swift scripts/export-icons.swift
+```
+
+The menu-bar SVG is optically adjusted for small sizes. Keep its six rounded bars and relative heights consistent with the full logo.
 
 ## Screenshot archive
 

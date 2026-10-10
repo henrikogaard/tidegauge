@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "macos", allow(non_snake_case))]
 
 mod app;
+mod appearance;
 mod battery;
 mod audio;
 mod bluetooth;
@@ -11,6 +12,7 @@ mod history;
 mod icons;
 mod instance;
 mod locale;
+mod login;
 mod metrics;
 mod processes;
 mod projects;
@@ -52,7 +54,7 @@ fn main() {
             unsafe {
                 let application = NSApplication::sharedApplication(objc2_foundation::MainThreadMarker::new_unchecked());
                 application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-                let data = NSData::with_bytes(include_bytes!("../assets/logo.png"));
+                let data = NSData::with_bytes(include_bytes!("../assets/logo.svg"));
                 if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
                     application.setApplicationIconImage(Some(&icon));
                 }
