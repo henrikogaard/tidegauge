@@ -36,6 +36,10 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Fixed
 
+- Application metadata now falls back to per-key extraction when whole-file
+  `plutil` JSON conversion fails. Valid Info.plist files containing `<data>` or
+  `<date>` values no longer produce a parse warning or drop the application
+  from the Apps & Packages inventory.
 - Battery capacity now reads the nested `BatteryData` dictionary used by newer
   Apple silicon firmware, restoring design/full capacities and health where
   the top level exposes only normalized percentages. A present battery with no

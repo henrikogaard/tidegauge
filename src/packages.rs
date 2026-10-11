@@ -19,6 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_JSON_BYTES: u64 = 4 * 1024 * 1024;
+/// Bundle names and versions are short; a longer extracted value is not a
+/// plausible metadata string.
+const MAX_EXTRACTED_VALUE_BYTES: usize = 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 512;
 const MAX_TOTAL_DIRECTORY_ENTRIES: usize = 2048;
 const MAX_PACKAGES_PER_MANAGER: usize = 512;
@@ -633,12 +636,19 @@ fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
             "Info.plist for et program kunne ikke leses trygt.",
         )
     })?;
-    let json = plutil_json(&bytes, timeout).map_err(|_| {
-        localized(
-            "An application Info.plist could not be parsed.",
-            "Info.plist for et program kunne ikke tolkes.",
-        )
-    })?;
+    let (name, version) = match plutil_json(&bytes, timeout) {
+        Ok(json) => app_metadata(&json)?,
+        Err(()) => app_metadata_extracted(&bytes, timeout).map_err(|_| {
+            localized(
+                "An application Info.plist could not be parsed.",
+                "Info.plist for et program kunne ikke tolkes.",
+            )
+        })?,
+    };
+    Ok(app_package(path, info, name, version))
+}
+
+fn app_metadata(json: &Value) -> Result<(String, String), &'static str> {
     let dictionary = json.as_object().ok_or_else(|| {
         localized(
             "An application has invalid metadata.",
@@ -661,10 +671,39 @@ fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
         .or_else(|| dictionary.get("CFBundleVersion"))
         .and_then(Value::as_str)
         .unwrap_or(localized("Unknown", "Ukjent"));
+    Ok((name.to_owned(), version.to_owned()))
+}
+
+/// Whole-file `plutil -convert json` cannot represent `<data>` or `<date>`
+/// values, so a valid Info.plist containing either fails entirely. Read the
+/// four keys we actually need instead; each call shares the caller's remaining
+/// budget so the fallback cannot exceed the overall scan deadline.
+fn app_metadata_extracted(bytes: &[u8], timeout: Duration) -> Result<(String, String), ()> {
+    let started = Instant::now();
+    let remaining = |timeout: Duration| timeout.saturating_sub(started.elapsed());
+    let name = plutil_extract_string(bytes, "CFBundleDisplayName", remaining(timeout))
+        .or_else(|_| plutil_extract_string(bytes, "CFBundleName", remaining(timeout)))?;
+    let version = plutil_extract_string(bytes, "CFBundleShortVersionString", remaining(timeout))
+        .or_else(|_| plutil_extract_string(bytes, "CFBundleVersion", remaining(timeout)))
+        .unwrap_or_else(|_| localized("Unknown", "Ukjent").to_string());
+    Ok((name, version))
+}
+
+fn app_package(path: &Path, info: PathBuf, name: String, version: String) -> Package {
     let related_paths = [info];
-    Ok(Package {
-        name: name.to_owned(),
-        version: version.to_owned(),
+    let identity = capture_identity(
+        &name,
+        &version,
+        Source::App,
+        path,
+        None,
+        None,
+        None,
+        &related_paths,
+    );
+    Package {
+        name,
+        version,
         source: Source::App,
         path: path.to_path_buf(),
         latest: None,
@@ -675,17 +714,8 @@ fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
             "Vis programmet eller bruk sin egen oppdaterer.",
         )
         .to_string(),
-        identity: capture_identity(
-            name,
-            version,
-            Source::App,
-            path,
-            None,
-            None,
-            None,
-            &related_paths,
-        ),
-    })
+        identity,
+    }
 }
 
 fn discover_brew(
@@ -2305,6 +2335,46 @@ fn plutil_json(bytes: &[u8], timeout: Duration) -> Result<Value, ()> {
     serde_json::from_slice(&output.stdout).map_err(|_| ())
 }
 
+fn plutil_extract_string(bytes: &[u8], keypath: &str, timeout: Duration) -> Result<String, ()> {
+    if timeout.is_zero() {
+        return Err(());
+    }
+    let mut command = Command::new("/usr/bin/plutil");
+    command.args(["-extract", keypath, "raw", "-o", "-", "--", "-"]);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|_| ())?;
+    let mut child_stdin = child.stdin.take();
+    let input = bytes.to_vec();
+    let writer = thread::spawn(move || {
+        let Some(mut stdin) = child_stdin.take() else {
+            return false;
+        };
+        stdin.write_all(&input).is_ok()
+    });
+    let output_result = wait_bounded(&mut child, timeout.min(COMMAND_TIMEOUT));
+    let writer_result = writer.join().map_err(|_| ())?;
+    if !writer_result {
+        return Err(());
+    }
+    let output = output_result?;
+    if !output.status.success() {
+        return Err(());
+    }
+    if output.stdout.len() > MAX_EXTRACTED_VALUE_BYTES {
+        return Err(());
+    }
+    let value = String::from_utf8(output.stdout).map_err(|_| ())?;
+    let value = value.trim_end();
+    if value.is_empty() {
+        return Err(());
+    }
+    Ok(value.to_owned())
+}
+
 fn run_manager(
     program: &Path,
     args: &[&str],
@@ -3167,6 +3237,106 @@ mod tests {
         assert!(verify_action_outcome(Action::Update, "1", false, true, None).is_err());
         thread::sleep(Duration::from_millis(1_100));
         assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Mirrors the shape of a first-party system bundle whose Info.plist mixes
+    /// ordinary string keys with a `<data>` value.
+    const PLIST_WITH_DATA: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Fixture App</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.3</string>
+    <key>UIApplicationShortcutItems</key>
+    <array>
+        <dict>
+            <key>UIApplicationShortcutItemUserInfo</key>
+            <dict>
+                <key>data</key>
+                <data>eyJ0eXBlIjoiZml4dHVyZSJ9</data>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>"#;
+
+    const PLIST_WITH_DATE: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Fixture App</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.3</string>
+    <key>BuildDate</key>
+    <date>2026-01-01T00:00:00Z</date>
+</dict>
+</plist>"#;
+
+    const PLIST_STRINGS_ONLY: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Fixture App</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.3</string>
+</dict>
+</plist>"#;
+
+    #[test]
+    fn plist_extraction_recovers_metadata_when_json_conversion_fails() {
+        let timeout = Duration::from_secs(10);
+        for bytes in [PLIST_WITH_DATA, PLIST_WITH_DATE] {
+            assert!(plutil_json(bytes, timeout).is_err());
+            assert_eq!(
+                plutil_extract_string(bytes, "CFBundleDisplayName", timeout),
+                Ok("Fixture App".to_string())
+            );
+            assert_eq!(
+                plutil_extract_string(bytes, "CFBundleShortVersionString", timeout),
+                Ok("1.2.3".to_string())
+            );
+            assert_eq!(
+                app_metadata_extracted(bytes, timeout),
+                Ok(("Fixture App".to_string(), "1.2.3".to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn plist_json_fast_path_still_parses_convertible_plist() {
+        let timeout = Duration::from_secs(10);
+        let json = plutil_json(PLIST_STRINGS_ONLY, timeout).unwrap();
+        assert_eq!(
+            app_metadata(&json),
+            Ok(("Fixture App".to_string(), "1.2.3".to_string()))
+        );
+    }
+
+    #[test]
+    fn plist_extraction_rejects_absent_key_zero_timeout_and_garbage() {
+        let timeout = Duration::from_secs(10);
+        assert!(plutil_extract_string(PLIST_WITH_DATA, "MissingKey", timeout).is_err());
+        assert!(
+            plutil_extract_string(PLIST_WITH_DATA, "CFBundleDisplayName", Duration::ZERO).is_err()
+        );
+        assert!(plutil_extract_string(b"not a plist", "CFBundleDisplayName", timeout).is_err());
+    }
+
+    #[test]
+    fn parse_app_recovers_name_from_unrepresentable_plist() {
+        let root = temporary_root("parse-app");
+        let app = root.join("Fixture.app");
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        fs::write(app.join("Contents/Info.plist"), PLIST_WITH_DATA).unwrap();
+        let package = parse_app(&app, Duration::from_secs(10)).unwrap();
+        assert_eq!(package.name, "Fixture App");
+        assert_eq!(package.version, "1.2.3");
+        assert_eq!(package.source, Source::App);
         fs::remove_dir_all(root).unwrap();
     }
 
