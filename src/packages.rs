@@ -153,6 +153,30 @@ fn capture_identity(
     runtime: Option<PathBuf>,
     related_paths: &[PathBuf],
 ) -> Identity {
+    capture_identity_with_related_fingerprints(
+        name,
+        version,
+        source,
+        path,
+        manager,
+        prefix,
+        runtime,
+        related_paths,
+        None,
+    )
+}
+
+fn capture_identity_with_related_fingerprints(
+    name: &str,
+    version: &str,
+    source: Source,
+    path: &Path,
+    manager: Option<PathBuf>,
+    prefix: Option<PathBuf>,
+    runtime: Option<PathBuf>,
+    related_paths: &[PathBuf],
+    expected_related: Option<&[FsFingerprint]>,
+) -> Identity {
     Identity {
         name: name.to_owned(),
         version: version.to_owned(),
@@ -162,10 +186,12 @@ fn capture_identity(
         runtime_fingerprint: runtime.as_deref().and_then(FsFingerprint::capture),
         prefix_fingerprint: prefix.as_deref().and_then(FsFingerprint::capture),
         path_fingerprint: FsFingerprint::capture(path),
-        related_fingerprints: related_paths
-            .iter()
-            .filter_map(|path| FsFingerprint::capture(path))
-            .collect(),
+        related_fingerprints: expected_related.map(ToOwned::to_owned).unwrap_or_else(|| {
+            related_paths
+                .iter()
+                .filter_map(|path| FsFingerprint::capture(path))
+                .collect()
+        }),
         manager,
         prefix,
         runtime,
@@ -235,6 +261,12 @@ enum ManagerKind {
 struct ManagerRecord {
     package: Package,
     overlap_paths: Vec<PathBuf>,
+}
+
+struct CaskMetadata {
+    targets: Vec<PathBuf>,
+    related_paths: Vec<PathBuf>,
+    related_fingerprints: Vec<FsFingerprint>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -843,7 +875,7 @@ fn discover_brew_at(
                 continue;
             };
             let version_unambiguous = brew_version(item).is_some();
-            let (path, path_verified, overlap_paths) =
+            let (path, path_verified, _overlap_paths) =
                 brew_package_path(item, source, name, &version, &prefix);
             let path_verified = path_verified && version_unambiguous;
             let tap = item.get("tap").and_then(Value::as_str).unwrap_or_default();
@@ -855,8 +887,25 @@ fn discover_brew_at(
                 package_token.split('@').next().unwrap_or(package_token),
                 "npm" | "node" | "corepack" | "brew" | "homebrew"
             );
-            let related_paths = cask_target_snapshot_paths(&overlap_paths);
-            let identity = capture_identity(
+            let cask_metadata = if source == Source::BrewCask {
+                cask_metadata(
+                    item,
+                    &prefix,
+                    name.rsplit('/').next().unwrap_or(name),
+                    &version,
+                )
+            } else {
+                None
+            };
+            let overlap_paths = cask_metadata
+                .as_ref()
+                .map(|metadata| metadata.targets.clone())
+                .unwrap_or_default();
+            let related_paths = cask_metadata
+                .as_ref()
+                .map(|metadata| metadata.related_paths.clone())
+                .unwrap_or_else(|| cask_target_snapshot_paths(&overlap_paths));
+            let identity = capture_identity_with_related_fingerprints(
                 name,
                 &version,
                 source,
@@ -865,11 +914,14 @@ fn discover_brew_at(
                 Some(prefix.clone()),
                 None,
                 &related_paths,
+                cask_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.related_fingerprints.as_slice()),
             );
             let target_snapshots_complete =
                 identity.related_fingerprints.len() == related_paths.len();
             let simple_cask = source != Source::BrewCask
-                || (cask_artifacts_are_simple(item, &overlap_paths)
+                || (cask_metadata.is_some()
                     && !overlap_paths.is_empty()
                     && target_snapshots_complete);
             let reason = if !official {
@@ -905,6 +957,12 @@ fn discover_brew_at(
                 localized(
                     "This Homebrew package is pinned; unpin it before updating.",
                     "Denne Homebrew-pakken er låst; lås den opp før oppdatering.",
+                )
+                .to_string()
+            } else if source == Source::BrewCask && cask_metadata.is_none() {
+                localized(
+                    "Installed cask metadata could not be verified; actions are disabled.",
+                    "Installert cask-metadata kunne ikke bekreftes; handlinger er deaktivert.",
                 )
                 .to_string()
             } else if !simple_cask {
@@ -1657,104 +1715,197 @@ fn brew_package_path(
             .is_some_and(|path| path.starts_with(root) && path.is_dir())
     }) && !path_has_symlink_component(&raw_path);
     let path = canonical_path.unwrap_or(raw_path);
-    let overlap_paths = if source == Source::BrewCask {
-        cask_artifact_targets(item)
-    } else {
-        Vec::new()
-    };
+    let overlap_paths = Vec::new();
     (path, path_verified, overlap_paths)
 }
 
-fn cask_artifact_targets(item: &Value) -> Vec<PathBuf> {
-    let Some(artifacts) = item.get("artifacts").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+fn cask_metadata(item: &Value, prefix: &Path, token: &str, version: &str) -> Option<CaskMetadata> {
+    let config_path = prefix
+        .join("Caskroom")
+        .join(token)
+        .join(".metadata/config.json");
+    let receipt_path = prefix
+        .join("Caskroom")
+        .join(token)
+        .join(version)
+        .join(".metadata/INSTALL_RECEIPT.json");
+    let config = read_trusted_json(&config_path)?;
+    let receipt = read_trusted_json(&receipt_path)?;
+    let appdir = cask_appdir(&config)?;
+    let current = resolve_cask_targets(item.get("artifacts")?, &appdir)?;
+    let receipt_object = receipt.as_object()?;
+    if receipt_object
+        .get("uninstall_flight_blocks")
+        .and_then(Value::as_bool)
+        != Some(false)
+        || receipt_object
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("tap"))
+            .and_then(Value::as_str)
+            != Some("homebrew/cask")
+        || receipt_object
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("version"))
+            .and_then(Value::as_str)
+            != Some(version)
+    {
+        return None;
+    }
+    let receipt_targets =
+        resolve_cask_targets(receipt_object.get("uninstall_artifacts")?, &appdir)?;
+    if current != receipt_targets {
+        return None;
+    }
+    let mut related_paths = vec![config_path.clone(), receipt_path.clone()];
+    related_paths.extend(cask_target_snapshot_paths(&current));
+    let related_fingerprints = related_paths
+        .iter()
+        .map(|path| FsFingerprint::capture(path))
+        .collect::<Option<Vec<_>>>()?;
+    let config_after = FsFingerprint::capture(&config_path)?;
+    let receipt_after = FsFingerprint::capture(&receipt_path)?;
+    if related_fingerprints[0] != config_after || related_fingerprints[1] != receipt_after {
+        return None;
+    }
+    Some(CaskMetadata {
+        targets: current,
+        related_paths,
+        related_fingerprints,
+    })
+}
+
+fn cask_appdir(config: &Value) -> Option<PathBuf> {
+    let appdir = ["explicit", "env", "default"]
+        .iter()
+        .find_map(|key| config.get(*key)?.get("appdir")?.as_str())?;
+    let path = PathBuf::from(appdir);
+    if !path.is_absolute() || path_has_symlink_component(&path) {
+        return None;
+    }
+    let canonical = fs::canonicalize(&path).ok()?;
+    if !trusted_directory_path(&canonical) {
+        return None;
+    }
+    Some(canonical)
+}
+
+fn resolve_cask_targets(artifacts: &Value, appdir: &Path) -> Option<Vec<PathBuf>> {
+    let artifacts = artifacts.as_array()?;
     let mut targets = HashSet::new();
     for artifact in artifacts {
-        let Some(app) = cask_app_name(artifact) else {
-            continue;
-        };
-        let Some(target) = artifact
-            .get("target")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-        else {
-            continue;
-        };
-        let app = Path::new(app);
-        if !target.is_absolute()
-            || app.extension().and_then(|extension| extension.to_str()) != Some("app")
-            || target.extension().and_then(|extension| extension.to_str()) != Some("app")
-            || app.file_name() != target.file_name()
-        {
-            continue;
-        }
-        if let Some(canonical) = canonical_app_target(&target) {
-            targets.insert(canonical);
-        }
-    }
-    let mut targets: Vec<_> = targets.into_iter().collect();
-    targets.sort();
-    targets
-}
-
-fn cask_app_name(artifact: &Value) -> Option<&str> {
-    let app = artifact.get("app")?;
-    match app {
-        Value::String(name) => Some(name),
-        Value::Array(items) if items.len() == 1 => items[0].as_str(),
-        _ => None,
-    }
-}
-
-fn cask_artifacts_are_simple(item: &Value, targets: &[PathBuf]) -> bool {
-    let Some(artifacts) = item.get("artifacts").and_then(Value::as_array) else {
-        return false;
-    };
-    if artifacts.is_empty() || targets.is_empty() {
-        return false;
-    }
-    let mut app_artifact_count = 0;
-    for artifact in artifacts {
-        let Some(object) = artifact.as_object() else {
-            return false;
-        };
-        // Zap metadata is inert: actions never request --zap or leftover cleanup.
+        let object = artifact.as_object()?;
         if object.len() == 1 && object.contains_key("zap") {
             continue;
         }
-        if object
-            .keys()
-            .any(|key| !matches!(key.as_str(), "app" | "target"))
+        if object.keys().any(|key| key != "app") {
+            return None;
+        }
+        let app = object.get("app")?.as_array()?;
+        if app.is_empty() || app.len() > 2 {
+            return None;
+        }
+        let source = app[0].as_str()?;
+        let source_path = Path::new(source);
+        if source_path.is_absolute()
+            || source_path.components().count() != 1
+            || source_path.file_name() != Some(source_path.as_os_str())
+            || source_path.extension().and_then(|ext| ext.to_str()) != Some("app")
+        {
+            return None;
+        }
+        let target = if app.len() == 1 {
+            appdir.join(source_path)
+        } else {
+            let target = app[1].as_object()?;
+            if target.len() != 1 {
+                return None;
+            }
+            let target = target.get("target")?.as_str()?;
+            let target_path = Path::new(target);
+            if target_path.is_absolute() {
+                target_path.to_path_buf()
+            } else {
+                if target_path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
+                {
+                    return None;
+                }
+                appdir.join(target_path)
+            }
+        };
+        let canonical = canonical_app_target(&target)?;
+        if !canonical.starts_with(appdir) || !trusted_directory_path(&canonical) {
+            return None;
+        }
+        targets.insert(canonical);
+    }
+    let mut targets: Vec<_> = targets.into_iter().collect();
+    targets.sort();
+    (!targets.is_empty()).then_some(targets)
+}
+
+fn trusted_metadata_path(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    let uid = unsafe { libc::getuid() };
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.mode() & 0o022 == 0
+        && (metadata.uid() == 0 || metadata.uid() == uid)
+        && !path_has_symlink_component(path)
+        && trusted_metadata_ancestors(path)
+}
+
+fn trusted_directory_path(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    let uid = unsafe { libc::getuid() };
+    metadata.is_dir()
+        && !metadata.file_type().is_symlink()
+        && metadata.mode() & 0o022 == 0
+        && (metadata.uid() == 0 || metadata.uid() == uid)
+        && !path_has_symlink_component(path)
+        && trusted_metadata_ancestors(path)
+}
+
+fn trusted_metadata_ancestors(path: &Path) -> bool {
+    let uid = unsafe { libc::getuid() };
+    let mut current = path.parent();
+    while let Some(directory) = current {
+        let Ok(metadata) = fs::symlink_metadata(directory) else {
+            return false;
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || !directory_mode_is_trusted(metadata.mode(), metadata.gid(), trusted_admin_gid())
+            || (metadata.uid() != 0 && metadata.uid() != uid)
         {
             return false;
         }
-        if let Some(app) = cask_app_name(artifact) {
-            app_artifact_count += 1;
-            let Some(target) = object.get("target").and_then(Value::as_str) else {
-                return false;
-            };
-            let app = Path::new(app);
-            let target_path = Path::new(target);
-            if !target_path.is_absolute()
-                || app.extension().and_then(|extension| extension.to_str()) != Some("app")
-                || target_path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    != Some("app")
-                || app.file_name() != target_path.file_name()
-            {
-                return false;
-            }
-        } else {
-            return false;
+        if directory == Path::new("/") {
+            break;
         }
+        current = directory.parent();
     }
-    app_artifact_count == targets.len()
-        && app_artifact_count > 0
-        && targets
-            .iter()
-            .all(|target| canonical_app_target(target).is_some())
+    true
+}
+
+fn read_trusted_json(path: &Path) -> Option<Value> {
+    if !trusted_metadata_path(path) {
+        return None;
+    }
+    let before = FsFingerprint::capture(path)?;
+    let bytes = read_bounded_file(path).ok()?;
+    let after = FsFingerprint::capture(path)?;
+    if before != after {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn cask_target_snapshot_paths(targets: &[PathBuf]) -> Vec<PathBuf> {
@@ -2516,36 +2667,99 @@ mod tests {
     }
 
     #[test]
-    fn cask_writes_require_an_exact_installed_app_artifact() {
-        let root = temporary_root("cask");
-        let target = root.join("Applications/Sample.app");
+    fn verified_cask_metadata_resolves_default_and_renamed_targets() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(format!("target/tidegauge-cask-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let appdir = root.join("Applications");
+        let target = appdir.join("Sample.app");
         fs::create_dir_all(target.join("Contents")).unwrap();
         fs::write(target.join("Contents/Info.plist"), b"metadata").unwrap();
-        let target = fs::canonicalize(target).unwrap();
-        let target_text = target.to_string_lossy();
-        let app_name = target.file_name().unwrap().to_string_lossy();
+        let cask = root.join("Caskroom/sample");
+        fs::create_dir_all(cask.join(".metadata")).unwrap();
+        fs::create_dir_all(cask.join("1/.metadata")).unwrap();
+        fs::write(
+            cask.join(".metadata/config.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "explicit": {"appdir": appdir},
+                "env": {"appdir": "/Applications"},
+                "default": {"appdir": "/Applications"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            cask.join("1/.metadata/INSTALL_RECEIPT.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "source": {"tap": "homebrew/cask", "version": "1"},
+                "uninstall_flight_blocks": false,
+                "uninstall_artifacts": [{"app": ["Sample.app"]}, {"zap": []}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let item = serde_json::json!({
             "artifacts": [{
-                "app": [app_name.to_string()],
-                "target": target_text.to_string()
+                "app": ["Sample.app"]
             }, {"zap": [{"trash": ["~/Library/Caches/Sample"]}]}]
         });
-        let targets = cask_artifact_targets(&item);
-        assert_eq!(targets.len(), 1);
-        assert!(cask_artifacts_are_simple(&item, &targets));
-        let snapshots = cask_target_snapshot_paths(&targets);
-        assert_eq!(snapshots.len(), 2);
+        let metadata = cask_metadata(&item, &root, "sample", "1").unwrap();
+        assert_eq!(metadata.targets, vec![fs::canonicalize(&target).unwrap()]);
+        assert!(cask_metadata(
+            &serde_json::json!({"artifacts": [{"pkg": "Sample.pkg"}]}),
+            &root,
+            "sample",
+            "1"
+        )
+        .is_none());
+        assert!(cask_metadata(
+            &serde_json::json!({"artifacts": [{"app": ["../Sample.app"]}]}),
+            &root,
+            "sample",
+            "1"
+        )
+        .is_none());
 
-        let installer = serde_json::json!({
-            "artifacts": [
-                {"app": app_name.to_string(), "target": target_text.to_string()},
-                {"pkg": "Sample.pkg"}
-            ]
+        let renamed = appdir.join("Nested/Renamed.app");
+        fs::create_dir_all(renamed.join("Contents")).unwrap();
+        fs::write(renamed.join("Contents/Info.plist"), b"metadata").unwrap();
+        let renamed_item = serde_json::json!({
+            "artifacts": [{"app": ["Sample.app", {"target": "Nested/Renamed.app"}]}]
         });
-        assert!(!cask_artifacts_are_simple(
-            &installer,
-            &cask_artifact_targets(&installer)
-        ));
+        let receipt = serde_json::json!({
+            "source": {"tap": "homebrew/cask", "version": "1"},
+            "uninstall_flight_blocks": false,
+            "uninstall_artifacts": [{"app": ["Sample.app", {"target": "Nested/Renamed.app"}]}]
+        });
+        let mismatched_receipt = serde_json::json!({
+            "source": {"tap": "homebrew/cask", "version": "2"},
+            "uninstall_flight_blocks": false,
+            "uninstall_artifacts": [{"app": ["Sample.app"]}]
+        });
+        fs::write(
+            cask.join("1/.metadata/INSTALL_RECEIPT.json"),
+            serde_json::to_vec(&mismatched_receipt).unwrap(),
+        )
+        .unwrap();
+        assert!(cask_metadata(&renamed_item, &root, "sample", "1").is_none());
+        fs::write(
+            cask.join("1/.metadata/INSTALL_RECEIPT.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        let renamed_metadata = cask_metadata(&renamed_item, &root, "sample", "1").unwrap();
+        assert_eq!(
+            renamed_metadata.targets,
+            vec![fs::canonicalize(renamed).unwrap()]
+        );
+        assert!(cask_metadata(
+            &serde_json::json!({"artifacts": [{"app": ["Sample.app"], "target": "Sample.app"}]}),
+            &root,
+            "sample",
+            "1"
+        )
+        .is_none());
         fs::remove_dir_all(root).unwrap();
     }
 

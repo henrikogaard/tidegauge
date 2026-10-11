@@ -579,8 +579,8 @@ fn parse_disabled_output(bytes: &[u8]) -> Result<BTreeMap<String, bool>, &'stati
         };
         let state = state.trim();
         let disabled = match state {
-            "disabled" => true,
-            "enabled" => false,
+            "disabled" | "true" => true,
+            "enabled" | "false" => false,
             _ => return Err("invalid state"),
         };
         if !valid_label(label) {
@@ -875,14 +875,20 @@ mod tests {
     fn launchctl_disabled_output_parser_is_strict_and_bounded() {
         let output = br#"disabled services = {
     "com.example.off" => disabled
-    "com.example.on" => enabled
+    "com.example.on" => false
+    "com.example.bool" => true
+    "com.example.text" => enabled
 }
 "#;
         let states = parse_disabled_output(output).unwrap();
         assert_eq!(states.get("com.example.off"), Some(&true));
         assert_eq!(states.get("com.example.on"), Some(&false));
+        assert_eq!(states.get("com.example.bool"), Some(&true));
+        assert_eq!(states.get("com.example.text"), Some(&false));
         assert!(parse_disabled_output(br#""bad label" => disabled"#).is_err());
         assert!(parse_disabled_output(br#""com.example.off" => maybe"#).is_err());
+        assert!(parse_disabled_output(br#""com.example.off" => 1"#).is_err());
+        assert!(parse_disabled_output(br#""com.example.off" => TRUE"#).is_err());
     }
 
     #[cfg(target_os = "macos")]
