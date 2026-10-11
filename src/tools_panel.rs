@@ -635,7 +635,9 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         .child(sub(l("Read-only metadata scan, no deletion or file downloads. Allocated bytes are not reclaimable space: APFS sharing, snapshots and compression affect totals. Links and other volumes are skipped; hard links are counted once. Access failures and cloud placeholders leave incomplete results.","Skrivebeskyttet metadataskanning, ingen sletting eller filnedlasting. Tildelte byte er ikke frigjørbar plass: APFS-deling, øyeblikksbilder og komprimering påvirker summene. Lenker og andre volumer hoppes over; harde lenker telles én gang. Tilgangsfeil og skyplassholdere gir ufullstendige resultater.")))
         .child(sub(l("Bounded to 100,000 entries, depth 64 and 128 queued folders. Large scans may be partial. Folder totals attribute shared hard links to the first path encountered.","Begrenset til 100 000 oppføringer, dybde 64 og 128 mapper i kø. Store skanninger kan være delvise. Mapper tilordnes delte harde lenker etter første sti som blir funnet."))).child(actions));
     if let Some(d) = data {
-        let status = if d.cancelled {
+        let status = if d.error.is_some() {
+            l("Scan unavailable", "Skanning utilgjengelig")
+        } else if d.cancelled {
             l("Cancelled — partial", "Avbrutt — delvis")
         } else if d.limited || d.errors > 0 || d.skipped > 0 {
             l("Partial inventory", "Delvis oversikt")

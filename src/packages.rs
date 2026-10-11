@@ -98,6 +98,9 @@ struct FsFingerprint {
     size: u64,
     modified_seconds: i64,
     modified_nanoseconds: i64,
+    owner: u32,
+    group: u32,
+    mode: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -186,6 +189,9 @@ impl FsFingerprint {
             size: metadata.size(),
             modified_seconds: metadata.mtime(),
             modified_nanoseconds: metadata.mtime_nsec(),
+            owner: metadata.uid(),
+            group: metadata.gid(),
+            mode: metadata.mode(),
         })
     }
 }
@@ -390,7 +396,7 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
         .identity
         .source_key()
         .ok_or_else(identity_changed_message)?;
-    let unique_after = unique_source_package(&after.inventory, &key, &fresh.name);
+    let unique_after = unique_source_package(&after.inventory, &key, &fresh.name)?;
     verify_action_outcome(
         action,
         &fresh.version,
@@ -404,13 +410,16 @@ fn unique_source_package<'a>(
     inventory: &'a Inventory,
     key: &SourceKey,
     name: &str,
-) -> Option<&'a Package> {
+) -> Result<Option<&'a Package>, String> {
     let mut matching = inventory
         .items
         .iter()
         .filter(|item| item.identity.source_key().as_ref() == Some(key) && item.name == name);
-    let first = matching.next()?;
-    matching.next().is_none().then_some(first)
+    let first = matching.next();
+    if matching.next().is_some() {
+        return Err(outcome_unverified());
+    }
+    Ok(first)
 }
 
 fn preflight_action(
@@ -843,7 +852,7 @@ fn discover_brew_at(
             let latest = updates.get(name).cloned();
             let package_token = name.rsplit('/').next().unwrap_or(name);
             let is_manager = matches!(
-                package_token,
+                package_token.split('@').next().unwrap_or(package_token),
                 "npm" | "node" | "corepack" | "brew" | "homebrew"
             );
             let related_paths = cask_target_snapshot_paths(&overlap_paths);
@@ -1601,6 +1610,9 @@ fn mark_duplicate_manager_packages(records: &mut [ManagerRecord]) {
 }
 
 fn brew_version(item: &Value) -> Option<String> {
+    if let Some(version) = item.get("installed").and_then(Value::as_str) {
+        return (!version.is_empty()).then(|| version.to_owned());
+    }
     let installed = item.get("installed").and_then(Value::as_array)?;
     if installed.len() != 1 {
         return None;
@@ -1659,7 +1671,7 @@ fn cask_artifact_targets(item: &Value) -> Vec<PathBuf> {
     };
     let mut targets = HashSet::new();
     for artifact in artifacts {
-        let Some(app) = artifact.get("app").and_then(Value::as_str) else {
+        let Some(app) = cask_app_name(artifact) else {
             continue;
         };
         let Some(target) = artifact
@@ -1681,7 +1693,18 @@ fn cask_artifact_targets(item: &Value) -> Vec<PathBuf> {
             targets.insert(canonical);
         }
     }
-    targets.into_iter().collect()
+    let mut targets: Vec<_> = targets.into_iter().collect();
+    targets.sort();
+    targets
+}
+
+fn cask_app_name(artifact: &Value) -> Option<&str> {
+    let app = artifact.get("app")?;
+    match app {
+        Value::String(name) => Some(name),
+        Value::Array(items) if items.len() == 1 => items[0].as_str(),
+        _ => None,
+    }
 }
 
 fn cask_artifacts_are_simple(item: &Value, targets: &[PathBuf]) -> bool {
@@ -1696,13 +1719,17 @@ fn cask_artifacts_are_simple(item: &Value, targets: &[PathBuf]) -> bool {
         let Some(object) = artifact.as_object() else {
             return false;
         };
+        // Zap metadata is inert: actions never request --zap or leftover cleanup.
+        if object.len() == 1 && object.contains_key("zap") {
+            continue;
+        }
         if object
             .keys()
             .any(|key| !matches!(key.as_str(), "app" | "target"))
         {
             return false;
         }
-        if let Some(app) = object.get("app").and_then(Value::as_str) {
+        if let Some(app) = cask_app_name(artifact) {
             app_artifact_count += 1;
             let Some(target) = object.get("target").and_then(Value::as_str) else {
                 return false;
@@ -1723,7 +1750,8 @@ fn cask_artifacts_are_simple(item: &Value, targets: &[PathBuf]) -> bool {
             return false;
         }
     }
-    app_artifact_count > 0
+    app_artifact_count == targets.len()
+        && app_artifact_count > 0
         && targets
             .iter()
             .all(|target| canonical_app_target(target).is_some())
@@ -1903,7 +1931,7 @@ fn trusted_executable(path: &Path) -> bool {
         };
         if metadata.file_type().is_symlink()
             || !metadata.is_dir()
-            || metadata.mode() & 0o022 != 0
+            || !directory_mode_is_trusted(metadata.mode(), metadata.gid(), trusted_admin_gid())
             || (metadata.uid() != 0 && metadata.uid() != uid)
         {
             return false;
@@ -1920,6 +1948,35 @@ fn executable_mode_is_trusted(mode: u32) -> bool {
     mode & 0o111 != 0 && mode & 0o022 == 0
 }
 
+fn directory_mode_is_trusted(mode: u32, gid: u32, admin_gid: Option<u32>) -> bool {
+    mode & 0o002 == 0 && (mode & 0o020 == 0 || Some(gid) == admin_gid)
+}
+
+fn trusted_admin_gid() -> Option<u32> {
+    static ADMIN: OnceLock<Option<u32>> = OnceLock::new();
+    *ADMIN.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            let mut group = unsafe { std::mem::zeroed::<libc::group>() };
+            let mut result = std::ptr::null_mut();
+            let mut buffer = vec![0u8; 16 * 1024];
+            let status = unsafe {
+                libc::getgrnam_r(
+                    c"admin".as_ptr(),
+                    &mut group,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    &mut result,
+                )
+            };
+            (status == 0 && !result.is_null()).then_some(group.gr_gid)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    })
+}
 fn path_has_symlink_component(path: &Path) -> bool {
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -2353,6 +2410,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(brew_version(&formula).as_deref(), Some("1.2.3"));
+        let cask = serde_json::json!({"token":"sample", "installed":"1.2.3", "version":"2.0"});
+        assert_eq!(brew_version(&cask).as_deref(), Some("1.2.3"));
+        assert!(brew_version(&serde_json::json!({"version":"2.0"})).is_none());
 
         let multiple: Value = serde_json::from_str(
             r#"{"name":"sample","tap":"homebrew/core","installed":[{"version":"1.2.3"},{"version":"1.1.0"}]}"#,
@@ -2466,9 +2526,9 @@ mod tests {
         let app_name = target.file_name().unwrap().to_string_lossy();
         let item = serde_json::json!({
             "artifacts": [{
-                "app": app_name.to_string(),
+                "app": [app_name.to_string()],
                 "target": target_text.to_string()
-            }]
+            }, {"zap": [{"trash": ["~/Library/Caches/Sample"]}]}]
         });
         let targets = cask_artifact_targets(&item);
         assert_eq!(targets.len(), 1);
@@ -2495,6 +2555,10 @@ mod tests {
         assert!(!executable_mode_is_trusted(0o775));
         assert!(!executable_mode_is_trusted(0o757));
         assert!(!executable_mode_is_trusted(0o644));
+        assert!(directory_mode_is_trusted(0o775, 80, Some(80)));
+        assert!(!directory_mode_is_trusted(0o775, 20, Some(80)));
+        assert!(!directory_mode_is_trusted(0o777, 80, Some(80)));
+        assert!(!directory_mode_is_trusted(0o775, 80, None));
     }
 
     #[test]
@@ -2699,11 +2763,13 @@ mod tests {
         assert_eq!(
             unique_source_package(&inventory, &first_key, "tool")
                 .unwrap()
+                .unwrap()
                 .path,
             first.path
         );
         assert_eq!(
             unique_source_package(&inventory, &second_key, "tool")
+                .unwrap()
                 .unwrap()
                 .path,
             inventory.items[1].path
@@ -2713,7 +2779,12 @@ mod tests {
             items: vec![first.clone(), first.clone()],
             warnings: Vec::new(),
         };
-        assert!(unique_source_package(&duplicate_inventory, &first_key, "tool").is_none());
+        assert!(unique_source_package(&duplicate_inventory, &first_key, "tool").is_err());
+        assert!(
+            unique_source_package(&Inventory::default(), &first_key, "tool")
+                .unwrap()
+                .is_none()
+        );
         fs::remove_dir_all(first_root).unwrap();
         fs::remove_dir_all(second_root).unwrap();
     }
