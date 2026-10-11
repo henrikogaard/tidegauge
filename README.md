@@ -86,6 +86,12 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | History | Local 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps |
 | Alerts | Opt-in CPU, used-memory, disk, and network alerts; configurable CPU/memory thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
+| Processes | Observed app/helper ownership, start time, UID, current parent, possible startup associations, normal app Quit and guarded helper Stop |
+| Tools · Startup | Bounded legacy registration inventory, explicit override evidence, Tidegauge login preference and System Settings handoff |
+| Tools · Resource activity | Recent per-process CPU and disk I/O averages with observed coverage, not an energy score |
+| Tools · Compare | Frozen 5-, 15- or 30-minute system summaries and equal-length, non-overlapping comparisons |
+| Tools · Storage | Cancellable metadata-only selected-folder scan, allocated/logical sizes, largest files and Reveal in Finder |
+| Tools · Apps & Packages | Explicit source-filtered app/package inventory and single-item package-manager actions where ownership can be verified |
 
 ## Current limitations
 
@@ -100,6 +106,10 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 - Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and top-60 app recording have important limitations; see [history semantics](docs/HISTORY.md).
 - Keep awake prevents **idle system sleep only**. Displays may sleep, and closing the lid or explicitly sleeping still takes precedence. It releases on expiry, Stop, or app exit and does not resume automatically after restart.
 - Dashboard reset affects only tab order, favorites, and compact layout. It does not reset menu-bar readings, appearance, login, or alert preferences. Overview and Settings remain reachable.
+- Startup inventory is partial. Modern login/background items are managed through System Settings. Third-party disable, removal and restoration are deliberately unavailable until managed/protected registration eligibility can be established safely; a plist or an absent launchctl override does not establish effective state.
+- Resource activity is a recent observed window, not lifetime consumption, watts, an energy-impact score or predicted battery savings. Counter resets, process replacement, missing observations and long gaps reset coverage; wakeup rankings await physical validation.
+- Baselines compare system metrics only, require 80% coverage for percentage changes, and never divide by a zero baseline. A saved summary survives History pruning. Power-source/thermal context is not recorded, and differences do not prove causation.
+- Storage scans never delete files or calculate guaranteed reclaimable space. APFS sharing and snapshots affect totals. Cloud placeholders, links, other volumes and inaccessible files are skipped. Bounds on entries, recursion and queued directories can produce explicitly partial results.
 
 Projects requires a working directory within four levels of a Git root or a recognized manifest (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, or `composer.json`). Known development runtimes and custom executables inside that project qualify. Desktop app bundles, other users' processes, root/home directories, and listeners without a project marker are excluded. Servers launched from unrelated folders will not appear.
 
@@ -109,6 +119,7 @@ Projects requires a working directory within four levels of a Git root or a reco
 |---|---|
 | Settings | `~/Library/Application Support/no.ogard.tidegauge/settings.json` |
 | History | `~/Library/Application Support/no.ogard.tidegauge/history.db` |
+| Saved system baseline | `~/Library/Application Support/no.ogard.tidegauge/system-baseline-v1.json` |
 | Cached app icons | `~/Library/Caches/no.ogard.tidegauge/icons/` |
 
 Open Settings using the dashboard footer, the app menu, or Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Optional readings appear together in one native item, with labels for values and graphs, consistent spacing, and fixed widths for changing values. Changes are saved immediately and applied on the next refresh. Use Reset to icon only to clear extra readings. Existing preferences are preserved on upgrade.
@@ -149,6 +160,9 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 | `src/audio.rs` | CoreAudio device and process properties |
 | `src/bluetooth.rs` | Bluetooth JSON parsing and cache |
 | `src/history.rs`, `src/history_browser.rs` | SQLite persistence and read-only range queries |
+| `src/baselines.rs`, `src/resource_activity.rs` | Frozen time-weighted summaries and identity-aware recent process activity |
+| `src/startup.rs`, `src/packages.rs`, `src/storage.rs` | Bounded inventories and source-specific safety checks |
+| `src/tools_panel.rs` | Tools navigation and asynchronous inventory/scan/comparison controls |
 | `src/alerts.rs` | Sustained alert thresholds, recovery, and cooldowns |
 | `src/keepawake.rs` | Owned native idle-sleep assertions and expiry |
 | `src/controls.rs` | Settings, history, keep-awake, and output-device controls |
