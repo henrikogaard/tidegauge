@@ -22,14 +22,54 @@ pub enum Tab {
     Sound,
     Bluetooth,
     Projects,
+    History,
 }
 
 impl Tab {
-    const ALL: [Tab; 11] = [
-        Tab::Overview, Tab::Cpu, Tab::Memory, Tab::Disk, Tab::Network, Tab::Gpu,
-        Tab::Neural, Tab::Battery, Tab::Sound, Tab::Bluetooth, Tab::Projects,
+    const ALL: [Tab; 12] = [
+        Tab::Overview,
+        Tab::Cpu,
+        Tab::Memory,
+        Tab::Disk,
+        Tab::Network,
+        Tab::Gpu,
+        Tab::Neural,
+        Tab::Battery,
+        Tab::Sound,
+        Tab::Bluetooth,
+        Tab::Projects,
+        Tab::History,
     ];
-    fn label(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::Network => "network",
+            Self::Gpu => "gpu",
+            Self::Neural => "neural",
+            Self::Battery => "battery",
+            Self::Sound => "sound",
+            Self::Bluetooth => "bluetooth",
+            Self::Projects => "projects",
+            Self::History => "history",
+        }
+    }
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tab| tab.key() == key)
+    }
+    fn visible() -> Vec<Self> {
+        std::iter::once(Self::Overview)
+            .chain(
+                crate::settings::Settings::load()
+                    .dashboard_tabs
+                    .iter()
+                    .filter_map(|k| Self::from_key(k)),
+            )
+            .collect()
+    }
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Tab::Overview => l("Overview", "Oversikt"),
             Tab::Cpu => "CPU",
@@ -42,6 +82,7 @@ impl Tab {
             Tab::Sound => l("Sound", "Lyd"),
             Tab::Bluetooth => "Bluetooth",
             Tab::Projects => l("Projects", "Prosjekter"),
+            Tab::History => l("History", "Historikk"),
         }
     }
     fn icon(self) -> &'static str {
@@ -57,6 +98,7 @@ impl Tab {
             Tab::Sound => "icons/volume-2.svg",
             Tab::Bluetooth => "icons/bluetooth.svg",
             Tab::Projects => "icons/folder-code.svg",
+            Tab::History => "icons/clock.svg",
         }
     }
     fn metric(self) -> Option<Metric> {
@@ -71,7 +113,7 @@ impl Tab {
             Tab::Sound => Some(Metric::Sound),
             Tab::Bluetooth => Some(Metric::Bluetooth),
             Tab::Projects => Some(Metric::Projects),
-            Tab::Overview => None,
+            Tab::Overview | Tab::History => None,
         }
     }
 }
@@ -87,6 +129,15 @@ pub struct TideGaugeView {
     pub settings_error: Option<String>,
     pub selected_disk: Option<String>,
     pub project_error: Option<String>,
+    pub project_stopping: bool,
+    pub project_stop_failed: bool,
+    pub audio_error: Option<String>,
+    pub audio_pending: bool,
+    pub history_request: crate::history_browser::Request,
+    pub history_data: Option<Result<crate::history_browser::Data, String>>,
+    pub history_loading: bool,
+    pub history_generation: u64,
+    pub history_app_picker: bool,
     tab_scrolls: Vec<ScrollHandle>,
     settings_scroll: ScrollHandle,
 }
@@ -98,7 +149,10 @@ impl TideGaugeView {
         focus.focus(window, cx);
         let v = TideGaugeView {
             tab: Tab::Overview,
-            dark: matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark),
+            dark: matches!(
+                window.appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            ),
             scroll: ScrollHandle::new(),
             focus,
             snap: latest(),
@@ -107,21 +161,33 @@ impl TideGaugeView {
             settings_error: None,
             selected_disk: None,
             project_error: None,
+            project_stopping: false,
+            project_stop_failed: false,
+            audio_error: None,
+            audio_pending: false,
+            history_request: crate::history_browser::Request::default(),
+            history_data: None,
+            history_loading: false,
+            history_generation: 0,
+            history_app_picker: false,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: ScrollHandle::new(),
         };
         // 1s refresh loop
-        cx.spawn(async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| {
-            loop {
+        cx.spawn(
+            async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| loop {
                 smol::Timer::after(std::time::Duration::from_millis(1000)).await;
                 let _ = cx.update(|cx: &mut App| {
-                    let _ = this.update(cx, |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
-                        v.snap = latest();
-                        cx.notify();
-                    });
+                    let _ = this.update(
+                        cx,
+                        |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
+                            v.snap = latest();
+                            cx.notify();
+                        },
+                    );
                 });
-            }
-        })
+            },
+        )
         .detach();
         v
     }
@@ -137,7 +203,7 @@ fn caption(text: &str) -> Div {
         .child(text.to_uppercase())
 }
 
-fn sub(text: impl Into<String>) -> Div {
+pub(crate) fn sub(text: impl Into<String>) -> Div {
     div().text_xs().child(text.into())
 }
 
@@ -293,7 +359,7 @@ fn app_row(rank: usize, app: &AppGroup, value: String, frac: f64, color: Hsla, d
         )
 }
 
-fn card(dark: bool) -> Div {
+pub(crate) fn card(dark: bool) -> Div {
     div()
         .bg(t::card(dark))
         .rounded(px(12.))
@@ -317,36 +383,73 @@ fn hero(
 ) -> Div {
     card(dark)
         .child(
-            div().flex().items_center().gap_6().child(
-                div().w(px(240.)).flex_shrink_0()
-                    .child(sub(label.to_uppercase()).text_color(t::ink_dim(dark)).font_weight(FontWeight::SEMIBOLD))
-                    .child(
-                        div()
-                            .text_size(px(36.))
-                            .font_weight(FontWeight::BOLD)
-                            .child(value),
-                    )
-                    .child(sub(sublabel).text_color(t::ink_dim(dark))),
-            ).when(!hist.pts.is_empty(), |d| d.child(
-                div().flex_1().min_w_0().flex().flex_col().gap_2()
-                    .child(div().flex().justify_between().text_xs().text_color(t::ink_dim(dark))
-                        .child(l("Recent samples", "Siste målinger"))
-                        .child(max_hint.map(|v| format!("0–{v:.0}%")).unwrap_or_else(|| l("Auto scale", "Automatisk skala").into())))
-                    .child(area_chart(&hist.pts, 92.0, color, max_hint))
-                    .child(div().flex().justify_between().text_xs().text_color(t::ink_dim(dark))
-                        .child(l("Older", "Eldre")).child(l("Now", "Nå")))
-            )),
-        )
-        .when(!footer.is_empty(), |d| d.child(
             div()
                 .flex()
+                .items_center()
                 .gap_6()
-                .children(footer.into_iter().map(|(k, v)| {
-                    div().flex_1().min_w_0()
-                        .child(sub(k).text_color(t::ink_dim(dark)))
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(v))
-                })),
-        ))
+                .child(
+                    div()
+                        .w(px(240.))
+                        .flex_shrink_0()
+                        .child(
+                            sub(label.to_uppercase())
+                                .text_color(t::ink_dim(dark))
+                                .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(36.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(value),
+                        )
+                        .child(sub(sublabel).text_color(t::ink_dim(dark))),
+                )
+                .when(!hist.pts.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(t::ink_dim(dark))
+                                    .child(l("Recent samples", "Siste målinger"))
+                                    .child(max_hint.map(|v| format!("0–{v:.0}%")).unwrap_or_else(
+                                        || l("Auto scale", "Automatisk skala").into(),
+                                    )),
+                            )
+                            .child(area_chart(&hist.pts, 92.0, color, max_hint))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(t::ink_dim(dark))
+                                    .child(l("Older", "Eldre"))
+                                    .child(l("Now", "Nå")),
+                            ),
+                    )
+                }),
+        )
+        .when(!footer.is_empty(), |d| {
+            d.child(
+                div()
+                    .flex()
+                    .gap_6()
+                    .children(footer.into_iter().map(|(k, v)| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(sub(k).text_color(t::ink_dim(dark)))
+                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(v))
+                    })),
+            )
+        })
 }
 
 fn stat_card(label: &str, value: String, color: Option<Hsla>, dark: bool) -> Div {
@@ -398,7 +501,11 @@ impl Render for TideGaugeView {
         let s = &self.snap;
         let tab = self.tab;
         let this = cx.entity();
-        self.scroll = if self.show_settings { self.settings_scroll.clone() } else { self.tab_scrolls[tab as usize].clone() };
+        self.scroll = if self.show_settings {
+            self.settings_scroll.clone()
+        } else {
+            self.tab_scrolls[tab as usize].clone()
+        };
 
         // Neutral chrome with a quiet metric-colored selection.
         let topbar = div()
@@ -414,7 +521,7 @@ impl Render for TideGaugeView {
                 div()
                     .id("metric-tabs")
                     .role(Role::TabList)
-                    .aria_label("Metrics")
+                    .aria_label(l("Metrics", "Målinger"))
                     .tab_group()
                     .flex()
                     .items_center()
@@ -424,73 +531,109 @@ impl Render for TideGaugeView {
                     .border_1()
                     .border_color(t::line(dark))
                     .p_1()
-                    .children(Tab::ALL.iter().map(|&tb| {
-                        let active = tb == tab;
-                        let accent = tb.metric().unwrap_or(Metric::Cpu).accent(dark);
-                        let this = this.clone();
-                        let keyboard_target = this.clone();
-                        div()
-                            .id(SharedString::from(format!("tab-{}", tb.label())))
-                            .role(Role::Tab)
-                            .aria_label(tb.label())
-                            .aria_selected(active)
-                            .tab_index(tb as isize)
-                            .focus_visible(|d| d.border_color(accent).bg(accent.opacity(0.12)))
-                            .on_key_down(move |event, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    select_tab(&keyboard_target, tb, cx);
-                                    cx.stop_propagation();
-                                }
-                            })
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                    .px(px(8.))
-                            .py(px(8.))
-                            .border_1()
-                            .border_color(gpui_kit::transparent_black())
-                            .rounded_full()
-                            .cursor_pointer()
-                            .when(active, |d| {
-                                d.bg(accent.opacity(0.12)).text_color(accent)
-                            })
-                            .when(!active, |d| {
-                                d.text_color(t::ink_dim(dark))
-                                    .hover(|h| h.text_color(t::ink(dark)))
-                            })
-                            .child(icon_img(tb.icon(), 13.0, if active { accent } else { t::ink_dim(dark) }))
-                            .child(
+                    .children(
+                        Tab::visible()
+                            .into_iter()
+                            .enumerate()
+                            .map(|(tab_index, tb)| {
+                                let active = tb == tab;
+                                let accent = tb.metric().unwrap_or(Metric::Cpu).accent(dark);
+                                let this = this.clone();
+                                let keyboard_target = this.clone();
                                 div()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .line_height(px(13.))
-                                    .child(tb.label()),
-                            )
-                            .on_click(move |_, _w, cx| {
-                                select_tab(&this, tb, cx);
-                            })
-                    })),
+                                    .id(SharedString::from(format!("tab-{}", tb.label())))
+                                    .role(Role::Tab)
+                                    .aria_label(tb.label())
+                                    .aria_selected(active)
+                                    .tab_index(tab_index as isize)
+                                    .focus_visible(|d| {
+                                        d.border_color(accent).bg(accent.opacity(0.12))
+                                    })
+                                    .on_key_down(move |event, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        {
+                                            select_tab(&keyboard_target, tb, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.))
+                                    .px(px(8.))
+                                    .py(px(8.))
+                                    .border_1()
+                                    .border_color(gpui_kit::transparent_black())
+                                    .rounded_full()
+                                    .cursor_pointer()
+                                    .when(active, |d| d.bg(accent.opacity(0.12)).text_color(accent))
+                                    .when(!active, |d| {
+                                        d.text_color(t::ink_dim(dark))
+                                            .hover(|h| h.text_color(t::ink(dark)))
+                                    })
+                                    .child(icon_img(
+                                        tb.icon(),
+                                        13.0,
+                                        if active { accent } else { t::ink_dim(dark) },
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .line_height(px(13.))
+                                            .child(tb.label()),
+                                    )
+                                    .on_click(move |_, _w, cx| {
+                                        select_tab(&this, tb, cx);
+                                    })
+                            }),
+                    ),
             );
 
         let topbar = if self.show_settings {
             let back = this.clone();
             let keyboard_back = this.clone();
-            div().h(px(64.)).flex_shrink_0().pl(px(104.)).pr(px(24.))
-                .flex().items_center().gap_3()
-                .child(div().id("back-to-module").role(Role::Button).aria_label(SharedString::from(format!("{} {}", l("Back to", "Tilbake til"), tab.label())))
-                    .tab_index(0).rounded_md().p_2().cursor_pointer()
-                    .hover(|d| d.bg(t::card_hi(dark))).focus_visible(|d| d.bg(t::card_hi(dark)))
-                    .child(icon_img("icons/arrow-left.svg", 16., t::ink(dark)))
-                    .on_key_down(move |event, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            select_tab(&keyboard_back, tab, cx);
-                            cx.stop_propagation();
-                        }
-                    })
-                    .on_click(move |_, _, cx| select_tab(&back, tab, cx)))
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Settings", "Innstillinger")))
+            div()
+                .h(px(64.))
+                .flex_shrink_0()
+                .pl(px(104.))
+                .pr(px(24.))
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .id("back-to-module")
+                        .role(Role::Button)
+                        .aria_label(SharedString::from(format!(
+                            "{} {}",
+                            l("Back to", "Tilbake til"),
+                            tab.label()
+                        )))
+                        .tab_index(0)
+                        .rounded_md()
+                        .p_2()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(t::card_hi(dark)))
+                        .focus_visible(|d| d.bg(t::card_hi(dark)))
+                        .child(icon_img("icons/arrow-left.svg", 16., t::ink(dark)))
+                        .on_key_down(move |event, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                select_tab(&keyboard_back, tab, cx);
+                                cx.stop_propagation();
+                            }
+                        })
+                        .on_click(move |_, _, cx| select_tab(&back, tab, cx)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(l("Settings", "Innstillinger")),
+                )
                 .into_any_element()
-        } else { topbar.into_any_element() };
+        } else {
+            topbar.into_any_element()
+        };
 
         let footer = div()
             .w_full()
@@ -499,26 +642,35 @@ impl Render for TideGaugeView {
             .flex()
             .items_center()
             .justify_between()
-            .child(div().flex().items_center().gap_2()
-                .child({
-                    let click_target = this.clone();
-                    let key_target = this.clone();
-                    div().id("dashboard-settings").role(Role::Button).aria_label(l("Settings", "Innstillinger"))
-                        .tab_index(11).flex().items_center().gap_1().px_2().py_1().rounded_md()
-                        .cursor_pointer().text_xs().text_color(t::ink_dim(dark))
-                        .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
-                        .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
-                        .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
-                        .child(l("Settings", "Innstillinger"))
-                        .on_click(move |_, _, cx| open_settings(&click_target, cx))
-                        .on_key_down(move |event, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                open_settings(&key_target, cx);
-                                cx.stop_propagation();
-                            }
-                        })
-                })
-            )
+            .child(div().flex().items_center().gap_2().child({
+                let click_target = this.clone();
+                let key_target = this.clone();
+                div()
+                    .id("dashboard-settings")
+                    .role(Role::Button)
+                    .aria_label(l("Settings", "Innstillinger"))
+                    .tab_index(11)
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(t::ink_dim(dark))
+                    .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
+                    .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
+                    .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
+                    .child(l("Settings", "Innstillinger"))
+                    .on_click(move |_, _, cx| open_settings(&click_target, cx))
+                    .on_key_down(move |event, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            open_settings(&key_target, cx);
+                            cx.stop_propagation();
+                        }
+                    })
+            }))
             .child(
                 div()
                     .text_size(px(10.))
@@ -562,8 +714,11 @@ impl Render for TideGaugeView {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "tab" {
-                    if event.keystroke.modifiers.shift { window.focus_prev(cx); }
-                    else { window.focus_next(cx); }
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
                     cx.stop_propagation();
                 }
             }))
@@ -597,11 +752,17 @@ fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
         v.scroll = ScrollHandle::new();
         cx.notify();
     });
+    if tab == Tab::History {
+        crate::controls::refresh_history(this, cx);
+    }
 }
 
 impl TideGaugeView {
     fn render_tab(
-        &self, dark: bool, this: Entity<TideGaugeView>, cx: &mut Context<TideGaugeView>,
+        &self,
+        dark: bool,
+        this: Entity<TideGaugeView>,
+        cx: &mut Context<TideGaugeView>,
     ) -> AnyElement {
         if self.show_settings {
             return settings_panel(dark, this, self.settings_error.as_deref()).into_any_element();
@@ -616,17 +777,29 @@ impl TideGaugeView {
             Tab::Gpu => gpu_tab(s, dark).into_any_element(),
             Tab::Neural => neural_tab(s, dark).into_any_element(),
             Tab::Battery => battery_tab(s, dark).into_any_element(),
-            Tab::Sound => sound_tab(s, dark).into_any_element(),
+            Tab::Sound => div().flex().flex_col().gap_3()
+                .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
+                .child(sound_tab(s, dark, this, self.audio_pending)).into_any_element(),
             Tab::Bluetooth => bt_tab(s, dark).into_any_element(),
-            Tab::Projects => div().flex().flex_col().gap_3()
-                .when_some(self.project_error.as_ref(), |d, error| d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
-                .child(projects_tab(s, dark, this)).into_any_element(),
+            Tab::Projects => div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .when_some(self.project_error.as_ref(), |d, error| {
+                    d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed {t::warn(dark)} else {t::ink_dim(dark)})))
+                })
+                .child(projects_tab(s, dark, this))
+                .into_any_element(),
+            Tab::History => crate::controls::history_panel(self, dark, this, cx).into_any_element(),
         }
     }
 }
 
-fn update_preference(
-    this: &Entity<TideGaugeView>, change: impl FnOnce(&mut crate::settings::Settings), window: &mut Window, cx: &mut App,
+pub(crate) fn update_preference(
+    this: &Entity<TideGaugeView>,
+    change: impl FnOnce(&mut crate::settings::Settings),
+    window: &mut Window,
+    cx: &mut App,
 ) {
     let result = crate::settings::mutate(change);
     if result.is_ok() {
@@ -640,48 +813,86 @@ fn update_preference(
             )
             .to_string()
         });
+        if !Tab::visible().contains(&view.tab) { view.tab = Tab::Overview; }
         cx.notify();
     });
 }
 
 fn settings_choice(
-    id: String, label: &str, description: String, active: bool, index: isize,
-    dark: bool, this: Entity<TideGaugeView>, change: impl Fn(&mut crate::settings::Settings) + 'static,
+    id: String,
+    label: &str,
+    description: String,
+    active: bool,
+    index: isize,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    change: impl Fn(&mut crate::settings::Settings) + 'static,
 ) -> impl IntoElement {
     let change = std::rc::Rc::new(change);
     let keyboard_change = change.clone();
     let keyboard_target = this.clone();
     let accent = t::accent(dark);
-    div().id(SharedString::from(id)).role(Role::RadioButton)
+    div()
+        .id(SharedString::from(id))
+        .role(Role::RadioButton)
         .aria_label(SharedString::from(description))
-        .aria_toggled(if active { Toggled::True } else { Toggled::False })
-        .tab_index(index).rounded(px(8.)).px_3().py_2().border_1()
+        .aria_toggled(if active {
+            Toggled::True
+        } else {
+            Toggled::False
+        })
+        .tab_index(index)
+        .rounded(px(8.))
+        .px_3()
+        .py_2()
+        .border_1()
         .border_color(if active { accent } else { t::line(dark) })
-        .bg(if active { accent.opacity(0.12) } else { t::card_hi(dark) })
+        .bg(if active {
+            accent.opacity(0.12)
+        } else {
+            t::card_hi(dark)
+        })
         .text_color(if active { accent } else { t::ink_dim(dark) })
-        .text_size(px(12.)).cursor_pointer()
+        .text_size(px(12.))
+        .cursor_pointer()
         .hover(|d| d.text_color(t::ink(dark)))
         .focus_visible(|d| d.border_color(accent))
         .child(label.to_string())
         .on_key_down(move |event, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                update_preference(&keyboard_target, |settings| keyboard_change(settings), window, cx);
+                update_preference(
+                    &keyboard_target,
+                    |settings| keyboard_change(settings),
+                    window,
+                    cx,
+                );
                 cx.stop_propagation();
             }
         })
-        .on_click(move |_, window, cx| update_preference(&this, |settings| change(settings), window, cx))
+        .on_click(move |_, window, cx| {
+            update_preference(&this, |settings| change(settings), window, cx)
+        })
 }
 
 fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
     let error = match crate::login::set_enabled(enabled) {
-        Ok(status) => crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
-            .err().map(|_| l(
-                "The login setting changed, but its local preference could not be saved.",
-                "Påloggingsinnstillingen ble endret, men kunne ikke lagres lokalt.",
-            ).to_string()),
+        Ok(status) => {
+            crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
+                .err()
+                .map(|_| {
+                    l(
+                        "The login setting changed, but its local preference could not be saved.",
+                        "Påloggingsinnstillingen ble endret, men kunne ikke lagres lokalt.",
+                    )
+                    .to_string()
+                })
+        }
         Err(error) => Some(error.to_string()),
     };
-    this.update(cx, |view, cx| { view.settings_error = error; cx.notify(); });
+    this.update(cx, |view, cx| {
+        view.settings_error = error;
+        cx.notify();
+    });
 }
 
 fn login_control(status: crate::login::LoginStatus, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
@@ -713,10 +924,19 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
         localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
     };
     let settings = Settings::load();
-    let mut panel = div().flex().flex_col().gap_4()
-        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(l("Settings", "Innstillinger")));
+    let mut panel = div().flex().flex_col().gap_4().child(
+        div()
+            .text_size(px(24.))
+            .font_weight(FontWeight::BOLD)
+            .child(l("Settings", "Innstillinger")),
+    );
     if let Some(error) = error {
-        panel = panel.child(div().text_sm().text_color(t::warn(dark)).child(error.to_string()));
+        panel = panel.child(
+            div()
+                .text_sm()
+                .text_color(t::warn(dark))
+                .child(error.to_string()),
+        );
     }
     let login = crate::login::status();
     panel = panel
@@ -738,49 +958,117 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Launch at login", "Start ved pålogging")))
                 .child(div().text_xs().text_color(t::ink_dim(dark)).child(login.message())))
             .child(login_control(login, dark, this.clone())))
+        .child(crate::controls::settings(dark, this.clone()))
         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Menu bar", "Menylinje")))
         .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
             "One compact menu-bar item. Add readings below, or keep just the Tidegauge icon.",
             "Ett kompakt menylinjeelement. Legg til målinger nedenfor, eller behold bare Tidegauge-ikonet.",
         )));
     let icon_name = l("Tidegauge icon", "Tidegauge-ikon");
-    panel = panel.child(card(dark).flex_row().items_center().justify_between()
-        .child(div().flex_1()
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(icon_name))
-            .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
-                "Open the app menu with one click.",
-                "Åpne appmenyen med ett klikk.",
-            ))))
-        .child(div().id("launcher-options").role(Role::RadioGroup).aria_label(l("Tidegauge icon", "Tidegauge-ikon"))
-            .tab_group().flex().gap_2()
-            .children([
-                (true, l("Shown", "Vises")),
-                (false, l("Hidden", "Skjult")),
-            ].into_iter().enumerate().map(|(i, (shown, label))| {
-                settings_choice(format!("launcher-{shown}"), label, format!("{icon_name}: {label}"),
-                    settings.show_app_icon == shown, i as isize, dark, this.clone(),
-                    move |settings| settings.show_app_icon = shown)
-            }))));
-    let rows = MENU_METRICS.iter().enumerate().map(|(row, &(key, _))| {
-        let name = localized_metric_label(key).expect("menu metric has a localized label");
-        let selected = settings.menu_items.iter().find(|item| item.metric == key)
-            .map(|item| item.style.as_str()).unwrap_or("off");
-        let choices = std::iter::once(("off", l("Off", "Av"))).chain(
-            MENU_STYLES
+    panel = panel.child(
+        card(dark)
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(icon_name),
+                    )
+                    .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
+                        "Open the app menu with one click.",
+                        "Åpne appmenyen med ett klikk.",
+                    ))),
+            )
+            .child(
+                div()
+                    .id("launcher-options")
+                    .role(Role::RadioGroup)
+                    .aria_label(l("Tidegauge icon", "Tidegauge-ikon"))
+                    .tab_group()
+                    .flex()
+                    .gap_2()
+                    .children(
+                        [(true, l("Shown", "Vises")), (false, l("Hidden", "Skjult"))]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, (shown, label))| {
+                                settings_choice(
+                                    format!("launcher-{shown}"),
+                                    label,
+                                    format!("{icon_name}: {label}"),
+                                    settings.show_app_icon == shown,
+                                    i as isize,
+                                    dark,
+                                    this.clone(),
+                                    move |settings| settings.show_app_icon = shown,
+                                )
+                            }),
+                    ),
+            ),
+    );
+    let rows = MENU_METRICS
+        .iter()
+        .enumerate()
+        .map(|(row, &(key, _))| {
+            let name = localized_metric_label(key).expect("menu metric has a localized label");
+            let selected = settings
+                .menu_items
                 .iter()
-                .map(|(style, _)| (*style, localized_style_label(style).expect("menu style has a localized label"))),
-        );
-        div().id(SharedString::from(format!("settings-{key}")))
-            .role(Role::RadioGroup).aria_label(name).tab_group()
-            .flex().items_center().justify_between().gap_4().py_2()
-            .when(row > 0, |d| d.border_t_1().border_color(t::line(dark)))
-            .child(div().w(px(140.)).text_sm().font_weight(FontWeight::MEDIUM).child(name))
-            .child(div().flex().gap_2().children(choices.enumerate().map(|(i, (style, label))| {
-                settings_choice(format!("{key}-{style}"), label, format!("{name}: {label}"),
-                    selected == style, i as isize, dark, this.clone(),
-                    move |settings| settings.set_menu_style(key, if style == "off" { None } else { Some(style) }))
-            })))
-    }).collect::<Vec<_>>();
+                .find(|item| item.metric == key)
+                .map(|item| item.style.as_str())
+                .unwrap_or("off");
+            let choices = std::iter::once(("off", l("Off", "Av"))).chain(MENU_STYLES.iter().map(
+                |(style, _)| {
+                    (
+                        *style,
+                        localized_style_label(style).expect("menu style has a localized label"),
+                    )
+                },
+            ));
+            div()
+                .id(SharedString::from(format!("settings-{key}")))
+                .role(Role::RadioGroup)
+                .aria_label(name)
+                .tab_group()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .py_2()
+                .when(row > 0, |d| d.border_t_1().border_color(t::line(dark)))
+                .child(
+                    div()
+                        .w(px(140.))
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(name),
+                )
+                .child(div().flex().gap_2().children(choices.enumerate().map(
+                    |(i, (style, label))| {
+                        settings_choice(
+                            format!("{key}-{style}"),
+                            label,
+                            format!("{name}: {label}"),
+                            selected == style,
+                            i as isize,
+                            dark,
+                            this.clone(),
+                            move |settings| {
+                                settings.set_menu_style(
+                                    key,
+                                    if style == "off" { None } else { Some(style) },
+                                )
+                            },
+                        )
+                    },
+                )))
+        })
+        .collect::<Vec<_>>();
     panel.child(card(dark).gap_0().py_1().children(rows))
         .child(div().text_xs().text_color(t::ink_dim(dark))
             .child(l(
@@ -865,14 +1153,21 @@ fn metric_heading(tab: Tab, dark: bool) -> Div {
 }
 
 fn overview_card(
-    tab: Tab, context: String, value: String,
-    stats: [(&str, String); 3], hist: &Hist, max: Option<f64>,
-    dark: bool, this: Entity<TideGaugeView>,
+    tab: Tab,
+    context: String,
+    value: String,
+    stats: [(&str, String); 3],
+    hist: &Hist,
+    max: Option<f64>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
 ) -> impl IntoElement {
     let color = tab.metric().unwrap().accent(dark);
+    let compact = crate::settings::Settings::load().compact_dashboard;
     let (number, unit) = value.rsplit_once(' ').unwrap_or((&value, ""));
     let keyboard_target = this.clone();
-    div().id(SharedString::from(format!("overview-{}", tab.label())))
+    div()
+        .id(SharedString::from(format!("overview-{}", tab.label())))
         .role(Role::Button)
         .aria_label(SharedString::from(format!(
             "{}: {}. {}",
@@ -881,7 +1176,8 @@ fn overview_card(
             l("Open details", "Åpne detaljer")
         )))
         .tab_index(20 + tab as isize)
-        .border_1().border_color(gpui_kit::transparent_black())
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
         .focus_visible(|d| d.border_color(color))
         .on_key_down(move |event, _, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -889,30 +1185,94 @@ fn overview_card(
                 cx.stop_propagation();
             }
         })
-        .min_w_0().h(px(208.)).p_4().rounded(px(12.))
-        .bg(t::card(dark)).flex().flex_col().justify_between()
-        .cursor_pointer().hover(|d| d.bg(t::card_hi(dark)))
-        .child(div().flex().items_center().justify_between()
-            .child(metric_heading(tab, dark))
-            .child(icon_img("icons/chevron-right.svg", 12., t::ink_dim(dark))))
-        .child(div()
-            .child(div().text_size(px(11.)).line_height(px(16.))
-                .text_color(t::ink_dim(dark)).child(context))
-            .child(div().flex().items_baseline().gap(px(6.))
-                .child(div().text_size(px(34.)).line_height(px(42.))
-                    .font_weight(FontWeight::BOLD).child(number.to_string()))
-                .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM)
-                    .text_color(t::ink_dim(dark)).child(unit.to_string()))))
-        .child(div().grid().grid_cols(3).gap_2().children(stats.into_iter().map(|(label, value)| {
-            div().min_w_0()
-                .child(div().text_size(px(10.)).line_height(px(16.))
-                    .text_color(t::ink_dim(dark)).child(label.to_string()))
-                .child(div().text_size(px(12.)).line_height(px(17.))
-                    .font_weight(FontWeight::MEDIUM).child(value))
-        })))
-        .when(!hist.pts.is_empty(), |d| d.child(div().h(px(38.)).rounded(px(8.)).px(px(6.)).py(px(5.))
-            .bg(color.opacity(0.09)).child(bar_chart(&hist.pts, color, max))))
-        .when(hist.pts.is_empty(), |d| d.child(div().h(px(38.)).flex_shrink_0()))
+        .min_w_0()
+        .h(px(if compact { 154. } else { 208. }))
+        .p_4()
+        .rounded(px(12.))
+        .bg(t::card(dark))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .cursor_pointer()
+        .hover(|d| d.bg(t::card_hi(dark)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(metric_heading(tab, dark))
+                .child(icon_img("icons/chevron-right.svg", 12., t::ink_dim(dark))),
+        )
+        .child(
+            div()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .line_height(px(16.))
+                        .text_color(t::ink_dim(dark))
+                        .child(context),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(34.))
+                                .line_height(px(42.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(number.to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t::ink_dim(dark))
+                                .child(unit.to_string()),
+                        ),
+                ),
+        )
+        .when(!compact, |d| {
+            d.child(
+                div()
+                    .grid()
+                    .grid_cols(3)
+                    .gap_2()
+                    .children(stats.into_iter().map(|(label, value)| {
+                        div()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .line_height(px(16.))
+                                    .text_color(t::ink_dim(dark))
+                                    .child(label.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(17.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(value),
+                            )
+                    })),
+            )
+        })
+        .when(!hist.pts.is_empty(), |d| {
+            d.child(
+                div()
+                    .h(px(38.))
+                    .rounded(px(8.))
+                    .px(px(6.))
+                    .py(px(5.))
+                    .bg(color.opacity(0.09))
+                    .child(bar_chart(&hist.pts, color, max)),
+            )
+        })
+        .when(hist.pts.is_empty(), |d| {
+            d.child(div().h(px(38.)).flex_shrink_0())
+        })
         .on_click(move |_, _, cx| {
             select_tab(&this, tab, cx);
         })
@@ -925,58 +1285,217 @@ fn history_average(hist: &Hist) -> String {
 
 fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let battery_context = s.battery.status();
-    let remaining = s.battery.minutes_remaining.filter(|m| s.battery.on_battery && *m >= 0)
-        .map(|m| format!("{}h {}m", m / 60, m % 60)).unwrap_or("—".into());
+    let remaining = s
+        .battery
+        .minutes_remaining
+        .filter(|m| s.battery.on_battery && *m >= 0)
+        .map(|m| format!("{}h {}m", m / 60, m % 60))
+        .unwrap_or("—".into());
     let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
-    div().flex().flex_col().gap(px(16.))
-        .child(div().grid().grid_cols(3).gap(px(16.))
-            .child(overview_card(Tab::Cpu, "Now".into(), format!("{:.0} %", s.cpu_pct), [
+    let settings = crate::settings::Settings::load();
+    let favorites = &settings.favorite_metrics;
+    let cards = vec![
+        (
+            Tab::Cpu,
+            l("Now", "Nå").into(),
+            format!("{:.0} %", s.cpu_pct),
+            [
                 ("Load · 1 min", format!("{:.2}", s.load_avg[0])),
                 ("Cores", s.chip.cores.to_string()),
                 ("Average", history_average(&s.cpu_hist)),
-            ], &s.cpu_hist, Some(100.), dark, this.clone()))
-            .child(overview_card(Tab::Memory, format!("In use of {}", fmt_bytes(s.mem.total as f64)),
-                fmt_bytes(s.mem.used as f64), [
-                    ("App", fmt_bytes(s.mem.app as f64)),
-                    ("Wired", fmt_bytes(s.mem.wired as f64)),
-                    ("Compressed", fmt_bytes(s.mem.compressed as f64)),
-                ], &s.mem_hist, Some(100.), dark, this.clone()))
-            .child(overview_card(Tab::Gpu, if s.gpu.utilization.is_some() { "GPU utilization" } else { "Utilization unavailable" }.into(),
-                s.gpu.utilization.map(|v| format!("{:.0} %", v)).unwrap_or("—".into()), [
-                    ("Memory", s.gpu.mem_in_use.map(|v| fmt_bytes(v as f64)).unwrap_or("—".into())),
-                    ("Average", if s.gpu.utilization.is_some() { history_average(&s.gpu_hist) } else { "—".into() }),
-                    ("Peak", if s.gpu.utilization.is_some() { fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max)) } else { "—".into() }),
-                ], &s.gpu_hist, Some(100.), dark, this.clone())))
-        .child(div().grid().grid_cols(3).gap(px(16.))
-            .child(overview_card(Tab::Disk, format!("Free of {}", fmt_bytes(s.disk.total as f64)),
-                fmt_bytes(s.disk.free as f64), [
-                    ("Reading", fmt_rate(s.disk.read_rate)),
-                    ("Writing", fmt_rate(s.disk.write_rate)),
-                    ("Used", fmt_bytes(s.disk.used as f64)),
-                ], &s.disk_w_hist, None, dark, this.clone()))
-            .child(overview_card(Tab::Network, "Downloading".into(), fmt_rate(s.net.rate_in), [
+            ],
+            &s.cpu_hist,
+            Some(100.),
+        ),
+        (
+            Tab::Memory,
+            format!(
+                "{} {}",
+                l("In use of", "I bruk av"),
+                fmt_bytes(s.mem.total as f64)
+            ),
+            fmt_bytes(s.mem.used as f64),
+            [
+                ("App", fmt_bytes(s.mem.app as f64)),
+                ("Wired", fmt_bytes(s.mem.wired as f64)),
+                ("Compressed", fmt_bytes(s.mem.compressed as f64)),
+            ],
+            &s.mem_hist,
+            Some(100.),
+        ),
+        (
+            Tab::Gpu,
+            if s.gpu.utilization.is_some() {
+                l("GPU utilization", "GPU-bruk")
+            } else {
+                l("Utilization unavailable", "Bruk utilgjengelig")
+            }
+            .into(),
+            s.gpu
+                .utilization
+                .map(|v| format!("{:.0} %", v))
+                .unwrap_or("—".into()),
+            [
+                (
+                    "Memory",
+                    s.gpu
+                        .mem_in_use
+                        .map(|v| fmt_bytes(v as f64))
+                        .unwrap_or("—".into()),
+                ),
+                (
+                    "Average",
+                    if s.gpu.utilization.is_some() {
+                        history_average(&s.gpu_hist)
+                    } else {
+                        "—".into()
+                    },
+                ),
+                (
+                    "Peak",
+                    if s.gpu.utilization.is_some() {
+                        fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))
+                    } else {
+                        "—".into()
+                    },
+                ),
+            ],
+            &s.gpu_hist,
+            Some(100.),
+        ),
+        (
+            Tab::Disk,
+            format!(
+                "{} {}",
+                l("Free of", "Ledig av"),
+                fmt_bytes(s.disk.total as f64)
+            ),
+            fmt_bytes(s.disk.free as f64),
+            [
+                ("Reading", fmt_rate(s.disk.read_rate)),
+                ("Writing", fmt_rate(s.disk.write_rate)),
+                ("Used", fmt_bytes(s.disk.used as f64)),
+            ],
+            &s.disk_w_hist,
+            None,
+        ),
+        (
+            Tab::Network,
+            l("Downloading", "Laster ned").into(),
+            fmt_rate(s.net.rate_in),
+            [
                 ("Uploading", fmt_rate(s.net.rate_out)),
                 ("Received¹", fmt_bytes(s.net.total_in as f64)),
                 ("Sent¹", fmt_bytes(s.net.total_out as f64)),
-            ], &s.net_in_hist, None, dark, this.clone()))
-            .child(overview_card(Tab::Battery, battery_context.into(),
-                s.battery.percent.map(|v| format!("{:.0} %", v)).unwrap_or("—".into()), [
-                    ("Remaining", remaining),
-                    (crate::locale::text("Battery flow", "Batteristrøm"), s.battery.power_w.map(|w| format!("{:+.1} W", w)).unwrap_or("—".into())),
-                    (crate::locale::text("Capacity health", "Kapasitetshelse"), s.battery.health.map(fmt_pct).unwrap_or("—".into())),
-                ], &s.batt_hist, Some(100.), dark, this)))
-        .child(div().grid().grid_cols(3).gap(px(16.))
-            .child(donut_card("Memory by Type", Tab::Memory, vec![
-                BreakdownEntry::new("App", s.mem.app as f64, Metric::Cpu.accent(dark)),
-                BreakdownEntry::new("Wired", s.mem.wired as f64, Metric::Memory.accent(dark)),
-                BreakdownEntry::new("Compressed", s.mem.compressed as f64, Metric::Gpu.accent(dark)),
-                BreakdownEntry::new("Cached", s.mem.cached as f64, t::ink_dim(dark)),
-                BreakdownEntry::new("Free", s.mem.free as f64, t::card_hi(dark)),
-            ], format!("{:.0}%", mem_pct), "in use", fmt_bytes, dark))
-            .child(top_apps_donut(s, dark))
-            .child(power_donut(s, dark)))
-        .child(div().text_size(px(10.)).text_color(t::ink_dim(dark))
-            .child("¹ Network totals since boot. Averages and peaks cover this session."))
+            ],
+            &s.net_in_hist,
+            None,
+        ),
+        (
+            Tab::Battery,
+            battery_context.into(),
+            s.battery
+                .percent
+                .map(|v| format!("{:.0} %", v))
+                .unwrap_or("—".into()),
+            [
+                ("Remaining", remaining),
+                (
+                    crate::locale::text("Battery flow", "Batteristrøm"),
+                    s.battery
+                        .power_w
+                        .map(|w| format!("{:+.1} W", w))
+                        .unwrap_or("—".into()),
+                ),
+                (
+                    crate::locale::text("Capacity health", "Kapasitetshelse"),
+                    s.battery.health.map(fmt_pct).unwrap_or("—".into()),
+                ),
+            ],
+            &s.batt_hist,
+            Some(100.),
+        ),
+    ];
+    let target = this.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(if settings.compact_dashboard { 10. } else { 16. }))
+        .when(crate::keepawake::status().active, |d| {
+            d.child(crate::controls::keep_awake(dark, this.clone()))
+        })
+        .when(favorites.is_empty(), |d| {
+            d.child(
+                card(dark)
+                    .child(sub(l(
+                        "Choose your Overview favorites in Settings.",
+                        "Velg favoritter for oversikten i Innstillinger.",
+                    )))
+                    .child(crate::controls::button(
+                        "choose-favorites",
+                        l("Settings", "Innstillinger"),
+                        false,
+                        dark,
+                        move |_, cx| open_settings(&target, cx),
+                    )),
+            )
+        })
+        .child(
+            div()
+                .grid()
+                .grid_cols(3)
+                .gap(px(if settings.compact_dashboard { 10. } else { 16. }))
+                .children(
+                    cards
+                        .into_iter()
+                        .filter(|(tab, ..)| favorites.iter().any(|k| k == tab.key()))
+                        .map(|(tab, context, value, stats, hist, max)| {
+                            overview_card(tab, context, value, stats, hist, max, dark, this.clone())
+                        }),
+                ),
+        )
+        .when(!settings.compact_dashboard && !favorites.is_empty(), |d| {
+            d.child(
+                div()
+                    .grid()
+                    .grid_cols(3)
+                    .gap(px(16.))
+                    .when(favorites.iter().any(|key| key == "memory"), |row| row.child(donut_card(
+                        "Memory by Type",
+                        Tab::Memory,
+                        vec![
+                            BreakdownEntry::new("App", s.mem.app as f64, Metric::Cpu.accent(dark)),
+                            BreakdownEntry::new(
+                                "Wired",
+                                s.mem.wired as f64,
+                                Metric::Memory.accent(dark),
+                            ),
+                            BreakdownEntry::new(
+                                "Compressed",
+                                s.mem.compressed as f64,
+                                Metric::Gpu.accent(dark),
+                            ),
+                            BreakdownEntry::new("Cached", s.mem.cached as f64, t::ink_dim(dark)),
+                            BreakdownEntry::new("Free", s.mem.free as f64, t::card_hi(dark)),
+                        ],
+                        format!("{:.0}%", mem_pct),
+                        "in use",
+                        fmt_bytes,
+                        dark,
+                    ))
+                    .child(top_apps_donut(s, dark)))
+                    .when(favorites.iter().any(|key| key == "battery"), |row| row.child(power_donut(s, dark))),
+            )
+        })
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(t::ink_dim(dark))
+                .child(l(
+                "¹ Network totals since boot. Averages and peaks cover this session.",
+                "¹ Nettverkstotaler siden oppstart. Gjennomsnitt og topper gjelder denne økten.",
+            )),
+        )
 }
 
 /// Draw a ring from convex quadrilaterals. GPUI triangulates filled paths
@@ -995,17 +1514,24 @@ fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
             let r = w.min(h) / 2.0 - 2.0;
             let r_in = r * 0.70;
             let total: f64 = slices.iter().map(|s| s.0).sum();
-            let ring = if total > 0. { slices.clone() }
-                else { vec![(1., t::hex(0x8e8e93))] };
+            let ring = if total > 0. {
+                slices.clone()
+            } else {
+                vec![(1., t::hex(0x8e8e93))]
+            };
             let total = if total > 0. { total } else { 1. };
             let mut angle = -std::f64::consts::FRAC_PI_2;
-            let at = |radius: f32, angle: f64| point(
-                px(cx + radius * angle.cos() as f32),
-                px(cy + radius * angle.sin() as f32),
-            );
+            let at = |radius: f32, angle: f64| {
+                point(
+                    px(cx + radius * angle.cos() as f32),
+                    px(cy + radius * angle.sin() as f32),
+                )
+            };
             for (value, color) in &ring {
                 let sweep = (*value / total) * std::f64::consts::TAU;
-                if sweep <= 0. { continue; }
+                if sweep <= 0. {
+                    continue;
+                }
                 let steps = (sweep / 0.04).ceil().max(1.) as usize;
                 for i in 0..steps {
                     let a = angle + sweep * i as f64 / steps as f64;
@@ -1020,7 +1546,8 @@ fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
                 angle += sweep;
             }
         },
-    ).size(px(size))
+    )
+    .size(px(size))
 }
 
 struct BreakdownEntry {
@@ -1032,7 +1559,12 @@ struct BreakdownEntry {
 
 impl BreakdownEntry {
     fn new(name: &str, value: f64, color: Hsla) -> Self {
-        Self { name: name.into(), value, color, app: None }
+        Self {
+            name: name.into(),
+            value,
+            color,
+            app: None,
+        }
     }
 }
 
@@ -1145,23 +1677,56 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
         .child(hero(
             l("CPU usage", "CPU-bruk"),
             format!("{:.0}%", s.cpu_pct),
-            format!("{} · {} P + {} E {}", s.chip.brand, s.chip.p_cores, s.chip.e_cores, l("cores", "kjerner")),
+            format!(
+                "{} · {} P + {} E {}",
+                s.chip.brand,
+                s.chip.p_cores,
+                s.chip.e_cores,
+                l("cores", "kjerner")
+            ),
             &s.cpu_hist,
             m.accent(dark),
             dark,
             vec![
-                (l("Load · 1 / 5 / 15 min", "Last · 1 / 5 / 15 min").into(), format!("{:.2} / {:.2} / {:.2}", s.load_avg[0], s.load_avg[1], s.load_avg[2])),
-                (l("Top app", "Mest aktive app").into(), rows.first().map(|a| a.name.clone()).unwrap_or_else(|| "—".into())),
-                (l("Session uptime", "Øktens oppetid").into(), crate::engine::fmt_up(s.uptime.as_secs_f64())),
+                (
+                    l("Load · 1 / 5 / 15 min", "Last · 1 / 5 / 15 min").into(),
+                    format!(
+                        "{:.2} / {:.2} / {:.2}",
+                        s.load_avg[0], s.load_avg[1], s.load_avg[2]
+                    ),
+                ),
+                (
+                    l("Top app", "Mest aktive app").into(),
+                    rows.first()
+                        .map(|a| a.name.clone())
+                        .unwrap_or_else(|| "—".into()),
+                ),
+                (
+                    l("Session uptime", "Øktens oppetid").into(),
+                    crate::engine::fmt_up(s.uptime.as_secs_f64()),
+                ),
             ],
             Some(100.0),
         ))
-        .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("CPU · 100% per core", "CPU · 100 % per kjerne"), dark))
+        .child(section_header(
+            l("Apps · highest usage first", "Apper · høyest bruk først"),
+            l("CPU · 100% per core", "CPU · 100 % per kjerne"),
+            dark,
+        ))
         .child(list_card(
             rows.iter()
                 .take(30)
                 .enumerate()
-                .map(|(i, a)| app_row(i + 1, a, format!("{:.0}%", a.cpu_pct), a.cpu_pct / max, m.accent(dark), dark))
+                .map(|(i, a)| {
+                    app_row(
+                        i + 1,
+                        a,
+                        format!("{:.0}%", a.cpu_pct),
+                        a.cpu_pct / max,
+                        m.accent(dark),
+                        dark,
+                    )
+                })
                 .collect(),
             dark,
         ))
@@ -1174,19 +1739,45 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     let sample = preview.clone().unwrap_or_else(crate::sensors::latest);
     let fresh = sample.is_fresh();
     let source = if !fresh && matches!(sample.source, crate::sensors::SourceState::Ready) {
-        l("Stale readings · waiting for an update", "Utdaterte målinger · venter på oppdatering").into()
-    } else { sample.source.label() };
-    let readings = |title: &'static str, values: &[crate::sensors::Reading], unit: &'static str, empty: &'static str| {
+        l(
+            "Stale readings · waiting for an update",
+            "Utdaterte målinger · venter på oppdatering",
+        )
+        .into()
+    } else {
+        sample.source.label()
+    };
+    let readings = |title: &'static str,
+                    values: &[crate::sensors::Reading],
+                    unit: &'static str,
+                    empty: &'static str| {
         card(dark)
             .child(section_header(title, unit, dark))
-            .when(values.is_empty(), |d| d.child(sub(empty).text_color(t::ink_dim(dark))))
+            .when(values.is_empty(), |d| {
+                d.child(sub(empty).text_color(t::ink_dim(dark)))
+            })
             .children(values.iter().map(|reading| {
-                div().flex().items_center().justify_between().gap_3()
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
                     .child(div().text_sm().child(reading.key.clone()))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                        reading.value.filter(|_| fresh).map(|v| if unit == "RPM" { format!("{:.0} RPM", v) } else { format!("{:.1} °C", v) })
-                            .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into())
-                    ))
+                    .child(
+                        div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                            reading
+                                .value
+                                .filter(|_| fresh)
+                                .map(|v| {
+                                    if unit == "RPM" {
+                                        format!("{:.0} RPM", v)
+                                    } else {
+                                        format!("{:.1} °C", v)
+                                    }
+                                })
+                                .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()),
+                        ),
+                    )
             }))
     };
     div().flex().flex_col().gap_3()
@@ -1245,20 +1836,34 @@ fn memory_tab(s: &Snapshot, dark: bool) -> Div {
         .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Utilization is not memory pressure.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Utnyttelse er ikke minnepress.")).text_color(t::ink_dim(dark)))
 }
 
-fn disk_tab(s: &Snapshot, dark: bool, selected: Option<&str>, cx: &mut Context<TideGaugeView>) -> Div {
+fn disk_tab(
+    s: &Snapshot,
+    dark: bool,
+    selected: Option<&str>,
+    cx: &mut Context<TideGaugeView>,
+) -> Div {
     use crate::locale::text as l;
     let m = Metric::Disk;
     let preview = crate::disks::preview();
     let is_preview = preview.is_some();
-    let (inventory, io) = preview.unwrap_or_else(|| (crate::disks::inventory(), crate::disks::io()));
+    let (inventory, io) =
+        preview.unwrap_or_else(|| (crate::disks::inventory(), crate::disks::io()));
     let device = match selected {
         Some(id) => inventory.devices.iter().find(|d| d.id == id),
         None => inventory.devices.first(),
     };
     let selected_id = device.map(|d| d.id.as_str());
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
-    rows.sort_by(|a, b| (b.disk_read_rate + b.disk_write_rate).partial_cmp(&(a.disk_read_rate + a.disk_write_rate)).unwrap());
-    let max = rows.first().map(|a| a.disk_read_rate + a.disk_write_rate).unwrap_or(1.0).max(1.0);
+    rows.sort_by(|a, b| {
+        (b.disk_read_rate + b.disk_write_rate)
+            .partial_cmp(&(a.disk_read_rate + a.disk_write_rate))
+            .unwrap()
+    });
+    let max = rows
+        .first()
+        .map(|a| a.disk_read_rate + a.disk_write_rate)
+        .unwrap_or(1.0)
+        .max(1.0);
     div()
         .flex()
         .flex_col()
@@ -1307,20 +1912,44 @@ fn disk_tab(s: &Snapshot, dark: bool, selected: Option<&str>, cx: &mut Context<T
         ))
 }
 
-fn disk_detail(device: &crate::disks::Device, io: Option<&crate::disks::IoSample>, dark: bool) -> Div {
+fn disk_detail(
+    device: &crate::disks::Device,
+    io: Option<&crate::disks::IoSample>,
+    dark: bool,
+) -> Div {
     use crate::disks::Health;
     use crate::locale::text as l;
     let unknown = || l("Unavailable", "Utilgjengelig").to_string();
     let bytes = |value: Option<u64>| value.map(|v| fmt_bytes(v as f64)).unwrap_or_else(unknown);
     let count = |value: Option<u64>| value.map(|v| v.to_string()).unwrap_or_else(unknown);
-    let health = match device.smart.health { Health::Passed => l("Passed", "Bestått"), Health::Failed => l("Failing", "Feil oppdaget"), Health::Unsupported => l("Not supported", "Ikke støttet"), Health::Unavailable => l("Unavailable", "Utilgjengelig") };
-    let location = match device.internal { Some(true) => l("Internal", "Intern"), Some(false) => l("External", "Ekstern"), None => l("Location unavailable", "Plassering utilgjengelig") };
-    let media = match device.solid_state { Some(true) => "SSD", Some(false) => l("Rotating disk", "Roterende disk"), None => l("Media type unavailable", "Medietype utilgjengelig") };
+    let health = match device.smart.health {
+        Health::Passed => l("Passed", "Bestått"),
+        Health::Failed => l("Failing", "Feil oppdaget"),
+        Health::Unsupported => l("Not supported", "Ikke støttet"),
+        Health::Unavailable => l("Unavailable", "Utilgjengelig"),
+    };
+    let location = match device.internal {
+        Some(true) => l("Internal", "Intern"),
+        Some(false) => l("External", "Ekstern"),
+        None => l("Location unavailable", "Plassering utilgjengelig"),
+    };
+    let media = match device.solid_state {
+        Some(true) => "SSD",
+        Some(false) => l("Rotating disk", "Roterende disk"),
+        None => l("Media type unavailable", "Medietype utilgjengelig"),
+    };
     let flow = |title: &'static str, rate: Option<f64>, history: &[f64]| {
         card(dark)
             .child(caption(title).text_color(t::ink_dim(dark)))
-            .child(div().text_2xl().font_weight(FontWeight::BOLD).child(rate.map(fmt_rate).unwrap_or_else(unknown)))
-            .when(!history.is_empty(), |d| d.child(area_chart(history, 60.0, Metric::Disk.accent(dark), None)))
+            .child(
+                div()
+                    .text_2xl()
+                    .font_weight(FontWeight::BOLD)
+                    .child(rate.map(fmt_rate).unwrap_or_else(unknown)),
+            )
+            .when(!history.is_empty(), |d| {
+                d.child(area_chart(history, 60.0, Metric::Disk.accent(dark), None))
+            })
     };
     div().flex().flex_col().gap_3()
         .child(card(dark)
@@ -1359,19 +1988,29 @@ fn disk_detail(device: &crate::disks::Device, io: Option<&crate::disks::IoSample
             .child(stat_card(l("Power-on hours", "Driftstimer"), count(device.smart.power_on_hours), None, dark))
             .child(stat_card(l("Power cycles", "Strømsykluser"), count(device.smart.power_cycles), None, dark)))
         .child(sub(if device.smart.extended { l("Extended source: read-only SMART log. Endurance used is a wear indicator, not a health score; it can exceed 100%.", "Utvidet kilde: skrivebeskyttet SMART-logg. Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore; den kan overstige 100 %.") } else { l("SMART status source: macOS. Extended SMART data is unavailable without a supported local reader and device. Missing data never means healthy.", "Kilde for SMART-status: macOS. Utvidede SMART-data er utilgjengelige uten en støttet lokal leser og enhet. Manglende data betyr aldri frisk.") }).text_color(t::ink_dim(dark)))
-
 }
 
 fn network_tab(s: &Snapshot, dark: bool) -> Div {
     let m = Metric::Network;
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
-    rows.sort_by(|a, b| (b.net_in_rate + b.net_out_rate).partial_cmp(&(a.net_in_rate + a.net_out_rate)).unwrap());
-    let max = rows.first().map(|a| a.net_in_rate + a.net_out_rate).unwrap_or(1.0).max(1.0);
+    rows.sort_by(|a, b| {
+        (b.net_in_rate + b.net_out_rate)
+            .partial_cmp(&(a.net_in_rate + a.net_out_rate))
+            .unwrap()
+    });
+    let max = rows
+        .first()
+        .map(|a| a.net_in_rate + a.net_out_rate)
+        .unwrap_or(1.0)
+        .max(1.0);
     let mut combined = s.net_in_hist.pts.clone();
     for (i, v) in combined.iter_mut().enumerate() {
         *v += s.net_out_hist.pts.get(i).copied().unwrap_or(0.0);
     }
-    let hist = Hist { pts: combined, max_len: 360 };
+    let hist = Hist {
+        pts: combined,
+        max_len: 360,
+    };
     div()
         .flex()
         .flex_col()
@@ -1386,12 +2025,22 @@ fn network_tab(s: &Snapshot, dark: bool) -> Div {
             vec![
                 (l("Download", "Nedlasting").into(), fmt_rate(s.net.rate_in)),
                 (l("Upload", "Opplasting").into(), fmt_rate(s.net.rate_out)),
-                (l("Received · since boot", "Mottatt · siden oppstart").into(), fmt_bytes(s.net.total_in as f64)),
-                (l("Sent · since boot", "Sendt · siden oppstart").into(), fmt_bytes(s.net.total_out as f64)),
+                (
+                    l("Received · since boot", "Mottatt · siden oppstart").into(),
+                    fmt_bytes(s.net.total_in as f64),
+                ),
+                (
+                    l("Sent · since boot", "Sendt · siden oppstart").into(),
+                    fmt_bytes(s.net.total_out as f64),
+                ),
             ],
             None,
         ))
-        .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Download + upload", "Nedlasting + opplasting"), dark))
+        .child(section_header(
+            l("Apps · highest usage first", "Apper · høyest bruk først"),
+            l("Download + upload", "Nedlasting + opplasting"),
+            dark,
+        ))
         .child(list_card(
             rows.iter()
                 .take(30)
@@ -1403,7 +2052,18 @@ fn network_tab(s: &Snapshot, dark: bool) -> Div {
                 .collect(),
             dark,
         ))
-        .child(sub(format!("{}: {} / {}", l("Peak download / upload · this session", "Høyeste nedlasting / opplasting · denne økten"), fmt_rate(s.net.peak_in), fmt_rate(s.net.peak_out))).text_color(t::ink_dim(dark)))
+        .child(
+            sub(format!(
+                "{}: {} / {}",
+                l(
+                    "Peak download / upload · this session",
+                    "Høyeste nedlasting / opplasting · denne økten"
+                ),
+                fmt_rate(s.net.peak_in),
+                fmt_rate(s.net.peak_out)
+            ))
+            .text_color(t::ink_dim(dark)),
+        )
 }
 
 fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
@@ -1577,7 +2237,7 @@ fn level_meter(frac: f32, color: Hsla, dark: bool, bars: usize) -> Div {
     row
 }
 
-fn sound_tab(s: &Snapshot, dark: bool) -> Div {
+fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: bool) -> Div {
     let m = Metric::Sound;
     let vol = s.audio.device_volume;
     let accent = m.accent(dark);
@@ -1586,11 +2246,11 @@ fn sound_tab(s: &Snapshot, dark: bool) -> Div {
     apps.sort_by_key(|a| !(a.running_output || a.running_input));
     for (i, a) in apps.iter().enumerate() {
         let status = if a.running_output && a.running_input {
-            l("Playing + recording", "Spiller + tar opp")
+            l("Output + input active", "Utgang + inngang aktiv")
         } else if a.running_output {
-            l("Playing", "Spiller")
+            l("Output active", "Utgang aktiv")
         } else if a.running_input {
-            l("Recording", "Tar opp")
+            l("Input active", "Inngang aktiv")
         } else {
             l("Idle", "Inaktiv")
         };
@@ -1608,27 +2268,32 @@ fn sound_tab(s: &Snapshot, dark: bool) -> Div {
                 .py(px(5.))
                 .px_4()
                 .child(
-                    div().w(px(16.)).text_xs().text_color(t::ink_dim(dark)).child(format!("{}", i + 1)),
+                    div()
+                        .w(px(16.))
+                        .text_xs()
+                        .text_color(t::ink_dim(dark))
+                        .child(format!("{}", i + 1)),
                 )
                 .child(app_icon(&fake, dark))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(a.name.clone()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(a.name.clone()),
+                        )
                         .child(div().text_xs().text_color(t::ink_dim(dark)).child(status)),
-                )
-,
+                ),
         );
     }
     if rows.is_empty() {
-        rows.push(
-            div()
-                .p_4()
-                .text_sm()
-                .text_color(t::ink_dim(dark))
-                .child(l("No apps are using audio right now.", "Ingen apper bruker lyd akkurat nå.")),
-        );
+        rows.push(div().p_4().text_sm().text_color(t::ink_dim(dark)).child(l(
+            "No app audio activity is reported. Process activity may be unavailable on this Mac.",
+            "Ingen lydaktivitet fra apper er rapportert. Prosessaktivitet kan være utilgjengelig på denne Macen.",
+        )));
     }
     div()
         .flex()
@@ -1645,20 +2310,36 @@ fn sound_tab(s: &Snapshot, dark: bool) -> Div {
                         .child(
                             div()
                                 .flex_1()
-                                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Output device", "Lydutgang")))
-                                .child(sub(s.audio.device_name.clone()).text_color(t::ink_dim(dark))),
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(l("Output device", "Lydutgang")),
+                                )
+                                .child(
+                                    sub(s.audio.device_name.clone()).text_color(t::ink_dim(dark)),
+                                ),
                         )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(if s.audio.device_muted { l("Muted", "Dempet").into() } else { format!("{:.0}%", vol * 100.0) }),
-                        ),
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                            if s.audio.device_muted == Some(true) {
+                                l("Muted", "Dempet").into()
+                            } else {
+                                vol.map(|v|format!("{:.0}%",v*100.)).unwrap_or_else(||l("Unavailable", "Utilgjengelig").into())
+                            },
+                        )),
                 )
-.child(sub(l("Display only · Change output and volume in macOS Sound settings.", "Kun visning · Endre utgang og volum i lydinnstillingene i macOS.")).text_color(t::ink_dim(dark))),
+                .child(crate::controls::audio_output(&s.audio, dark, this, pending)),
         )
-        .child(section_header(l("Apps using audio", "Apper som bruker lyd"), l("Activity · not measured level", "Aktivitet · ikke målt lydnivå"), dark))
+        .child(section_header(
+            l("Apps using audio", "Apper som bruker lyd"),
+            l(
+                "Activity · not measured level",
+                "Aktivitet · ikke målt lydnivå",
+            ),
+            dark,
+        ))
         .child(list_card(rows, dark))
+        .child(sub(l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd.")))
 }
 
 // ---------- bluetooth ----------
@@ -1770,29 +2451,114 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
 
 // ---------- projects ----------
 
-fn request_stop(mut targets: Vec<DevServer>, this: Entity<TideGaugeView>, window: &mut Window, cx: &mut App) {
-    targets.sort_by_key(|s| s.pid);
-    targets.dedup_by_key(|s| s.pid);
-    if targets.is_empty() { return; }
-    let details = targets.iter().map(|s| format!("{} · PID {} · :{}", s.name, s.pid, s.port)).collect::<Vec<_>>().join("\n");
-    let detail = format!("{}\n\n{}", details, l("Sends SIGTERM to these processes only. Unsaved work may be lost. Changed or exited processes will not be stopped.", "Sender SIGTERM kun til disse prosessene. Ulagret arbeid kan gå tapt. Endrede eller avsluttede prosesser stoppes ikke."));
-    let answer = window.prompt(PromptLevel::Warning, l("Stop development servers?", "Stoppe utviklingsservere?"), Some(&detail), &[l("Cancel", "Avbryt"), l("Stop", "Stopp")], cx);
-    cx.spawn(async move |cx| {
-        if answer.await != Ok(1) { return; }
-        let failed = targets.iter().filter(|server| !crate::projects::stop_server(server)).count();
-        this.update(cx, |view, cx| {
-            view.project_error = if failed > 0 { Some(format!("{} {}", failed, l("processes could not be stopped: identity changed, process exited, or permission denied.", "prosesser kunne ikke stoppes: identiteten ble endret, prosessen ble avsluttet eller tilgang ble nektet."))) } else { None };
-            cx.notify();
-        });
-    }).detach();
+fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
+    let mut targets = std::collections::BTreeMap::new();
+    for server in &project.servers {
+        let target = targets
+            .entry(server.pid)
+            .or_insert_with(|| crate::projects::StopTarget {
+                server: server.clone(),
+                project_dir: project.dir.clone(),
+                ports: Vec::new(),
+            });
+        if !target.ports.contains(&server.port) {
+            target.ports.push(server.port);
+        }
+    }
+    targets.into_values().collect()
 }
 
-fn stop_button(id: String, label: &'static str, targets: Vec<DevServer>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+fn request_stop(
+    targets: Vec<crate::projects::StopTarget>,
+    this: Entity<TideGaugeView>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if targets.is_empty() || this.read(cx).project_stopping {
+        return;
+    }
+    let details = targets
+        .iter()
+        .map(|target| {
+            format!(
+                "{} · PID {} · {}\n{}",
+                target.server.name,
+                target.server.pid,
+                target
+                    .ports
+                    .iter()
+                    .map(|p| format!(":{p}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                target.project_dir
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let detail = format!("{}\n\n{}", details, l("Sends SIGTERM to these processes only. Unsaved work may be lost. Changed or exited processes will not be stopped.", "Sender SIGTERM kun til disse prosessene. Ulagret arbeid kan gå tapt. Endrede eller avsluttede prosesser stoppes ikke."));
+    let answer = window.prompt(
+        PromptLevel::Warning,
+        l("Stop development servers?", "Stoppe utviklingsservere?"),
+        Some(&detail),
+        &[l("Cancel", "Avbryt"), l("Stop", "Stopp")],
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        if answer.await != Ok(1) {
+            return;
+        }
+        this.update(cx, |view, cx| {
+            view.project_stopping = true;
+                view.project_stop_failed = false;
+            view.project_error = Some(
+                l(
+                    "Stopping confirmed processes…",
+                    "Stopper bekreftede prosesser…",
+                )
+                .into(),
+            );
+            cx.notify();
+        });
+        let results = smol::unblock(move || crate::projects::stop_targets(targets)).await;
+        this.update(cx, |view, cx| {
+            view.project_stopping = false;
+                view.project_stop_failed = results.iter().any(|result| !matches!(result.outcome, crate::projects::StopOutcome::Exited | crate::projects::StopOutcome::AlreadyStopped));
+            view.project_error = Some(
+                results
+                    .iter()
+                    .map(|r| r.message())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+fn stop_button(
+    id: String,
+    label: &'static str,
+    targets: Vec<crate::projects::StopTarget>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> impl IntoElement {
     let key_targets = targets.clone();
     let key_this = this.clone();
-    div().id(SharedString::from(id)).role(Role::Button).aria_label(label).tab_index(0)
-        .px_3().py_1().rounded_md().border_1().border_color(t::line(dark)).text_xs()
-        .cursor_pointer().hover(|d| d.bg(t::card_hi(dark))).focus_visible(|d| d.bg(t::card_hi(dark)))
+    div()
+        .id(SharedString::from(id))
+        .role(Role::Button)
+        .aria_label(label)
+        .tab_index(0)
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .border_1()
+        .border_color(t::line(dark))
+        .text_xs()
+        .cursor_pointer()
+        .hover(|d| d.bg(t::card_hi(dark)))
+        .focus_visible(|d| d.bg(t::card_hi(dark)))
         .child(label)
         .on_click(move |_, window, cx| request_stop(targets.clone(), this.clone(), window, cx))
         .on_key_down(move |event, window, cx| {
@@ -1811,25 +2577,34 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut c = div().flex().flex_col().gap_3();
     if total > 0 {
         c = c.child(
-            card(dark)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(icon_img("icons/folder-code.svg", 20.0, accent))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_sm()
-                                .child(if all_idle {
-                                    format!("{} dev {} {} running but idle", total, if total == 1 { "server" } else { "servers" }, if total == 1 { "is" } else { "are" })
-                                } else {
-                                    format!("{} dev {} running", total, if total == 1 { "server" } else { "servers" })
-                                }),
+            card(dark).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(icon_img("icons/folder-code.svg", 20.0, accent))
+                    .child(div().flex_1().text_sm().child(if all_idle {
+                        format!(
+                            "{} dev {} {} running but idle",
+                            total,
+                            if total == 1 { "server" } else { "servers" },
+                            if total == 1 { "is" } else { "are" }
                         )
-                        .child(stop_button("stop-all".into(), l("Stop all…", "Stopp alle…"), s.projects.iter().flat_map(|g| g.servers.clone()).collect(), dark, this.clone())),
-                ),
+                    } else {
+                        format!(
+                            "{} dev {} running",
+                            total,
+                            if total == 1 { "server" } else { "servers" }
+                        )
+                    }))
+                    .child(stop_button(
+                        "stop-all".into(),
+                        l("Stop all…", "Stopp alle…"),
+                        s.projects.iter().flat_map(project_targets).collect(),
+                        dark,
+                        this.clone(),
+                    )),
+            ),
         );
         for g in &s.projects {
             c = c.child(
@@ -1840,7 +2615,12 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                             .items_center()
                             .gap_2()
                             .child(icon_img("icons/folder.svg", 16.0, accent))
-                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(g.name.clone()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(g.name.clone()),
+                            )
                             .child(sub(g.dir.clone()).text_color(t::ink_dim(dark))),
                     )
                     .children(g.servers.iter().map(|srv| {
@@ -1882,17 +2662,34 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                                 div()
                                     .flex_1()
                                     .text_xs()
-                                    .text_color(if srv.status.starts_with("idle") || srv.status.contains("barely") {
-                                        t::ink_dim(dark)
-                                    } else {
-                                        t::ok(dark)
-                                    })
+                                    .text_color(
+                                        if srv.status.starts_with("idle")
+                                            || srv.status.contains("barely")
+                                        {
+                                            t::ink_dim(dark)
+                                        } else {
+                                            t::ok(dark)
+                                        },
+                                    )
                                     .child(srv.status.clone()),
                             )
                             .child(
-                                div().w(px(70.)).text_right().text_xs().child(fmt_bytes(srv.mem_bytes as f64)),
+                                div()
+                                    .w(px(70.))
+                                    .text_right()
+                                    .text_xs()
+                                    .child(fmt_bytes(srv.mem_bytes as f64)),
                             )
-                            .child(stop_button(format!("stop-{}-{}", srv.pid, srv.port), l("Stop…", "Stopp…"), vec![srv.clone()], dark, this.clone()))
+                            .child(stop_button(
+                                format!("stop-{}-{}", srv.pid, srv.port),
+                                l("Stop…", "Stopp…"),
+                                project_targets(g)
+                                    .into_iter()
+                                    .filter(|target| target.server.pid == srv.pid)
+                                    .collect(),
+                                dark,
+                                this.clone(),
+                            ))
                     })),
             );
         }

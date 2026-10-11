@@ -76,26 +76,30 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Area | Current implementation |
 |---|---|
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
-| Overview | Summary tiles and memory and power breakdowns on neutral surfaces with colorful metric accents |
-| Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, and Battery |
+| Overview | Favorite metric tiles, optional compact layout, and independently configurable tab visibility/order |
+| Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, Battery, and stored History |
 | Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
-| Sound | Output device and volume display, plus process audio state |
+| Sound | Default media-output volume/mute controls where the device supports them, plus read-only process audio activity |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
-| Projects | Development listeners owned by the current user, grouped by project directory, with Stop actions |
-| History | SQLite samples of headline metrics and up to 60 apps, with a 30-day retention target |
-| Alerts | Notifications for sustained CPU, memory, disk, and network thresholds, with a shared 10-minute cooldown |
+| Projects | Owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
+| History | Local 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps |
+| Alerts | Opt-in CPU, used-memory, disk, and network alerts; configurable CPU/memory thresholds and independent cooldowns |
+| Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
 
 ## Current limitations
 
-- Project Stop and Stop All actions require confirmation. They send SIGTERM only after rechecking process ownership and start time; no force-kill escalation is performed.
-- Sound is read-only: it displays device volume and app playback/recording activity, not per-app volume or measured signal levels.
+- Project Stop rechecks ownership, start time, project eligibility, and a confirmed listening port. It requests termination with SIGTERM and reports whether the original process exited; it never escalates to force-kill. As with any PID-based API, validation and signaling are not an atomic operation.
+- Sound controls apply to the default **media output**, not individual apps or the microphone. Unsupported device controls are unavailable. Per-app volume, mute, and signal meters remain deferred; no audio is captured. See [audio capabilities](docs/AUDIO.md).
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
-- Custom alert thresholds are stored but not applied. Launch at login is
+- Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
+- Launch at login is
   available on macOS 13+ only for a bundle installed in `/Applications` or
   `~/Applications`; approval may be required in System Settings > General >
   Login Items. Closing the dashboard hides it while collection continues.
-- History is written to disk, but the panel shows in-memory charts. There is no history browser, and pruning is periodic rather than a strict 30-day cutoff.
+- Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and top-60 app recording have important limitations; see [history semantics](docs/HISTORY.md).
+- Keep awake prevents **idle system sleep only**. Displays may sleep, and closing the lid or explicitly sleeping still takes precedence. It releases on expiry, Stop, or app exit and does not resume automatically after restart.
+- Dashboard reset affects only tab order, favorites, and compact layout. It does not reset menu-bar readings, appearance, login, or alert preferences. Overview and Settings remain reachable.
 
 Projects requires a working directory within four levels of a Git root or a recognized manifest (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, or `composer.json`). Known development runtimes and custom executables inside that project qualify. Desktop app bundles, other users' processes, root/home directories, and listeners without a project marker are excluded. Servers launched from unrelated folders will not appear.
 
@@ -144,7 +148,10 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 | `src/projects.rs` | Listening ports, project grouping, idle tracking, per-app network collection |
 | `src/audio.rs` | CoreAudio device and process properties |
 | `src/bluetooth.rs` | Bluetooth JSON parsing and cache |
-| `src/history.rs` | SQLite persistence and alert thresholds |
+| `src/history.rs`, `src/history_browser.rs` | SQLite persistence and read-only range queries |
+| `src/alerts.rs` | Sustained alert thresholds, recovery, and cooldowns |
+| `src/keepawake.rs` | Owned native idle-sleep assertions and expiry |
+| `src/controls.rs` | Settings, history, keep-awake, and output-device controls |
 | `src/settings.rs` | Settings model, defaults, and JSON persistence |
 | `src/statusbar.rs` | Native menu-bar items and sparklines |
 | `src/ui.rs` | Panel navigation, tab content, and charts |

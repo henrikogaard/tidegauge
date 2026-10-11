@@ -19,7 +19,14 @@ pub struct Settings {
     pub menu_items: Vec<MenuItem>,
     pub alert_cpu_pct: f64,
     pub alert_mem_pct: f64,
+    pub alert_cpu_enabled: bool,
+    pub alert_mem_enabled: bool,
+    pub alert_disk_enabled: bool,
+    pub alert_network_enabled: bool,
     pub launch_at_login: bool,
+    pub dashboard_tabs: Vec<String>,
+    pub favorite_metrics: Vec<String>,
+    pub compact_dashboard: bool,
 }
 
 impl Default for Settings {
@@ -30,7 +37,14 @@ impl Default for Settings {
             menu_items: Vec::new(),
             alert_cpu_pct: 90.0,
             alert_mem_pct: 92.0,
+            alert_cpu_enabled: false,
+            alert_mem_enabled: false,
+            alert_disk_enabled: false,
+            alert_network_enabled: false,
             launch_at_login: false,
+            dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
+            favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
+            compact_dashboard: false,
         }
     }
 }
@@ -45,13 +59,28 @@ fn path() -> PathBuf {
 
 impl Settings {
     pub fn load() -> Self {
-        std::fs::read(path())
+        let mut settings: Self = std::fs::read(path())
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        settings.normalize();
+        settings
     }
     pub fn save(&self) -> std::io::Result<()> {
         self.write_to(&path())
+    }
+
+    pub fn normalize(&mut self) {
+        self.alert_cpu_pct = valid_threshold(self.alert_cpu_pct, 90.);
+        self.alert_mem_pct = valid_threshold(self.alert_mem_pct, 92.);
+        normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
+        normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
+    }
+
+    pub fn reset_dashboard(&mut self) {
+        self.dashboard_tabs = DASHBOARD_TABS.iter().map(|s| (*s).into()).collect();
+        self.favorite_metrics = FAVORITE_METRICS.iter().map(|s| (*s).into()).collect();
+        self.compact_dashboard = false;
     }
 
     fn write_to(&self, destination: &std::path::Path) -> std::io::Result<()> {
@@ -62,22 +91,66 @@ impl Settings {
     }
 
     pub fn set_menu_style(&mut self, metric: &str, style: Option<&str>) {
-        if !MENU_METRICS.iter().any(|(key, _)| *key == metric) { return; }
-        if style.is_some_and(|style| !MENU_STYLES.iter().any(|(key, _)| *key == style)) { return; }
+        if !MENU_METRICS.iter().any(|(key, _)| *key == metric) {
+            return;
+        }
+        if style.is_some_and(|style| !MENU_STYLES.iter().any(|(key, _)| *key == style)) {
+            return;
+        }
         self.menu_items.retain(|item| item.metric != metric);
         if let Some(style) = style {
-            self.menu_items.push(MenuItem { metric: metric.into(), style: style.into() });
+            self.menu_items.push(MenuItem {
+                metric: metric.into(),
+                style: style.into(),
+            });
         }
-        self.menu_items.sort_by_key(|item| MENU_METRICS.iter().position(|(key, _)| *key == item.metric));
+        self.menu_items
+            .sort_by_key(|item| MENU_METRICS.iter().position(|(key, _)| *key == item.metric));
     }
 }
 
+pub const DASHBOARD_TABS: [&str; 11] = [
+    "cpu",
+    "memory",
+    "disk",
+    "network",
+    "gpu",
+    "neural",
+    "battery",
+    "sound",
+    "bluetooth",
+    "projects",
+    "history",
+];
+pub const FAVORITE_METRICS: [&str; 6] = ["cpu", "memory", "gpu", "disk", "network", "battery"];
+
+pub fn valid_threshold(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(1., 100.)
+    } else {
+        fallback
+    }
+}
+
+fn normalize_choices(choices: &mut Vec<String>, supported: &[&str]) {
+    let mut seen = std::collections::HashSet::new();
+    choices.retain(|s| supported.contains(&s.as_str()) && seen.insert(s.clone()));
+}
+
 pub const MENU_METRICS: [(&str, &str); 7] = [
-    ("cpu", "CPU"), ("memory", "Memory"), ("gpu", "GPU"), ("disk", "Disk"),
-    ("network", "Network"), ("battery", "Battery"), ("power", "Power"),
+    ("cpu", "CPU"),
+    ("memory", "Memory"),
+    ("gpu", "GPU"),
+    ("disk", "Disk"),
+    ("network", "Network"),
+    ("battery", "Battery"),
+    ("power", "Power"),
 ];
 pub const MENU_STYLES: [(&str, &str); 4] = [
-    ("icon", "Icon"), ("value", "Value"), ("graph", "Graph"), ("both", "Value + graph"),
+    ("icon", "Icon"),
+    ("value", "Value"),
+    ("graph", "Graph"),
+    ("both", "Value + graph"),
 ];
 
 pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
@@ -109,6 +182,7 @@ pub fn localized_style_label(style: &str) -> Option<&'static str> {
 pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
     let mut settings = Settings::load();
     f(&mut settings);
+    settings.normalize();
     settings.save()
 }
 
@@ -117,11 +191,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn roadmap_settings_migrate_normalize_and_reset_independently() {
+        let mut settings: Settings = serde_json::from_str(
+            r#"{"dark":true,"alert_cpu_pct":73,"menu_items":[{"metric":"cpu","style":"value"}]}"#,
+        )
+        .unwrap();
+        assert!(!settings.alert_cpu_enabled);
+        assert_eq!(settings.dashboard_tabs.len(), 11);
+        settings.dashboard_tabs = vec![
+            "history".into(),
+            "cpu".into(),
+            "history".into(),
+            "invalid".into(),
+        ];
+        settings.favorite_metrics.clear();
+        settings.alert_mem_pct = f64::NAN;
+        settings.normalize();
+        assert_eq!(settings.dashboard_tabs, ["history", "cpu"]);
+        assert!(settings.favorite_metrics.is_empty());
+        assert_eq!(settings.alert_mem_pct, 92.);
+        let loaded: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(loaded.dashboard_tabs, settings.dashboard_tabs);
+        settings.reset_dashboard();
+        assert_eq!(settings.favorite_metrics.len(), 6);
+        assert_eq!(settings.dark, Some(true));
+        assert_eq!(settings.alert_cpu_pct, 73.);
+        assert_eq!(settings.menu_items[0].style, "value");
+    }
+
+    #[test]
     fn appearance_round_trip_preserves_menu_items_and_login_preference() {
         for dark in [None, Some(false), Some(true)] {
-            let mut settings = Settings { dark, launch_at_login: true, ..Settings::default() };
+            let mut settings = Settings {
+                dark,
+                launch_at_login: true,
+                ..Settings::default()
+            };
             settings.set_menu_style("cpu", Some("both"));
-            let loaded: Settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+            let loaded: Settings =
+                serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
             assert_eq!(loaded.dark, dark);
             assert!(loaded.launch_at_login);
             assert_eq!(loaded.menu_items.len(), 1);
@@ -139,7 +248,8 @@ mod tests {
 
     #[test]
     fn old_settings_keep_defaults_and_metric_changes_do_not_duplicate_items() {
-        let mut settings: Settings = serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"value"}]}"#).unwrap();
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"value"}]}"#).unwrap();
         assert!(settings.show_app_icon);
         settings.set_menu_style("cpu", Some("icon"));
         settings.set_menu_style("cpu", Some("both"));
@@ -153,13 +263,23 @@ mod tests {
 
     #[test]
     fn settings_round_trip_preserves_other_preferences() {
-        let destination = std::env::temp_dir().join(format!("tidegauge-settings-test-{}.json", std::process::id()));
-        let mut settings = Settings { alert_cpu_pct: 73., ..Settings::default() };
+        let destination = std::env::temp_dir().join(format!(
+            "tidegauge-settings-test-{}.json",
+            std::process::id()
+        ));
+        let mut settings = Settings {
+            alert_cpu_pct: 73.,
+            ..Settings::default()
+        };
         settings.set_menu_style("gpu", Some("graph"));
         settings.write_to(&destination).unwrap();
-        let loaded: Settings = serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
+        let loaded: Settings =
+            serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
         assert_eq!(loaded.alert_cpu_pct, 73.);
-        assert!(loaded.menu_items.iter().any(|item| item.metric == "gpu" && item.style == "graph"));
+        assert!(loaded
+            .menu_items
+            .iter()
+            .any(|item| item.metric == "gpu" && item.style == "graph"));
         assert!(!destination.with_extension("json.tmp").exists());
         std::fs::remove_file(destination).unwrap();
     }

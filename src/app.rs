@@ -2,8 +2,8 @@
 
 #![allow(dead_code)]
 
+use crate::alerts::AlertEngine;
 use crate::engine::{engine, Alert};
-use crate::history::AlertEngine;
 use crate::settings::Settings;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -12,8 +12,21 @@ use std::time::Duration;
 /// Latest un-notified alerts, drained by the UI/notification layer.
 static ALERTS: OnceLock<Mutex<Vec<Alert>>> = OnceLock::new();
 
-pub fn drain_alerts() -> Vec<Alert> {
-    std::mem::take(&mut *ALERTS.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap())
+pub fn drain_alerts(settings: &Settings) -> Vec<Alert> {
+    let mut alerts = std::mem::take(
+        &mut *ALERTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap(),
+    );
+    alerts.retain(|alert| match alert.metric.as_str() {
+        "cpu" => settings.alert_cpu_enabled,
+        "memory" => settings.alert_mem_enabled,
+        "disk" => settings.alert_disk_enabled,
+        "network" => settings.alert_network_enabled,
+        _ => false,
+    });
+    alerts
 }
 
 /// Background sampler: process/audio/projects every ~2s; BT every ~20s
@@ -27,6 +40,7 @@ pub fn start_sampler() {
             let mut bt = crate::engine::BtInfo::default();
             let mut tick = 0u64;
             loop {
+                let settings = Settings::load();
                 let procs_audio = crate::audio::audio_processes();
                 if tick % 10 == 0 {
                     bt = crate::bluetooth::bt_info();
@@ -35,7 +49,7 @@ pub fn start_sampler() {
                     let mut e = eng.lock().unwrap();
                     e.sample(procs_audio, bt.clone());
                     crate::engine::publish(&e.snap);
-                    let new_alerts = alerts.check(&e.snap);
+                    let new_alerts = alerts.check(&e.snap, &settings);
                     if !new_alerts.is_empty() {
                         ALERTS
                             .get_or_init(|| Mutex::new(Vec::new()))
@@ -56,7 +70,11 @@ pub fn start_sampler() {
 
 /// Called once per UI frame-pump (~500ms) from main: applies toggles and
 /// pushes fresh numbers into the menu bar.
-pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, view: &gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut gpui_kit::App) {
+pub fn pump_status_bar(
+    bar: &mut crate::statusbar::StatusBar,
+    view: &gpui_kit::Entity<crate::ui::TideGaugeView>,
+    cx: &mut gpui_kit::App,
+) {
     use crate::statusbar::*;
     use std::sync::atomic::Ordering;
     if TOGGLE_PANEL.swap(false, Ordering::SeqCst) {
@@ -81,7 +99,7 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, view: &gpui_kit::E
     let settings = Settings::load();
     let snap = crate::engine::latest();
     bar.sync(&settings, &snap);
-    for a in drain_alerts() {
+    for a in drain_alerts(&settings) {
         crate::notifications::send(&a.message);
     }
 }

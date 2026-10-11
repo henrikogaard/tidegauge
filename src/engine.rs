@@ -59,16 +59,16 @@ pub struct AudioApp {
     pub icon_path: Option<String>,
     pub running_output: bool,
     pub running_input: bool,
-    pub volume: Option<f32>,
-    pub muted: bool,
-    pub level: f32,
 }
 
 #[derive(Clone, Default)]
 pub struct AudioInfo {
+    pub output_id: u32,
     pub device_name: String,
-    pub device_volume: f32,
-    pub device_muted: bool,
+    pub device_volume: Option<f32>,
+    pub device_muted: Option<bool>,
+    pub can_volume: bool,
+    pub can_mute: bool,
     pub devices: Vec<String>,
     pub apps: Vec<AudioApp>,
 }
@@ -101,6 +101,8 @@ pub struct ProjectGroup {
 pub struct DevServer {
     pub pid: i32,
     pub name: String,
+    pub exe_path: String,
+    pub cwd: String,
     pub runtime: String,
     pub port: u16,
     pub status: String,
@@ -153,7 +155,10 @@ pub struct Snapshot {
 
 impl Default for Snapshot {
     fn default() -> Self {
-        let h = || Hist { pts: Vec::new(), max_len: 360 };
+        let h = || Hist {
+            pts: Vec::new(),
+            max_len: 360,
+        };
         Snapshot {
             at: now_unix(),
             cpu_pct: 0.0,
@@ -270,7 +275,9 @@ impl Engine {
         s.mem_hist.push(mem_used_pct);
         let swp = if s.mem.swap_total > 0 {
             s.mem.swap_used as f64 / s.mem.swap_total as f64 * 100.0
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         s.swap_hist.push(swp);
 
         // Disk
@@ -341,7 +348,12 @@ impl Engine {
             } else {
                 // first sight: estimate from lifetime
                 let life = (now_unix() - start).max(1.0);
-                (cpu_ns as f64 / life / 1e9 * 100.0, r.ri_diskio_bytesread as f64 / life, r.ri_diskio_byteswritten as f64 / life, r.ri_billed_energy as f64 / life / 1e9)
+                (
+                    cpu_ns as f64 / life / 1e9 * 100.0,
+                    r.ri_diskio_bytesread as f64 / life,
+                    r.ri_diskio_byteswritten as f64 / life,
+                    r.ri_billed_energy as f64 / life / 1e9,
+                )
             };
             let exe = proc_path(pid);
             procs.push(ProcInfo {
@@ -393,10 +405,17 @@ impl Engine {
         s.power_w = None;
         s.power_hist.pts.clear();
 
-        s.audio = AudioInfo { apps: audio_apps, ..s.audio.clone() };
-        s.audio.device_name = crate::audio::default_output_name();
-        s.audio.device_volume = crate::audio::default_output_volume().unwrap_or(0.0);
-        s.audio.device_muted = crate::audio::default_output_muted().unwrap_or(false);
+        s.audio = AudioInfo {
+            apps: audio_apps,
+            ..s.audio.clone()
+        };
+        let output = crate::audio::output_state();
+        s.audio.output_id = output.id;
+        s.audio.device_name = output.name;
+        s.audio.device_volume = output.volume;
+        s.audio.device_muted = output.muted;
+        s.audio.can_volume = output.can_volume;
+        s.audio.can_mute = output.can_mute;
         if self.tick % 10 == 0 {
             s.audio.devices = crate::audio::output_device_names();
         }
@@ -426,44 +445,61 @@ pub fn latest() -> Snapshot {
 
 pub fn fmt_bytes(n: f64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    if n < 1.0 { return "0 B".into(); }
+    if n < 1.0 {
+        return "0 B".into();
+    }
     let mut v = n;
     let mut i = 0;
-    while v >= 1024.0 && i < 4 { v /= 1024.0; i += 1; }
-    if i == 0 { format!("{} B", v as u64) }
-    else if v >= 100.0 { format!("{:.0} {}", v, U[i]) }
-    else if v >= 10.0 { format!("{:.1} {}", v, U[i]) }
-    else { format!("{:.2} {}", v, U[i]) }
+    while v >= 1024.0 && i < 4 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{} B", v as u64)
+    } else if v >= 100.0 {
+        format!("{:.0} {}", v, U[i])
+    } else if v >= 10.0 {
+        format!("{:.1} {}", v, U[i])
+    } else {
+        format!("{:.2} {}", v, U[i])
+    }
 }
 pub fn fmt_rate(n: f64) -> String {
     format!("{}/s", fmt_bytes(n))
 }
 pub fn fmt_watts(w: f64) -> String {
-    if w < 0.05 { "0.00 W".into() } else if w < 10.0 { format!("{:.2} W", w) } else { format!("{:.1} W", w) }
+    if w < 0.05 {
+        "0.00 W".into()
+    } else if w < 10.0 {
+        format!("{:.2} W", w)
+    } else {
+        format!("{:.1} W", w)
+    }
 }
 pub fn fmt_pct(v: f64) -> String {
     format!("{:.0}%", v)
 }
 pub fn fmt_up(secs: f64) -> String {
     let s = secs as u64;
-    if s < 90 { format!("{} seconds", s.max(1)) }
-    else if s < 5400 { format!("{} minutes", s / 60) }
-    else if s < 129600 { format!("{} hours", s / 3600) }
-    else { format!("{} days", s / 86400) }
+    if s < 90 {
+        format!("{} seconds", s.max(1))
+    } else if s < 5400 {
+        format!("{} minutes", s / 60)
+    } else if s < 129600 {
+        format!("{} hours", s / 3600)
+    } else {
+        format!("{} days", s / 86400)
+    }
 }
 
-
 fn regroup_apps(procs: &[ProcInfo], previous: &[AppGroup]) -> Vec<AppGroup> {
-    let previous: HashMap<&str, &AppGroup> = previous
-        .iter()
-        .map(|app| (app.key.as_str(), app))
-        .collect();
+    let previous: HashMap<&str, &AppGroup> =
+        previous.iter().map(|app| (app.key.as_str(), app)).collect();
     let mut apps = group_procs(procs);
     for app in &mut apps {
         if let Some(old) = previous.get(app.key.as_str()) {
             // Do not transfer rates to a different process group with the same name.
-            if app.pids.len() == old.pids.len()
-                && app.pids.iter().all(|pid| old.pids.contains(pid))
+            if app.pids.len() == old.pids.len() && app.pids.iter().all(|pid| old.pids.contains(pid))
             {
                 app.net_in_rate = old.net_in_rate;
                 app.net_out_rate = old.net_out_rate;
@@ -508,22 +544,36 @@ mod tests {
             .stdout(Stdio::piped())
             .spawn().unwrap());
         let mut port = String::new();
-        BufReader::new(server.0.stdout.take().unwrap()).read_line(&mut port).unwrap();
+        BufReader::new(server.0.stdout.take().unwrap())
+            .read_line(&mut port)
+            .unwrap();
         let port: u16 = port.trim().parse().unwrap();
         std::thread::sleep(Duration::from_millis(700));
         let mut sampler = Engine::new();
         sampler.sample(Vec::new(), BtInfo::default());
-        let (project, process) = sampler.snap.projects.iter()
+        let (project, process) = sampler
+            .snap
+            .projects
+            .iter()
             .flat_map(|project| project.servers.iter().map(move |server| (project, server)))
             .find(|(_, process)| process.pid == server.0.id() as i32 && process.port == port)
             .expect("disposable listener missing from project detection");
-        assert!(process.cpu_pct > 15.0, "busy server CPU was not measured: {}%", process.cpu_pct);
+        assert!(
+            process.cpu_pct > 15.0,
+            "busy server CPU was not measured: {}%",
+            process.cpu_pct
+        );
         assert!(process.mem_bytes > 0, "server memory was not measured");
         assert_eq!(process.status, "working");
         assert!(!project.idle);
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(std::path::Path::new(&project.dir), cwd.as_path());
-        let app = sampler.snap.apps.iter().find(|app| app.pids.contains(&process.pid)).unwrap();
+        let app = sampler
+            .snap
+            .apps
+            .iter()
+            .find(|app| app.pids.contains(&process.pid))
+            .unwrap();
         assert!(app.cpu_pct >= process.cpu_pct);
         assert!(app.mem_bytes >= process.mem_bytes);
     }

@@ -1,0 +1,354 @@
+//! Bounded read-only history queries. Empty buckets remain missing, never zero-filled.
+
+use crate::locale::text as l;
+use rusqlite::{params, Connection, OpenFlags};
+
+pub const BUCKETS: usize = 180;
+pub const RANGES: [(u32, &str); 4] = [(12, "12 h"), (24, "24 h"), (168, "7 d"), (720, "30 d")];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Metric {
+    Cpu,
+    Memory,
+    DiskRead,
+    DiskWrite,
+    Download,
+    Upload,
+    Gpu,
+    Battery,
+    Power,
+}
+
+impl Metric {
+    pub const ALL: [Self; 9] = [
+        Self::Cpu,
+        Self::Memory,
+        Self::DiskRead,
+        Self::DiskWrite,
+        Self::Download,
+        Self::Upload,
+        Self::Gpu,
+        Self::Battery,
+        Self::Power,
+    ];
+    pub const APP: [Self; 4] = [Self::Cpu, Self::Memory, Self::DiskRead, Self::Download];
+
+    pub fn label(self, app: bool) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Memory => l("Memory", "Minne"),
+            Self::DiskRead if app => l("Disk I/O", "Diskaktivitet"),
+            Self::DiskRead => l("Disk read", "Disklesing"),
+            Self::DiskWrite => l("Disk write", "Diskskriving"),
+            Self::Download if app => l("Network I/O", "Nettverksaktivitet"),
+            Self::Download => l("Download", "Nedlasting"),
+            Self::Upload => l("Upload", "Opplasting"),
+            Self::Gpu => "GPU",
+            Self::Battery => l("Battery", "Batteri"),
+            Self::Power => l("Power", "Effekt"),
+        }
+    }
+
+    pub fn unit(self, app: bool) -> &'static str {
+        match self {
+            Self::Memory if app => "B",
+            Self::Cpu | Self::Memory | Self::Gpu | Self::Battery => "%",
+            Self::Power => "W",
+            _ => "B/s",
+        }
+    }
+
+    fn keys(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Cpu => ("cpu", ""),
+            Self::Memory => ("mem_used", ""),
+            Self::DiskRead => ("disk_r", ""),
+            Self::DiskWrite => ("disk_w", ""),
+            Self::Download => ("net_in", ""),
+            Self::Upload => ("net_out", ""),
+            Self::Gpu => ("gpu_measured", "gpu"),
+            Self::Battery => ("batt_measured", "batt"),
+            Self::Power => ("power_measured", ""),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Request {
+    pub metric: Metric,
+    pub hours: u32,
+    pub app: Option<String>,
+    pub end: f64,
+}
+
+impl Default for Request {
+    fn default() -> Self {
+        Self {
+            metric: Metric::Cpu,
+            hours: 12,
+            app: None,
+            end: crate::metrics::now_unix(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Data {
+    pub values: Vec<Option<f64>>,
+    pub counts: Vec<u64>,
+    pub apps: Vec<String>,
+    pub start: f64,
+    pub end: f64,
+}
+
+pub fn load(request: &Request) -> Result<Data, String> {
+    let path = crate::history::database_path();
+    if !path.exists() {
+        return Ok(empty(request));
+    }
+    let query = || -> rusqlite::Result<Data> {
+        let mut c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        c.busy_timeout(std::time::Duration::from_millis(500))?;
+        let transaction = c.transaction()?;
+        query_connection(&transaction, request)
+    };
+    query().map_err(read_error)
+}
+
+fn read_error(error: rusqlite::Error) -> String {
+    if matches!(error, rusqlite::Error::SqliteFailure(code, _) if matches!(code.code, rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase))
+    {
+        l("The history database is damaged. Back it up before recovery; refreshing will not repair it.", "Historikkdatabasen er skadet. Ta en sikkerhetskopi før gjenoppretting; oppdatering reparerer ikke databasen.").into()
+    } else {
+        l(
+            "History could not be read. Try Refresh.",
+            "Historikken kunne ikke leses. Prøv Oppdater.",
+        )
+        .into()
+    }
+}
+
+fn empty(request: &Request) -> Data {
+    Data {
+        values: vec![None; BUCKETS],
+        counts: vec![0; BUCKETS],
+        start: request.end - f64::from(request.hours) * 3600.,
+        end: request.end,
+        ..Data::default()
+    }
+}
+
+pub fn query_connection(c: &Connection, request: &Request) -> rusqlite::Result<Data> {
+    if !RANGES.iter().any(|(h, _)| *h == request.hours) || !request.end.is_finite() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let mut data = empty(request);
+    let width = (data.end - data.start) / BUCKETS as f64;
+    let mut apps = c.prepare("SELECT DISTINCT app FROM app_metric WHERE ts >= ?1 AND ts < ?2 ORDER BY app COLLATE NOCASE, app")?;
+    data.apps = apps
+        .query_map(params![data.start, data.end], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let rows: Vec<(usize, f64, u64)> = if let Some(app) = &request.app {
+        // Per-app energy counters have not been validated as measured watts.
+        let column = match request.metric {
+            Metric::Cpu => "cpu",
+            Metric::Memory => "mem",
+            Metric::DiskRead => "disk",
+            Metric::Download => "net",
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        };
+        let sql = format!("SELECT CAST((ts - ?1) / ?3 AS INTEGER), AVG({column}), COUNT({column}) FROM app_metric WHERE ts >= ?1 AND ts < ?2 AND app = ?4 AND {column} >= 0 AND {column} < 1e300 GROUP BY 1 ORDER BY 1");
+        let mut statement = c.prepare(&sql)?;
+        let result = statement
+            .query_map(params![data.start, data.end, width, app], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        result
+    } else {
+        let (key, legacy) = request.metric.keys();
+        // Positive legacy GPU/battery samples are usable; zero could mean unavailable.
+        // Legacy system/per-app power was estimated, so it is never mixed with measurements.
+        let mut statement = c.prepare(
+            "SELECT CAST((ts - ?1) / ?3 AS INTEGER), AVG(value), COUNT(value)
+             FROM metric m WHERE ts >= ?1 AND ts < ?2 AND value >= 0 AND value < 1e300
+             AND (metric = ?4 OR (metric = ?5 AND ?5 != '' AND value > 0
+                 AND NOT EXISTS (SELECT 1 FROM metric newer WHERE newer.ts = m.ts AND newer.metric = ?4)))
+             GROUP BY 1 ORDER BY 1"
+        )?;
+        let result = statement
+            .query_map(params![data.start, data.end, width, key, legacy], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        result
+    };
+    for (index, value, count) in rows {
+        if index < BUCKETS && value.is_finite() {
+            data.values[index] = Some(value);
+            data.counts[index] = count;
+        }
+    }
+    Ok(data)
+}
+
+pub fn local_time(ts: f64) -> String {
+    let time = ts as libc::time_t;
+    let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
+    let mut output = [0u8; 48];
+    unsafe {
+        if libc::localtime_r(&time, &mut date).is_null() {
+            return "—".into();
+        }
+        let size = libc::strftime(
+            output.as_mut_ptr().cast(),
+            output.len(),
+            c"%Y-%m-%d %H:%M".as_ptr(),
+            &date,
+        );
+        String::from_utf8_lossy(&output[..size]).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corruption_is_not_reported_as_a_refreshable_error() {
+        for code in [rusqlite::ffi::SQLITE_CORRUPT, rusqlite::ffi::SQLITE_NOTADB] {
+            let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            assert_eq!(read_error(error), l("The history database is damaged. Back it up before recovery; refreshing will not repair it.", "Historikkdatabasen er skadet. Ta en sikkerhetskopi før gjenoppretting; oppdatering reparerer ikke databasen."));
+        }
+        assert_eq!(
+            read_error(rusqlite::Error::InvalidQuery),
+            l(
+                "History could not be read. Try Refresh.",
+                "Historikken kunne ikke leses. Prøv Oppdater."
+            )
+        );
+    }
+
+    fn database() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE metric(ts REAL,metric TEXT,value REAL,PRIMARY KEY(ts,metric)); CREATE TABLE app_metric(ts REAL,app TEXT,cpu REAL,mem REAL,disk REAL,net REAL,power REAL,PRIMARY KEY(ts,app));").unwrap();
+        c
+    }
+
+    #[test]
+    fn ranges_preserve_boundaries_gaps_means_and_genuine_zero() {
+        for (hours, _) in RANGES {
+            let c = database();
+            let r = Request {
+                metric: Metric::Cpu,
+                hours,
+                app: None,
+                end: f64::from(hours) * 3600.,
+            };
+            let width = r.end / BUCKETS as f64;
+            for (ts, value) in [
+                (-1., 99.),
+                (0., 10.),
+                (1., 30.),
+                (width * 2., 0.),
+                (r.end, 99.),
+            ] {
+                c.execute("INSERT INTO metric VALUES(?1,'cpu',?2)", params![ts, value])
+                    .unwrap();
+            }
+            let d = query_connection(&c, &r).unwrap();
+            assert_eq!(d.values.len(), BUCKETS);
+            assert_eq!(d.values[0], Some(20.));
+            assert_eq!(d.counts[0], 2);
+            assert_eq!(d.values[1], None);
+            assert_eq!(d.values[2], Some(0.));
+            assert_eq!(d.counts.iter().sum::<u64>(), 3);
+        }
+    }
+
+    #[test]
+    fn legacy_optional_zeros_and_synthetic_power_are_not_measurements() {
+        let c = database();
+        c.execute_batch("INSERT INTO metric VALUES(0,'gpu',0),(240,'gpu',20),(480,'gpu_measured',0),(480,'gpu',99),(0,'power',5);").unwrap();
+        let mut r = Request {
+            metric: Metric::Gpu,
+            hours: 12,
+            app: None,
+            end: 43200.,
+        };
+        let d = query_connection(&c, &r).unwrap();
+        assert_eq!(&d.values[..3], &[None, Some(20.), Some(0.)]);
+        r.metric = Metric::Power;
+        assert!(query_connection(&c, &r)
+            .unwrap()
+            .values
+            .iter()
+            .all(Option::is_none));
+    }
+
+    #[test]
+    fn app_filters_are_bound_and_absence_is_not_zero() {
+        let c = database();
+        c.execute_batch("INSERT INTO app_metric VALUES(0,'Editor',10,2048,3,4,5),(240,'Browser',80,4096,8,9,10);").unwrap();
+        let mut r = Request {
+            metric: Metric::Memory,
+            hours: 12,
+            app: Some("Editor".into()),
+            end: 43200.,
+        };
+        let d = query_connection(&c, &r).unwrap();
+        assert_eq!(d.apps, ["Browser", "Editor"]);
+        assert_eq!(&d.values[..2], &[Some(2048.), None]);
+        r.app = Some("' OR 1=1 --".into());
+        assert!(query_connection(&c, &r)
+            .unwrap()
+            .values
+            .iter()
+            .all(Option::is_none));
+        r.metric = Metric::Power;
+        assert!(query_connection(&c, &r).is_err());
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM app_metric", [], |r| r
+                .get::<_, u64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn dense_history_is_bounded_and_survives_reopening() {
+        let path = std::env::temp_dir().join(format!(
+            "tidegauge-history-reopen-{}.db",
+            std::process::id()
+        ));
+        let mut c = Connection::open(&path).unwrap();
+        c.execute_batch("CREATE TABLE metric(ts REAL,metric TEXT,value REAL,PRIMARY KEY(ts,metric)); CREATE TABLE app_metric(ts REAL,app TEXT,cpu REAL,mem REAL,disk REAL,net REAL,power REAL,PRIMARY KEY(ts,app));").unwrap();
+        let tx = c.transaction().unwrap();
+        for i in 0..4320 {
+            tx.execute(
+                "INSERT INTO metric VALUES(?1,'cpu',?2)",
+                params![i * 10, i % 24],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        drop(c);
+        let c = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let request = Request {
+            metric: Metric::Cpu,
+            hours: 12,
+            app: None,
+            end: 43200.,
+        };
+        let data = query_connection(&c, &request).unwrap();
+        assert_eq!(data.values, vec![Some(11.5); BUCKETS]);
+        assert_eq!(data.counts, vec![24; BUCKETS]);
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM metric", [], |r| r.get::<_, u64>(0))
+                .unwrap(),
+            4320
+        );
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+}

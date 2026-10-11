@@ -1,0 +1,390 @@
+//! Threshold alerts with independent sustained episodes and cooldowns.
+
+use crate::engine::{Alert, Snapshot};
+use crate::settings::{valid_threshold, Settings};
+
+const CPU_DEFAULT_THRESHOLD: f64 = 90.0;
+const MEMORY_DEFAULT_THRESHOLD: f64 = 92.0;
+const CPU_MEMORY_DURATION: f64 = 20.0;
+const IO_DURATION: f64 = 30.0;
+const COOLDOWN: f64 = 600.0;
+
+#[derive(Default)]
+struct Episode {
+    since: Option<f64>,
+    sent_for_episode: bool,
+    last_sent: Option<f64>,
+    last_at: Option<f64>,
+    last_enabled: Option<bool>,
+    last_threshold: Option<f64>,
+}
+
+impl Episode {
+    fn reset_episode(&mut self) {
+        self.since = None;
+        self.sent_for_episode = false;
+    }
+
+    fn check<F>(
+        &mut self,
+        at: f64,
+        enabled: bool,
+        threshold: f64,
+        value: Option<f64>,
+        duration: f64,
+        make_alert: F,
+    ) -> Option<Alert>
+    where
+        F: FnOnce(f64) -> Alert,
+    {
+        let config_changed = self.last_enabled != Some(enabled)
+            || self
+                .last_threshold
+                .is_some_and(|previous| previous != threshold);
+        if config_changed {
+            self.reset_episode();
+        }
+        self.last_enabled = Some(enabled);
+        self.last_threshold = Some(threshold);
+
+        if !at.is_finite() {
+            self.reset_episode();
+            self.last_at = None;
+            return None;
+        }
+        if self.last_at.is_some_and(|previous| at < previous) {
+            self.reset_episode();
+        }
+        self.last_at = Some(at);
+
+        let Some(value) = value.filter(|value| value.is_finite()) else {
+            self.reset_episode();
+            return None;
+        };
+        if !enabled || value.partial_cmp(&threshold) != Some(std::cmp::Ordering::Greater) {
+            self.reset_episode();
+            return None;
+        }
+
+        let since = *self.since.get_or_insert(at);
+        if self.sent_for_episode || at - since < duration {
+            return None;
+        }
+        if self
+            .last_sent
+            .is_some_and(|previous| at - previous < COOLDOWN)
+        {
+            return None;
+        }
+        self.sent_for_episode = true;
+        self.last_sent = Some(at);
+        Some(make_alert(value))
+    }
+}
+
+pub struct AlertEngine {
+    cpu: Episode,
+    memory: Episode,
+    disk: Episode,
+    network: Episode,
+}
+
+impl AlertEngine {
+    pub fn new() -> Self {
+        Self {
+            cpu: Episode::default(),
+            memory: Episode::default(),
+            disk: Episode::default(),
+            network: Episode::default(),
+        }
+    }
+
+    pub fn check(&mut self, snapshot: &Snapshot, settings: &Settings) -> Vec<Alert> {
+        let at = snapshot.at;
+        let cpu_threshold = valid_threshold(settings.alert_cpu_pct, CPU_DEFAULT_THRESHOLD);
+        let memory_threshold = valid_threshold(settings.alert_mem_pct, MEMORY_DEFAULT_THRESHOLD);
+        let memory_pct = (snapshot.mem.total > 0)
+            .then(|| snapshot.mem.used as f64 / snapshot.mem.total as f64 * 100.0);
+        let disk_rate = snapshot.disk.read_rate + snapshot.disk.write_rate;
+        let network_rate = snapshot.net.rate_in + snapshot.net.rate_out;
+        let mut alerts = Vec::new();
+
+        if let Some(alert) = self.cpu.check(
+            at,
+            settings.alert_cpu_enabled,
+            cpu_threshold,
+            Some(snapshot.cpu_pct),
+            CPU_MEMORY_DURATION,
+            |value| Alert {
+                metric: "cpu".into(),
+                message: format!(
+                    "{}: {:.0}% {}",
+                    crate::locale::text("High CPU usage", "Høy CPU-bruk"),
+                    value,
+                    crate::locale::text("for over 20 seconds", "i over 20 sekunder")
+                ),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        if let Some(alert) = self.memory.check(
+            at,
+            settings.alert_mem_enabled,
+            memory_threshold,
+            memory_pct,
+            CPU_MEMORY_DURATION,
+            |value| Alert {
+                metric: "memory".into(),
+                message: format!(
+                    "{}: {:.0}% {}",
+                    crate::locale::text("High memory usage", "Høy minnebruk"),
+                    value,
+                    crate::locale::text("used for over 20 seconds", "brukt i over 20 sekunder")
+                ),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        let disk_value = (snapshot.disk.read_rate.is_finite()
+            && snapshot.disk.write_rate.is_finite()
+            && disk_rate.is_finite())
+        .then_some(disk_rate);
+        if let Some(alert) = self.disk.check(
+            at,
+            settings.alert_disk_enabled,
+            400e6,
+            disk_value,
+            IO_DURATION,
+            |value| Alert {
+                metric: "disk".into(),
+                message: format!(
+                    "{}: {} {}",
+                    crate::locale::text("Heavy disk activity", "Stor diskaktivitet"),
+                    crate::engine::fmt_rate(value),
+                    crate::locale::text("read+write", "lesing+skriving")
+                ),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        let network_value = (snapshot.net.rate_in.is_finite()
+            && snapshot.net.rate_out.is_finite()
+            && network_rate.is_finite())
+        .then_some(network_rate);
+        if let Some(alert) = self.network.check(
+            at,
+            settings.alert_network_enabled,
+            80e6,
+            network_value,
+            IO_DURATION,
+            |value| Alert {
+                metric: "network".into(),
+                message: format!(
+                    "{}: {}",
+                    crate::locale::text("Heavy network activity", "Stor nettverksaktivitet"),
+                    crate::engine::fmt_rate(value)
+                ),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        alerts
+    }
+}
+
+impl Default for AlertEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> Settings {
+        Settings {
+            alert_cpu_enabled: true,
+            alert_mem_enabled: true,
+            alert_disk_enabled: true,
+            alert_network_enabled: true,
+            ..Settings::default()
+        }
+    }
+
+    fn snapshot(at: f64) -> Snapshot {
+        Snapshot {
+            at,
+            ..Snapshot::default()
+        }
+    }
+
+    #[test]
+    fn custom_threshold_is_used() {
+        let mut settings = settings();
+        settings.alert_mem_enabled = false;
+        settings.alert_cpu_pct = 50.0;
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.0);
+        s.cpu_pct = 51.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 20.0;
+        assert_eq!(engine.check(&s, &settings)[0].metric, "cpu");
+    }
+
+    #[test]
+    fn sustained_duration_and_one_episode() {
+        let mut settings = settings();
+        settings.alert_mem_enabled = false;
+        settings.alert_disk_enabled = false;
+        settings.alert_network_enabled = false;
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(100.0);
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 119.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 120.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+        s.at = 180.0;
+        assert!(engine.check(&s, &settings).is_empty());
+    }
+
+    #[test]
+    fn recovery_rearms_after_cooldown() {
+        let mut settings = settings();
+        settings.alert_mem_enabled = false;
+        settings.alert_disk_enabled = false;
+        settings.alert_network_enabled = false;
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.0);
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 20.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+        s.at = 21.0;
+        s.cpu_pct = 10.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 22.0;
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 41.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 42.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 619.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 620.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+    }
+
+    #[test]
+    fn independent_metrics_do_not_share_cooldown() {
+        let mut settings = settings();
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.0);
+        s.cpu_pct = 95.0;
+        s.mem.total = 100;
+        s.mem.used = 95;
+        s.disk.read_rate = 450e6;
+        s.net.rate_in = 90e6;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 20.0;
+        let alerts = engine.check(&s, &settings);
+        assert_eq!(alerts.len(), 2);
+        assert!(alerts.iter().any(|alert| alert.metric == "cpu"));
+        assert!(alerts.iter().any(|alert| alert.metric == "memory"));
+        s.at = 30.0;
+        let alerts = engine.check(&s, &settings);
+        assert_eq!(alerts.len(), 2);
+        assert!(alerts.iter().any(|alert| alert.metric == "disk"));
+        assert!(alerts.iter().any(|alert| alert.metric == "network"));
+        settings.alert_cpu_enabled = false;
+        assert!(engine.check(&s, &settings).is_empty());
+    }
+
+    #[test]
+    fn disabled_metrics_rearm_without_losing_cooldown() {
+        let mut settings = settings();
+        settings.alert_mem_enabled = false;
+        settings.alert_disk_enabled = false;
+        settings.alert_network_enabled = false;
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.0);
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 20.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+        settings.alert_cpu_enabled = false;
+        s.at = 21.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        settings.alert_cpu_enabled = true;
+        s.at = 40.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 60.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 619.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 620.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+    }
+
+    #[test]
+    fn invalid_memory_and_backwards_clock_reset_episode() {
+        let mut settings = settings();
+        settings.alert_cpu_enabled = false;
+        settings.alert_disk_enabled = false;
+        settings.alert_network_enabled = false;
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.0);
+        s.mem.total = 100;
+        s.mem.used = 99;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 10.0;
+        s.mem.total = 0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 11.0;
+        s.mem.total = 100;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 30.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 31.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+
+        settings.alert_mem_enabled = false;
+        settings.alert_cpu_enabled = true;
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.0);
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 10.0;
+        s.cpu_pct = f64::NAN;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 11.0;
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 30.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 31.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(20.0);
+        s.cpu_pct = 95.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 10.0;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 29.9;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 30.0;
+        assert_eq!(engine.check(&s, &settings).len(), 1);
+    }
+}
