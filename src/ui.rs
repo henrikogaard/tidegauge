@@ -1774,6 +1774,63 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
         .child(sensor_panel(s, dark))
 }
 
+const MAX_DISPLAYED_TEMPERATURE_CHANNELS: usize = 24;
+
+/// Ordered display rows and counts for the temperature card. Real hardware can
+/// expose hundreds of channels, so the card renders at most
+/// `MAX_DISPLAYED_TEMPERATURE_CHANNELS` rows.
+struct TemperatureDisplay {
+    rows: Vec<crate::sensors::Reading>,
+    total: usize,
+    unavailable: usize,
+}
+
+/// Order a local copy of the channels by value descending with unavailable
+/// channels last, then bound the rendered list. The snapshot is not mutated.
+fn bound_temperature_display(values: &[crate::sensors::Reading]) -> TemperatureDisplay {
+    let mut rows = values.to_vec();
+    rows.sort_by(|a, b| match (a.value, b.value) {
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal),
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    rows.truncate(MAX_DISPLAYED_TEMPERATURE_CHANNELS);
+    TemperatureDisplay {
+        rows,
+        total: values.len(),
+        unavailable: values.iter().filter(|r| r.value.is_none()).count(),
+    }
+}
+
+/// Exact counts when the temperature list is bounded or has unavailable
+/// channels; `None` when every channel fits and reported a value. `l` is
+/// `locale::text` in the app and a fixed-language selector in tests.
+fn temperature_display_caption(
+    display: &TemperatureDisplay,
+    l: fn(&'static str, &'static str) -> &'static str,
+) -> Option<String> {
+    if display.total <= MAX_DISPLAYED_TEMPERATURE_CHANNELS && display.unavailable == 0 {
+        return None;
+    }
+    let shown = display.rows.len();
+    let total = display.total;
+    let mut caption = format!(
+        "{} {shown} {} {total} {}",
+        l("Showing", "Viser"),
+        l("of", "av"),
+        l("channels", "kanaler")
+    );
+    if display.unavailable > 0 {
+        caption.push_str(&format!(
+            " · {} {}",
+            display.unavailable,
+            l("unavailable", "utilgjengelige")
+        ));
+    }
+    Some(caption)
+}
+
 fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     use crate::locale::text as l;
     let preview = crate::sensors::preview();
@@ -1788,6 +1845,8 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     } else {
         sample.source.label()
     };
+    let temperature_display = bound_temperature_display(&sample.temperatures);
+    let temperature_caption = temperature_display_caption(&temperature_display, l);
     let readings = |title: &'static str,
                     values: &[crate::sensors::Reading],
                     unit: &'static str,
@@ -1825,7 +1884,10 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
         .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), l("Read-only", "Kun avlesning"), dark))
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample sensor values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke sensormålinger")).text_color(t::ink_dim(dark)))))
         .child(div().grid().grid_cols(2).gap_3()
-            .child(readings(l("Temperature channels", "Temperaturkanaler"), &sample.temperatures, "°C", if sample.discovering { l("Discovering temperature channels…", "Finner temperaturkanaler…") } else { l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.") }))
+            .child(readings(l("Temperature channels", "Temperaturkanaler"), &temperature_display.rows, "°C", if sample.discovering { l("Discovering temperature channels…", "Finner temperaturkanaler…") } else { l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.") })
+                .when_some(temperature_caption, |d, caption| {
+                    d.child(sub(caption).text_color(t::ink_dim(dark)))
+                }))
             .child(readings(l("Fan speed", "Viftehastighet"), &sample.fans, "RPM", if sample.fan_count == Some(0) && fresh {
                 l("The controller reports no fans.", "Kontrolleren rapporterer ingen vifter.")
             } else { l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.") })))
@@ -2743,4 +2805,106 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         ));
     }
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
+        temperature_display_caption,
+    };
+    use crate::sensors::Reading;
+
+    fn reading(key: &str, value: Option<f64>) -> Reading {
+        Reading {
+            key: key.to_string(),
+            value,
+        }
+    }
+
+    fn english(english: &'static str, _: &'static str) -> &'static str {
+        english
+    }
+
+    fn norwegian(_: &'static str, norwegian: &'static str) -> &'static str {
+        norwegian
+    }
+
+    fn channel_pool(channels: usize, unavailable: usize) -> Vec<Reading> {
+        let mut values: Vec<Reading> = (0..channels)
+            .map(|i| {
+                reading(
+                    &format!("T{i:03}"),
+                    Some(30.0 + (channels - i) as f64 / 10.0),
+                )
+            })
+            .collect();
+        for r in values.iter_mut().take(unavailable) {
+            r.value = None;
+        }
+        values
+    }
+
+    #[test]
+    fn temperature_display_is_bounded_ordered_and_reports_counts() {
+        let values = channel_pool(342, 22);
+        let display = bound_temperature_display(&values);
+        assert_eq!(display.total, 342);
+        assert_eq!(display.unavailable, 22);
+        assert_eq!(display.rows.len(), MAX_DISPLAYED_TEMPERATURE_CHANNELS);
+        assert!(display.rows.iter().all(|r| r.value.is_some()));
+        assert!(display
+            .rows
+            .windows(2)
+            .all(|w| w[0].value.unwrap() >= w[1].value.unwrap()));
+        // The input order is untouched: sorting happened on a local copy.
+        assert_eq!(values[0].key, "T000");
+        assert!(values[0].value.is_none());
+    }
+
+    #[test]
+    fn temperature_display_orders_unavailable_last_and_stays_stable() {
+        let values = vec![
+            reading("Ta00", Some(40.0)),
+            reading("Tb00", None),
+            reading("Tc00", Some(50.0)),
+            reading("Td00", Some(50.0)),
+            reading("Te00", None),
+        ];
+        let display = bound_temperature_display(&values);
+        let keys: Vec<&str> = display.rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["Tc00", "Td00", "Ta00", "Tb00", "Te00"]);
+    }
+
+    #[test]
+    fn temperature_display_caption_is_exact_in_both_languages() {
+        let values = channel_pool(342, 22);
+        let display = bound_temperature_display(&values);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 24 of 342 channels · 22 unavailable")
+        );
+        assert_eq!(
+            temperature_display_caption(&display, norwegian).as_deref(),
+            Some("Viser 24 av 342 kanaler · 22 utilgjengelige")
+        );
+    }
+
+    #[test]
+    fn temperature_display_caption_omits_zero_unavailable() {
+        let values = channel_pool(30, 0);
+        let display = bound_temperature_display(&values);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 24 of 30 channels")
+        );
+    }
+
+    #[test]
+    fn temperature_display_caption_is_absent_when_unbounded_and_complete() {
+        let values = vec![reading("TC0P", Some(54.5)), reading("TG0P", Some(48.0))];
+        let display = bound_temperature_display(&values);
+        assert_eq!(display.rows.len(), 2);
+        assert!(temperature_display_caption(&display, english).is_none());
+    }
 }

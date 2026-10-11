@@ -23,19 +23,24 @@ hardware acceptance checks. A merge and a published release are separate events.
   parent/UID/start-time explanations and possible startup associations; saved
   5/15/30-minute system baselines; recent CPU/disk activity; cancellable read-only
   selected-folder storage inspection
-  ([#34](https://github.com/henrikogaard/tidegauge/pull/34), in review).
+  ([#34](https://github.com/henrikogaard/tidegauge/pull/34), merged).
 - Apps & Packages: source filters, sorting, app and managed-package inventory,
   explicit update checks, and guarded single-item manager actions. Fresh identity
   checks, conservative cask eligibility, and explicit uncertainty prevent
   unsupported actions. Standalone apps use Reveal/own-updater guidance
-  ([#34](https://github.com/henrikogaard/tidegauge/pull/34), in review).
+  ([#34](https://github.com/henrikogaard/tidegauge/pull/34), merged).
 - On-demand process signing identifier and Team ID, read off the UI thread with
   process identity checks and a bounded session cache. Metadata is **not** a
   signature-validity, developer-identity, or malware verdict
-  ([#34](https://github.com/henrikogaard/tidegauge/pull/34), in review).
+  ([#34](https://github.com/henrikogaard/tidegauge/pull/34), merged).
 
 ### Fixed
 
+- Temperature channel discovery is bounded to 512 channels instead of 128.
+  Because the controller enumerates keys in ASCII order, the old bound
+  silently dropped whole `T…` families on hardware with larger inventories.
+  The temperature card now renders at most 24 channels, hottest first with
+  unavailable channels last, plus an exact shown/total/unavailable caption.
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires
   observed ancestry before offering remaining-helper Stop.
