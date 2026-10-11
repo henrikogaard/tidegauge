@@ -142,6 +142,7 @@ pub struct Snapshot {
     pub projects: Vec<ProjectGroup>,
     pub apps: Vec<AppGroup>,
     pub process_groups: Vec<crate::process_activity::ProcessGroup>,
+    pub resource_activity: Vec<crate::resource_activity::Activity>,
     pub proc_count: usize,
     pub app_count: usize,
     pub chip: ChipInfo,
@@ -183,6 +184,7 @@ impl Default for Snapshot {
             projects: Vec::new(),
             apps: Vec::new(),
             process_groups: Vec::new(),
+            resource_activity: Vec::new(),
             proc_count: 0,
             app_count: 0,
             chip: ChipInfo::default(),
@@ -216,6 +218,7 @@ pub struct Engine {
     last_disk: (u64, u64),
     prev: HashMap<i32, PrevProc>,
     process_tracker: crate::process_activity::Tracker,
+    resource_tracker: crate::resource_activity::Tracker,
     tick: u64,
 }
 
@@ -237,6 +240,7 @@ impl Engine {
             last_disk: disk_io_totals(),
             prev: HashMap::new(),
             process_tracker: crate::process_activity::Tracker::default(),
+            resource_tracker: crate::resource_activity::Tracker::default(),
             tick: 0,
         };
         e.snap.chip = chip_info();
@@ -399,6 +403,7 @@ impl Engine {
 
         s.proc_count = procs.len();
         s.process_groups = self.process_tracker.sample(&procs, &enumerated);
+        s.resource_activity = self.resource_tracker.sample(&procs, self.started.elapsed().as_secs_f64(), now_unix());
         s.apps = regroup_apps(&procs, &s.apps);
         s.app_count = s.apps.len();
 

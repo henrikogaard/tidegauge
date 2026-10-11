@@ -127,11 +127,16 @@ pub struct TideGaugeView {
     pub window: Option<AnyWindowHandle>,
     pub show_settings: bool,
     pub show_processes: bool,
+    pub show_tools: bool,
+    pub tools: crate::tools_panel::State,
+    tools_scroll: ScrollHandle,
+    process_scroll: ScrollHandle,
     pub only_remaining: bool,
     pub expanded_process_group: Option<String>,
     pub process_pending: bool,
     pub process_message: Option<String>,
     pub process_failed: bool,
+    pub process_signing: crate::process_signing::State,
     pub settings_error: Option<String>,
     pub selected_disk: Option<String>,
     pub project_error: Option<String>,
@@ -165,11 +170,16 @@ impl TideGaugeView {
             window: None,
             show_settings: false,
             show_processes: false,
+            show_tools: false,
+            tools: crate::tools_panel::State::default(),
+            tools_scroll: ScrollHandle::new(),
+            process_scroll: ScrollHandle::new(),
             only_remaining: true,
             expanded_process_group: None,
             process_pending: false,
             process_message: None,
             process_failed: false,
+            process_signing: crate::process_signing::State::default(),
             settings_error: None,
             selected_disk: None,
             project_error: None,
@@ -515,6 +525,10 @@ impl Render for TideGaugeView {
         let this = cx.entity();
         self.scroll = if self.show_settings {
             self.settings_scroll.clone()
+        } else if self.show_tools {
+            self.tools_scroll.clone()
+        } else if self.show_processes {
+            self.process_scroll.clone()
         } else {
             self.tab_scrolls[tab as usize].clone()
         };
@@ -698,6 +712,8 @@ impl Render for TideGaugeView {
 
         let process_target = this.clone();
         let footer = footer.child(crate::controls::button("open-processes", l("Processes", "Prosesser"), self.show_processes, dark, move |_, cx| crate::process_panel::open(&process_target, cx)));
+        let tools_target = this.clone();
+        let footer = footer.child(crate::controls::button("open-tools", l("Tools", "Verktøy"), self.show_tools, dark, move |_, cx| crate::tools_panel::open(&tools_target, cx)));
 
         let content = div()
             .id("content")
@@ -752,6 +768,7 @@ impl Render for TideGaugeView {
 
 fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
+        view.show_tools = false;
         view.show_processes = false;
         view.show_settings = true;
         view.scroll = ScrollHandle::new();
@@ -762,6 +779,7 @@ fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
 
 fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
     this.update(cx, |v, cx| {
+        v.show_tools = false;
         v.tab = tab;
         v.show_processes = false;
         v.show_settings = false;
@@ -786,6 +804,9 @@ impl TideGaugeView {
         }
         if self.show_processes {
             return crate::process_panel::panel(self, dark, this).into_any_element();
+        }
+        if self.show_tools {
+            return crate::tools_panel::panel(self, dark, this).into_any_element();
         }
         let s = &self.snap;
         match self.tab {

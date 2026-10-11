@@ -244,8 +244,12 @@ configured here. A draft release does not make the production feed live.
 
 ## Upgrade acceptance
 
-End-to-end delivery is not claimed by this repository. Before a real release,
-perform this bounded two-version test with two locally built bundles:
+The published 0.2.0 release has a
+[verified 0.1.0 candidate → 0.2.0 production-feed upgrade](https://github.com/henrikogaard/tidegauge/releases/download/v0.2.0/VERIFICATION.md).
+That evidence does not cover future releases or invalid-signature rejection.
+An isolated unreachable-feed error/recovery check also passed after 0.2.0.
+Before a new release, perform this bounded two-version test with two locally
+built bundles:
 
 1. Install version N with a test feed and test Ed25519 key.
 2. Publish only the version N+1 archive and signed appcast to the isolated QA
@@ -259,3 +263,32 @@ perform this bounded two-version test with two locally built bundles:
 Production notarization, feed hosting, key custody, and update delivery remain
 release-owner responsibilities and require real credentials and an isolated
 QA feed.
+
+### Remaining acceptance and unblock steps
+
+- **Native invalid-signature rejection ([#32](https://github.com/henrikogaard/tidegauge/issues/32)):**
+  provide an isolated HTTPS endpoint whose certificate is trusted by the test
+  Mac. First verify a valid QA update there. Then alter that test archive after
+  signing, update its enclosure byte length if necessary, but retain the original
+  signature. Confirm the failure is signature rejection, not TLS, parsing, or
+  download failure, and that the installed app/version is unchanged. Use QA-only
+  bundle/feed/key/profile settings; do not repoint production clients, weaken TLS
+  trust, or reuse the production private key. The earlier local-certificate
+  attempt did not reach signature verification.
+- **Physical validation ([#31](https://github.com/henrikogaard/tidegauge/issues/31),
+  [#8](https://github.com/henrikogaard/tidegauge/issues/8)):** use the installed
+  signed build on the target Mac, recording model/chip/macOS/build. Compare
+  battery, disk and sensor readings with independent native diagnostics; record
+  unavailable channels honestly. Check idle/load and sleep/wake recovery. Test
+  supported audible output controls with an owned sound source and restore its
+  original volume/mute. Ask the user before actual sign-out/sign-in, and verify
+  exactly one Tidegauge instance starts while settings and History are preserved.
+- **Package mutation acceptance:** use a disposable macOS account or VM and
+  disposable manager prefixes/packages. Confirm cancel sends no command,
+  update/removal affects only the confirmed item, and stale identity, manager
+  failure and partial outcomes remain explicit. Do not use the developer's real
+  installed packages as fixtures.
+
+Before publishing, reconcile [CHANGELOG.md](../CHANGELOG.md) with the artifact's
+commit and actual version/date. Leave unmerged work under Unreleased, and do not
+convert outstanding acceptance checks into release claims.

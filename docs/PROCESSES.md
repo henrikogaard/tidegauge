@@ -17,6 +17,24 @@ This is not an automatic orphan detector. Login items, updater agents, and backg
 
 ## Actions
 
+### Signing metadata
+
+**Read signing metadata** requests the running process's signing identifier and
+Team ID from the Security framework, off the UI thread. PID, start time, UID and
+executable path are checked before and after lookup. Only one lookup runs at a
+time; one result is cached in memory for at most a minute, keyed by that process
+identity. A later click refreshes it. No process paths are uploaded and no online
+reputation lookup is made.
+
+This is a snapshot of metadata, not signature validation. The framework may read
+some information from disk; it does not establish that the on-disk code still
+matches the running image. Missing fields and denied/failed lookups remain
+unknown. A signing identifier or Team ID does not verify a named developer or
+establish safety; unsigned software is not automatically harmful. These details
+never change Quit or Stop eligibility.
+
+### Quit and Stop
+
 **Quit app…** uses `NSRunningApplication.terminate`, a normal quit request, and is offered only when exactly one main app instance is registered for the bundle. If multiple instances are running, quit them from their own app windows. An app may show a save dialog, decline, or continue running. Tidegauge reports the observed result rather than treating request delivery as proof of exit.
 
 **Stop…** is limited to individually selected, verified remaining helpers with observed ancestry and owned by the current user. It confirms the executable/PID/app association, warns about data loss/restarts, rechecks the latest observed origin and exited main, then validates native PID/start time, real/effective ownership and executable immediately before SIGTERM. Protected system paths, root, other users, PID 1, and Tidegauge itself are refused. Unknown or still-active-app processes cannot be stopped from this inspector.
@@ -24,5 +42,9 @@ This is not an automatic orphan detector. Login items, updater agents, and backg
 Cancel sends nothing. There is no bulk kill, automatic cleanup, force quit, SIGKILL fallback, privileged helper, or disabling of launch agents. A short post-request observation distinguishes exit from still-running/unverifiable outcomes. macOS PID-based signals retain a small unavoidable race between final validation and delivery; this is not a claim of atomic termination.
 
 ## Verification
+
+`cargo test --locked process_signing::` covers stale requests, identity changes,
+lookup failures and cache isolation/expiry. The read-only native probe is
+`cargo test --locked process_signing::tests::native_signing_probe -- --ignored`.
 
 `cargo test --locked process_activity::` covers observed external ancestry, reparenting, missing-sample conservatism, PID reuse, preexisting daemons, bundle-only unknown lifecycle with multiple app instances, ancestry retained across relaunch, and protected targets. Native QA must use owned disposable app/helpers only: observe the group before quit, cancel a request, quit the parent, inspect the surviving child, cancel Stop, then explicitly stop that child. Never test termination against unrelated user applications.

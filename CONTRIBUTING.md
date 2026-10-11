@@ -37,10 +37,18 @@ Run the build from the same commit being reviewed and record the macOS version a
 - Collector changes: compare values with the relevant macOS tool and test unavailable-data handling.
 - History changes: use an isolated database and verify writes, queries, and retention.
 - Project changes: use a disposable server that you own. Confirm that desktop listeners, root/home directories, and processes without a project marker are excluded. Verify that cancelling Stop or Stop All sends no signal, and that confirmation only targets the original process identity. Never test against unrelated processes.
+- Tools changes: use an isolated History/profile and disposable folder fixtures. Verify baseline coverage, source preservation and restart persistence; storage cancellation and incomplete results; source filters and package action cancellation. Startup and package tests must not change the development machine's real registrations or installed packages. Mutating adapters need mocked commands or a disposable prefix. A disabled third-party startup control is intentional, not permission to bypass macOS protections.
 
 Keep screenshots and raw diagnostics outside commits unless they are deliberately selected documentation assets. Do not record private process arguments, Bluetooth addresses, or unrelated personal data in a review report.
 
 ## Review evidence
+
+Update [CHANGELOG.md](CHANGELOG.md)'s **Unreleased** section for user-visible
+changes. Link the implementation PR and distinguish merged work from work still
+in review. Do not describe an unmerged feature as shipped or check off physical
+acceptance based on fixtures. At publication, move only the included entries to
+the actual version/date and retain limitations that still apply. Release notes
+must match the verified artifact, not merely the current branch.
 
 For battery layout checks on a Mac without a battery, run a debug build with
 `TIDEGAUGE_BATTERY_PREVIEW=charging cargo run` (or `discharging`). The Battery
