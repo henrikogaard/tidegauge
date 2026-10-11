@@ -20,6 +20,8 @@ mod login;
 mod metrics;
 mod notifications;
 mod processes;
+mod process_activity;
+mod process_panel;
 mod projects;
 mod sensors;
 mod settings;

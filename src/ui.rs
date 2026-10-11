@@ -126,6 +126,12 @@ pub struct TideGaugeView {
     pub snap: Snapshot,
     pub window: Option<AnyWindowHandle>,
     pub show_settings: bool,
+    pub show_processes: bool,
+    pub only_remaining: bool,
+    pub expanded_process_group: Option<String>,
+    pub process_pending: bool,
+    pub process_message: Option<String>,
+    pub process_failed: bool,
     pub settings_error: Option<String>,
     pub selected_disk: Option<String>,
     pub project_error: Option<String>,
@@ -158,6 +164,12 @@ impl TideGaugeView {
             snap: latest(),
             window: None,
             show_settings: false,
+            show_processes: false,
+            only_remaining: true,
+            expanded_process_group: None,
+            process_pending: false,
+            process_message: None,
+            process_failed: false,
             settings_error: None,
             selected_disk: None,
             project_error: None,
@@ -684,6 +696,9 @@ impl Render for TideGaugeView {
                     )),
             );
 
+        let process_target = this.clone();
+        let footer = footer.child(crate::controls::button("open-processes", l("Processes", "Prosesser"), self.show_processes, dark, move |_, cx| crate::process_panel::open(&process_target, cx)));
+
         let content = div()
             .id("content")
             .flex_1()
@@ -737,6 +752,7 @@ impl Render for TideGaugeView {
 
 fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
+        view.show_processes = false;
         view.show_settings = true;
         view.scroll = ScrollHandle::new();
         view.settings_error = None;
@@ -747,6 +763,7 @@ fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
 fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
     this.update(cx, |v, cx| {
         v.tab = tab;
+        v.show_processes = false;
         v.show_settings = false;
         v.settings_error = None;
         v.scroll = ScrollHandle::new();
@@ -766,6 +783,9 @@ impl TideGaugeView {
     ) -> AnyElement {
         if self.show_settings {
             return settings_panel(dark, this, self.settings_error.as_deref()).into_any_element();
+        }
+        if self.show_processes {
+            return crate::process_panel::panel(self, dark, this).into_any_element();
         }
         let s = &self.snap;
         match self.tab {
