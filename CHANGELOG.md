@@ -39,17 +39,20 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Application metadata now falls back to per-key extraction when whole-file
   `plutil` JSON conversion fails. Valid Info.plist files containing `<data>` or
   `<date>` values no longer produce a parse warning or drop the application
-  from the Apps & Packages inventory.
+  from the Apps & Packages inventory
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Battery capacity now reads the nested `BatteryData` dictionary used by newer
   Apple silicon firmware, restoring design/full capacities and health where
   the top level exposes only normalized percentages. A present battery with no
   reported health condition reads "No condition reported" instead of
-  "Unavailable".
+  "Unavailable"
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Temperature channel discovery is bounded to 512 channels instead of 128.
   Because the controller enumerates keys in ASCII order, the old bound
   silently dropped whole `T…` families on hardware with larger inventories.
   The temperature card now renders at most 24 channels, hottest first with
-  unavailable channels last, plus an exact shown/total/unavailable caption.
+  unavailable channels last, plus an exact shown/total/unavailable caption
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires
   observed ancestry before offering remaining-helper Stop.
