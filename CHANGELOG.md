@@ -67,9 +67,14 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Per-app audio routing and manual fan control are not implemented.
 - Baselines are system-level; per-app identity/history migration and validated
   wakeup/energy attribution are not implemented.
-- Physical sensor/battery/disk/audio and actual sign-in checks remain open.
-- Native invalid-signature rejection remains unverified; the unreachable-feed
-  error/recovery test passed after 0.2.0. No production feed was changed for it.
+- Physical sensor, battery and disk telemetry were validated on Apple silicon
+  hardware against independent native diagnostics. Audio control and actual
+  sign-in launch checks remain open.
+- Native invalid-signature rejection was verified on hardware using ad-hoc
+  signed QA bundles: a valid update installed first, then a size-preservingly
+  tampered archive was rejected at signature verification with no update
+  applied. The unreachable-feed error/recovery test passed after 0.2.0. No
+  production feed, key, or signed artifact was changed for either test.
 - Package actions have not been exercised against real installed packages.
   Test mutations only in disposable environments.
 
