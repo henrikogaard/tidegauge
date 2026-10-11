@@ -529,6 +529,20 @@ fn verify_action_outcome(
     }
 }
 
+fn package_action_eligibility(
+    official: bool,
+    is_manager: bool,
+    path_verified: bool,
+    simple_cask: bool,
+    pinned: Option<bool>,
+) -> (bool, bool) {
+    let eligible = official && !is_manager && path_verified && simple_cask;
+    (
+        eligible && pinned == Some(false),
+        eligible && pinned.is_some(),
+    )
+}
+
 fn identity_changed_message() -> String {
     localized(
         "The package or manager identity changed; no action was taken.",
@@ -924,6 +938,13 @@ fn discover_brew_at(
                 || (cask_metadata.is_some()
                     && !overlap_paths.is_empty()
                     && target_snapshots_complete);
+            let (can_update, can_remove) = package_action_eligibility(
+                official,
+                is_manager,
+                path_verified,
+                simple_cask,
+                pinned,
+            );
             let reason = if !official {
                 localized(
                     "This Homebrew tap is not an official core or cask source; actions are disabled.",
@@ -978,14 +999,6 @@ fn discover_brew_at(
                 )
                 .to_string()
             };
-            let can_update = official
-                && !is_manager
-                && path_verified
-                && simple_cask
-                && (source == Source::BrewCask || pinned == Some(false))
-                && pinned != Some(true);
-            let can_remove =
-                official && !is_manager && path_verified && simple_cask && pinned.is_some();
             records.push(ManagerRecord {
                 package: Package {
                     name: name.to_owned(),
@@ -1727,10 +1740,9 @@ fn cask_metadata(item: &Value, prefix: &Path, token: &str, version: &str) -> Opt
     let receipt_path = prefix
         .join("Caskroom")
         .join(token)
-        .join(version)
         .join(".metadata/INSTALL_RECEIPT.json");
-    let config = read_trusted_json(&config_path)?;
-    let receipt = read_trusted_json(&receipt_path)?;
+    let (config, config_fingerprint) = read_trusted_json(&config_path)?;
+    let (receipt, receipt_fingerprint) = read_trusted_json(&receipt_path)?;
     let appdir = cask_appdir(&config)?;
     let current = resolve_cask_targets(item.get("artifacts")?, &appdir)?;
     let receipt_object = receipt.as_object()?;
@@ -1760,13 +1772,17 @@ fn cask_metadata(item: &Value, prefix: &Path, token: &str, version: &str) -> Opt
     }
     let mut related_paths = vec![config_path.clone(), receipt_path.clone()];
     related_paths.extend(cask_target_snapshot_paths(&current));
-    let related_fingerprints = related_paths
-        .iter()
-        .map(|path| FsFingerprint::capture(path))
-        .collect::<Option<Vec<_>>>()?;
-    let config_after = FsFingerprint::capture(&config_path)?;
-    let receipt_after = FsFingerprint::capture(&receipt_path)?;
-    if related_fingerprints[0] != config_after || related_fingerprints[1] != receipt_after {
+    let mut related_fingerprints = vec![config_fingerprint, receipt_fingerprint];
+    related_fingerprints.extend(
+        related_paths
+            .iter()
+            .skip(2)
+            .map(|path| FsFingerprint::capture(path))
+            .collect::<Option<Vec<_>>>()?,
+    );
+    if FsFingerprint::capture(&config_path).as_ref() != Some(&related_fingerprints[0])
+        || FsFingerprint::capture(&receipt_path).as_ref() != Some(&related_fingerprints[1])
+    {
         return None;
     }
     Some(CaskMetadata {
@@ -1777,9 +1793,17 @@ fn cask_metadata(item: &Value, prefix: &Path, token: &str, version: &str) -> Opt
 }
 
 fn cask_appdir(config: &Value) -> Option<PathBuf> {
-    let appdir = ["explicit", "env", "default"]
-        .iter()
-        .find_map(|key| config.get(*key)?.get("appdir")?.as_str())?;
+    let mut appdir = None;
+    for key in ["explicit", "env", "default"] {
+        if let Some(section) = config.get(key) {
+            let object = section.as_object()?;
+            if let Some(value) = object.get("appdir") {
+                appdir = Some(value.as_str()?);
+                break;
+            }
+        }
+    }
+    let appdir = appdir?;
     let path = PathBuf::from(appdir);
     if !path.is_absolute() || path_has_symlink_component(&path) {
         return None;
@@ -1824,15 +1848,15 @@ fn resolve_cask_targets(artifacts: &Value, appdir: &Path) -> Option<Vec<PathBuf>
             }
             let target = target.get("target")?.as_str()?;
             let target_path = Path::new(target);
+            if target_path
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+            {
+                return None;
+            }
             if target_path.is_absolute() {
                 target_path.to_path_buf()
             } else {
-                if target_path
-                    .components()
-                    .any(|component| component == std::path::Component::ParentDir)
-                {
-                    return None;
-                }
                 appdir.join(target_path)
             }
         };
@@ -1840,7 +1864,9 @@ fn resolve_cask_targets(artifacts: &Value, appdir: &Path) -> Option<Vec<PathBuf>
         if !canonical.starts_with(appdir) || !trusted_directory_path(&canonical) {
             return None;
         }
-        targets.insert(canonical);
+        if !targets.insert(canonical) {
+            return None;
+        }
     }
     let mut targets: Vec<_> = targets.into_iter().collect();
     targets.sort();
@@ -1867,7 +1893,7 @@ fn trusted_directory_path(path: &Path) -> bool {
     let uid = unsafe { libc::getuid() };
     metadata.is_dir()
         && !metadata.file_type().is_symlink()
-        && metadata.mode() & 0o022 == 0
+        && directory_mode_is_trusted(metadata.mode(), metadata.gid(), trusted_admin_gid())
         && (metadata.uid() == 0 || metadata.uid() == uid)
         && !path_has_symlink_component(path)
         && trusted_metadata_ancestors(path)
@@ -1895,7 +1921,7 @@ fn trusted_metadata_ancestors(path: &Path) -> bool {
     true
 }
 
-fn read_trusted_json(path: &Path) -> Option<Value> {
+fn read_trusted_json(path: &Path) -> Option<(Value, FsFingerprint)> {
     if !trusted_metadata_path(path) {
         return None;
     }
@@ -1905,7 +1931,7 @@ fn read_trusted_json(path: &Path) -> Option<Value> {
     if before != after {
         return None;
     }
-    serde_json::from_slice(&bytes).ok()
+    Some((serde_json::from_slice(&bytes).ok()?, before))
 }
 
 fn cask_target_snapshot_paths(targets: &[PathBuf]) -> Vec<PathBuf> {
@@ -2678,19 +2704,18 @@ mod tests {
         fs::write(target.join("Contents/Info.plist"), b"metadata").unwrap();
         let cask = root.join("Caskroom/sample");
         fs::create_dir_all(cask.join(".metadata")).unwrap();
-        fs::create_dir_all(cask.join("1/.metadata")).unwrap();
         fs::write(
             cask.join(".metadata/config.json"),
             serde_json::to_vec(&serde_json::json!({
-                "explicit": {"appdir": appdir},
-                "env": {"appdir": "/Applications"},
-                "default": {"appdir": "/Applications"}
+                "explicit": {},
+                "env": {},
+                "default": {"appdir": appdir}
             }))
             .unwrap(),
         )
         .unwrap();
         fs::write(
-            cask.join("1/.metadata/INSTALL_RECEIPT.json"),
+            cask.join(".metadata/INSTALL_RECEIPT.json"),
             serde_json::to_vec(&serde_json::json!({
                 "source": {"tap": "homebrew/cask", "version": "1"},
                 "uninstall_flight_blocks": false,
@@ -2704,8 +2729,59 @@ mod tests {
                 "app": ["Sample.app"]
             }, {"zap": [{"trash": ["~/Library/Caches/Sample"]}]}]
         });
+        fs::write(
+            cask.join(".metadata/config.json"),
+            br#"{"explicit":{"appdir":7},"env":{"appdir":"/Applications"},"default":{"appdir":"/Applications"}}"#,
+        )
+        .unwrap();
+        assert!(cask_metadata(&item, &root, "sample", "1").is_none());
+        fs::write(
+            cask.join(".metadata/config.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "explicit": {},
+                "env": {},
+                "default": {"appdir": appdir}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let metadata = cask_metadata(&item, &root, "sample", "1").unwrap();
+        assert_eq!(
+            package_action_eligibility(true, false, true, true, Some(false)),
+            (true, true)
+        );
+        assert_eq!(
+            package_action_eligibility(true, false, true, true, None),
+            (false, false)
+        );
         assert_eq!(metadata.targets, vec![fs::canonicalize(&target).unwrap()]);
+        let identity = capture_identity_with_related_fingerprints(
+            "sample",
+            "1",
+            Source::BrewCask,
+            &target,
+            None,
+            None,
+            None,
+            &metadata.related_paths,
+            Some(&metadata.related_fingerprints),
+        );
+        fs::write(
+            cask.join(".metadata/INSTALL_RECEIPT.json"),
+            br#"{"source":{"tap":"homebrew/cask","version":"1"},"uninstall_flight_blocks":false,"uninstall_artifacts":[{"app":["Sample.app"]}]}"#,
+        )
+        .unwrap();
+        assert!(!fingerprints_are_current(&identity));
+        fs::write(
+            cask.join(".metadata/INSTALL_RECEIPT.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "source": {"tap": "homebrew/cask", "version": "1"},
+                "uninstall_flight_blocks": false,
+                "uninstall_artifacts": [{"app": ["Sample.app"]}, {"zap": []}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         assert!(cask_metadata(
             &serde_json::json!({"artifacts": [{"pkg": "Sample.pkg"}]}),
             &root,
@@ -2715,6 +2791,25 @@ mod tests {
         .is_none());
         assert!(cask_metadata(
             &serde_json::json!({"artifacts": [{"app": ["../Sample.app"]}]}),
+            &root,
+            "sample",
+            "1"
+        )
+        .is_none());
+        assert!(cask_metadata(
+            &serde_json::json!({"artifacts": [
+                {"app": ["Sample.app"]},
+                {"app": ["Sample.app"]}
+            ]}),
+            &root,
+            "sample",
+            "1"
+        )
+        .is_none());
+        assert!(cask_metadata(
+            &serde_json::json!({"artifacts": [{
+                "app": ["Sample.app", {"target": "/tmp/../Applications/Sample.app"}]
+            }]}),
             &root,
             "sample",
             "1"
@@ -2738,13 +2833,13 @@ mod tests {
             "uninstall_artifacts": [{"app": ["Sample.app"]}]
         });
         fs::write(
-            cask.join("1/.metadata/INSTALL_RECEIPT.json"),
+            cask.join(".metadata/INSTALL_RECEIPT.json"),
             serde_json::to_vec(&mismatched_receipt).unwrap(),
         )
         .unwrap();
         assert!(cask_metadata(&renamed_item, &root, "sample", "1").is_none());
         fs::write(
-            cask.join("1/.metadata/INSTALL_RECEIPT.json"),
+            cask.join(".metadata/INSTALL_RECEIPT.json"),
             serde_json::to_vec(&receipt).unwrap(),
         )
         .unwrap();
@@ -2760,6 +2855,8 @@ mod tests {
             "1"
         )
         .is_none());
+        fs::remove_file(cask.join(".metadata/INSTALL_RECEIPT.json")).unwrap();
+        assert!(cask_metadata(&item, &root, "sample", "1").is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3062,5 +3159,16 @@ mod tests {
             snapshot.inventory.warnings.len(),
             snapshot.complete_sources.len()
         );
+        for package in snapshot
+            .inventory
+            .items
+            .iter()
+            .filter(|package| package.source == Source::BrewCask)
+        {
+            println!(
+                "cask={} can_update={} can_remove={} reason={}",
+                package.name, package.can_update, package.can_remove, package.reason
+            );
+        }
     }
 }
