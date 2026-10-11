@@ -173,9 +173,9 @@ extern "C" {
 }
 
 /// Upper bound on cached temperature channels. Real hardware exposes far more
-/// than the previous 128-channel bound: this Mac reports 342 typed channels,
-/// and the old bound silently dropped whole families because the controller
-/// enumerates keys in ASCII order.
+/// than the previous 128-channel bound: a MacBook Pro (Mac17,7, M5 Max) reports
+/// 342 typed channels, and the old bound silently dropped whole families
+/// because the controller enumerates keys in ASCII order.
 const MAX_TEMPERATURE_KEYS: usize = 512;
 
 struct Smc {

@@ -36,6 +36,11 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Fixed
 
+- Battery capacity now reads the nested `BatteryData` dictionary used by newer
+  Apple silicon firmware, restoring design/full capacities and health where
+  the top level exposes only normalized percentages. A present battery with no
+  reported health condition reads "No condition reported" instead of
+  "Unavailable".
 - Temperature channel discovery is bounded to 512 channels instead of 128.
   Because the controller enumerates keys in ASCII order, the old bound
   silently dropped whole `T…` families on hardware with larger inventories.

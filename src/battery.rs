@@ -56,7 +56,9 @@ impl BatteryStats {
             Some("Fair") => l("Reduced capacity", "Redusert kapasitet"),
             Some("Poor" | "Check Battery") => l("Service recommended", "Service anbefales"),
             Some("Permanent Battery Failure") => l("Replacement required", "Må byttes"),
-            _ => l("Unavailable", "Utilgjengelig"),
+            Some(_) => l("Unavailable", "Utilgjengelig"),
+            None if self.present => l("No condition reported", "Ingen tilstand rapportert"),
+            None => l("Unavailable", "Utilgjengelig"),
         }
     }
 }
@@ -83,6 +85,15 @@ impl BatteryEntry {
     fn boolean(&self, key: &str) -> Option<bool> {
         cf_to_bool(OwnedCf(entry_prop(self.0, key)).0)
     }
+    /// `scope` names a nested property dictionary such as `BatteryData`;
+    /// `None` reads a top-level property.
+    fn scoped_number(&self, scope: Option<&str>, key: &str) -> Option<i64> {
+        let Some(scope) = scope else {
+            return self.number(key);
+        };
+        let dict = OwnedCf(entry_prop(self.0, scope));
+        cf_to_i64(dict_get(dict.0 as CFDictionaryRef, key))
+    }
 }
 
 fn percentage(current: i64, maximum: i64) -> Option<f64> {
@@ -93,6 +104,32 @@ fn percentage(current: i64, maximum: i64) -> Option<f64> {
 fn capacity_mah(value: Option<i64>) -> Option<i64> {
     // Normalized 0–100 charge values are not physical pack capacities.
     value.filter(|value| (101..=200_000).contains(value))
+}
+
+/// Resolve pack capacities across the top-level and nested `BatteryData`
+/// dictionaries. Newer Apple silicon firmware exposes physical mAh only under
+/// `BatteryData`; the top-level `CurrentCapacity`/`MaxCapacity` there are
+/// normalized percentages and the `capacity_mah` guard keeps them out on every
+/// candidate. `lookup` resolves `(scope, key)` where `None` is a top-level
+/// property and `Some("BatteryData")` a nested one, returning `(full, design)`.
+fn capacity_fields<F>(mut lookup: F) -> (Option<i64>, Option<i64>)
+where
+    F: FnMut(Option<&str>, &str) -> Option<i64>,
+{
+    let full = capacity_mah(lookup(None, "AppleRawMaxCapacity"))
+        .or_else(|| capacity_mah(lookup(None, "NominalChargeCapacity")))
+        .or_else(|| capacity_mah(lookup(Some("BatteryData"), "AppleRawMaxCapacity")))
+        .or_else(|| capacity_mah(lookup(Some("BatteryData"), "NominalChargeCapacity")))
+        .or_else(|| {
+            if cfg!(target_arch = "x86_64") {
+                capacity_mah(lookup(None, "MaxCapacity"))
+            } else {
+                None
+            }
+        });
+    let design = capacity_mah(lookup(None, "DesignCapacity"))
+        .or_else(|| capacity_mah(lookup(Some("BatteryData"), "DesignCapacity")));
+    (full, design)
 }
 
 fn capacity_health(full: Option<i64>, design: Option<i64>) -> Option<f64> {
@@ -166,17 +203,9 @@ pub fn battery_stats() -> BatteryStats {
                 };
             }
             b.present = true;
-            let full = capacity_mah(e.number("AppleRawMaxCapacity"))
-                .or_else(|| capacity_mah(e.number("NominalChargeCapacity")))
-                .or_else(|| {
-                    if cfg!(target_arch = "x86_64") {
-                        capacity_mah(e.number("MaxCapacity"))
-                    } else {
-                        None
-                    }
-                });
+            let (full, design) = capacity_fields(|scope, key| e.scoped_number(scope, key));
             b.full_capacity_mah = full;
-            b.design_capacity_mah = capacity_mah(e.number("DesignCapacity"));
+            b.design_capacity_mah = design;
             b.health = capacity_health(full, b.design_capacity_mah);
             b.cycles = e.number("CycleCount").filter(|c| *c >= 0);
             if b.percent.is_none() {
@@ -299,10 +328,87 @@ mod tests {
     }
 
     #[test]
+    fn capacity_fields_read_nested_battery_data_when_top_level_is_silent() {
+        // macOS 27 / Apple M5 schema: only normalized percentages at top level;
+        // the physical mAh values live in the nested BatteryData dictionary.
+        let lookup = |scope: Option<&str>, key: &str| match (scope, key) {
+            (None, "CurrentCapacity") => Some(100),
+            (None, "MaxCapacity") => Some(100),
+            (None, "CycleCount") => Some(16),
+            (Some("BatteryData"), "DesignCapacity") => Some(6249),
+            (Some("BatteryData"), "NominalChargeCapacity") => Some(6262),
+            (Some("BatteryData"), "FullChargeCapacity") => Some(6110),
+            (Some("BatteryData"), "CurrentCapacity") => Some(100),
+            (Some("BatteryData"), "MaxCapacity") => Some(100),
+            _ => None,
+        };
+        let (full, design) = capacity_fields(lookup);
+        assert_eq!(design, Some(6249));
+        assert_eq!(full, Some(6262));
+        let health = capacity_health(full, design).expect("health from nested data");
+        assert!((health - 100.2).abs() < 0.05, "health was {health}");
+    }
+
+    #[test]
+    fn capacity_fields_prefer_top_level_and_skip_nested_lookups() {
+        let mut consulted = Vec::new();
+        let (full, design) = capacity_fields(|scope, key| {
+            consulted.push((scope.map(str::to_owned), key.to_owned()));
+            match (scope, key) {
+                (None, "AppleRawMaxCapacity") => Some(5800),
+                (None, "DesignCapacity") => Some(6000),
+                _ => None,
+            }
+        });
+        assert_eq!(full, Some(5800));
+        assert_eq!(design, Some(6000));
+        assert!(consulted.iter().all(|(scope, _)| scope.is_none()));
+    }
+
+    #[test]
+    fn capacity_fields_never_read_percentages_as_mah() {
+        let lookup = |scope: Option<&str>, key: &str| match (scope, key) {
+            (_, "CurrentCapacity" | "MaxCapacity") => Some(100),
+            _ => None,
+        };
+        let (full, design) = capacity_fields(lookup);
+        assert_eq!(full, None);
+        assert_eq!(design, None);
+        assert_eq!(capacity_health(full, design), None);
+    }
+
+    #[test]
+    fn absent_condition_on_a_present_battery_is_not_unavailable() {
+        let mut battery = BatteryStats {
+            available: true,
+            present: true,
+            condition: None,
+            ..BatteryStats::default()
+        };
+        assert_eq!(
+            battery.condition_label(),
+            l("No condition reported", "Ingen tilstand rapportert")
+        );
+        battery.present = false;
+        assert_eq!(battery.condition_label(), l("Unavailable", "Utilgjengelig"));
+        battery.present = true;
+        battery.condition = Some("Unexpected String".into());
+        assert_eq!(battery.condition_label(), l("Unavailable", "Utilgjengelig"));
+    }
+
+    #[test]
     #[ignore = "Reads the current Mac's power sources; requires hardware comparison"]
     fn native_battery_probe() {
         let battery = battery_stats();
         println!("{battery:#?}");
+        println!(
+            "health={:?} full_capacity_mah={:?} design_capacity_mah={:?} condition={:?} condition_label={}",
+            battery.health,
+            battery.full_capacity_mah,
+            battery.design_capacity_mah,
+            battery.condition,
+            battery.condition_label()
+        );
         if !battery.present {
             assert!(battery.percent.is_none());
             assert!(battery.health.is_none());

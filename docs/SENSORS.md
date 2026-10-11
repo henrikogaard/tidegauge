@@ -53,6 +53,24 @@ any channel reports no value (e.g. `Showing 24 of 342 channels · 22
 unavailable`, `Viser 24 av 342 kanaler · 22 utilgjengelige`). Fan rows are not
 bounded.
 
+## Battery capacity reporting
+
+Pack capacities come from the `AppleSmartBattery` registry entry. On macOS 27 /
+Apple silicon (verified on Mac17,7, M5 Max) the top level carries only
+normalized `CurrentCapacity`/`MaxCapacity` percentages and `CycleCount`; the
+physical mAh values live in a nested `BatteryData` dictionary
+(`DesignCapacity`, `NominalChargeCapacity`, `FullChargeCapacity`). Both levels
+are read, top level first. Top-level and nested `CurrentCapacity`/`MaxCapacity`
+are percentages and are never accepted as mAh — a 101…200,000 guard rejects
+them on every candidate path.
+
+Maximum Capacity derives from `NominalChargeCapacity`/`DesignCapacity` (6262 /
+6249 ≈ 100.2%, matching the system's report), not `FullChargeCapacity`. Battery
+temperature has no `Temperature` key on this hardware and stays unavailable; no
+SMC channel is substituted for it. An absent `BatteryHealthCondition` means the
+system reports no adverse condition — the UI says "No condition reported" for
+a present battery, which is not a failed read and not a health verdict.
+
 ## Validation
 
 Run `cargo test sensors::tests` for ABI layout, byte-order/unit conversions,
