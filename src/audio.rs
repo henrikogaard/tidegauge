@@ -304,6 +304,24 @@ pub fn set_output_mute(expected_id: u32, value: bool) -> Result<(), String> {
     }
 }
 
+pub fn toggle_output_mute(expected_id: u32) -> Result<(), String> {
+    let value = toggled_mute_value(&output_state(), expected_id)?;
+    set_output_mute(expected_id, value)
+}
+
+fn toggled_mute_value(state: &OutputState, expected_id: u32) -> Result<bool, String> {
+    if !target_is_current(expected_id, state.id) {
+        return Err(stale_output_error());
+    }
+    if !state.can_mute {
+        return Err(unsupported_control_error("mute"));
+    }
+    state
+        .muted
+        .map(|muted| !muted)
+        .ok_or_else(|| unsupported_control_error("mute"))
+}
+
 fn valid_volume(value: f32) -> bool {
     value.is_finite() && (0.0..=1.0).contains(&value)
 }
@@ -359,6 +377,25 @@ mod tests {
         state.can_volume = true;
         state.volume = None;
         assert!(adjusted_volume(&state, 42, 0.1).is_err());
+    }
+
+    #[test]
+    fn mute_toggle_uses_fresh_state_and_rejects_unavailable_targets() {
+        let mut state = OutputState {
+            id: 42,
+            muted: Some(true),
+            can_mute: true,
+            ..OutputState::default()
+        };
+        assert!(!toggled_mute_value(&state, 42).unwrap());
+        state.muted = Some(false);
+        assert!(toggled_mute_value(&state, 42).unwrap());
+        assert!(toggled_mute_value(&state, 43).is_err());
+        state.can_mute = false;
+        assert!(toggled_mute_value(&state, 42).is_err());
+        state.can_mute = true;
+        state.muted = None;
+        assert!(toggled_mute_value(&state, 42).is_err());
     }
 
     #[test]

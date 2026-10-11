@@ -694,7 +694,7 @@ pub fn audio_output(
                 muted,
                 dark,
                 move |_, cx| {
-                    audio_action(&this, cx, move || crate::audio::set_output_mute(id, !muted));
+                    audio_action(&this, cx, move || crate::audio::toggle_output_mute(id));
                 },
             ));
         }
