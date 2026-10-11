@@ -439,11 +439,11 @@ pub fn history_panel(
     use crate::history_browser::{Metric, RANGES};
     let app = view.history_request.app.is_some();
     let mut ranges = div().flex().gap_2().flex_wrap();
-    for (hours, label) in RANGES {
+    for (hours, (en, no)) in RANGES {
         let target = this.clone();
         ranges = ranges.child(button(
             format!("history-{hours}"),
-            label,
+            l(en, no),
             view.history_request.hours == hours,
             dark,
             move |_, cx| change_history(&target, cx, |r| r.hours = hours),

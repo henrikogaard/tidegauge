@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use crate::engine::{DevServer, ProjectGroup};
+use crate::locale::text as l;
 use crate::processes::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -188,13 +189,14 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
         drop(im);
         let up_for = crate::metrics::now_unix() - p.start_unix;
         let status = if p.cpu_pct > 15.0 {
-            "working".into()
+            l("working", "arbeider").into()
         } else if idle_secs > 3600 {
-            format!("idle {}", crate::engine::fmt_up(idle_secs as f64))
+            format!("{} {}", l("idle", "inaktiv i"), crate::engine::fmt_up(idle_secs as f64))
         } else if up_for > 86400.0 && p.cpu_pct < 2.0 {
-            format!("up {}, barely used", crate::engine::fmt_up(up_for))
+            let up = format!("{} {}", l("up", "oppe i"), crate::engine::fmt_up(up_for));
+            format!("{}, {}", up, l("barely used", "nesten ikke brukt"))
         } else {
-            format!("idle {}", crate::engine::fmt_up(idle_secs.max(60) as f64))
+            format!("{} {}", l("idle", "inaktiv i"), crate::engine::fmt_up(idle_secs.max(60) as f64))
         };
         for port in ports {
             let mut s = DevServer {
@@ -235,7 +237,7 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
                 .unwrap_or_else(|| dir.clone());
             let idle = servers
                 .iter()
-                .all(|s| s.status.starts_with("idle") || s.status.contains("barely"));
+                .all(|s| s.status.starts_with(l("idle", "inaktiv")) || s.status.contains(l("barely", "nesten ikke")));
             ProjectGroup {
                 name,
                 dir,

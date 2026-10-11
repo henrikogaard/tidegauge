@@ -1341,9 +1341,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             l("Now", "Nå").into(),
             format!("{:.0} %", s.cpu_pct),
             [
-                ("Load · 1 min", format!("{:.2}", s.load_avg[0])),
-                ("Cores", s.chip.cores.to_string()),
-                ("Average", history_average(&s.cpu_hist)),
+                (l("Load · 1 min", "Last · 1 min"), format!("{:.2}", s.load_avg[0])),
+                (l("Cores", "Kjerner"), s.chip.cores.to_string()),
+                (l("Average", "Gjennomsnitt"), history_average(&s.cpu_hist)),
             ],
             &s.cpu_hist,
             Some(100.),
@@ -1357,9 +1357,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ),
             fmt_bytes(s.mem.used as f64),
             [
-                ("App", fmt_bytes(s.mem.app as f64)),
-                ("Wired", fmt_bytes(s.mem.wired as f64)),
-                ("Compressed", fmt_bytes(s.mem.compressed as f64)),
+                (l("App", "App"), fmt_bytes(s.mem.app as f64)),
+                (l("Wired", "Bundet"), fmt_bytes(s.mem.wired as f64)),
+                (l("Compressed", "Komprimert"), fmt_bytes(s.mem.compressed as f64)),
             ],
             &s.mem_hist,
             Some(100.),
@@ -1378,14 +1378,14 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .unwrap_or("—".into()),
             [
                 (
-                    "Memory",
+                    l("Memory", "Minne"),
                     s.gpu
                         .mem_in_use
                         .map(|v| fmt_bytes(v as f64))
                         .unwrap_or("—".into()),
                 ),
                 (
-                    "Average",
+                    l("Average", "Gjennomsnitt"),
                     if s.gpu.utilization.is_some() {
                         history_average(&s.gpu_hist)
                     } else {
@@ -1393,7 +1393,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     },
                 ),
                 (
-                    "Peak",
+                    l("Peak", "Topp"),
                     if s.gpu.utilization.is_some() {
                         fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))
                     } else {
@@ -1413,9 +1413,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ),
             fmt_bytes(s.disk.free as f64),
             [
-                ("Reading", fmt_rate(s.disk.read_rate)),
-                ("Writing", fmt_rate(s.disk.write_rate)),
-                ("Used", fmt_bytes(s.disk.used as f64)),
+                (l("Reading", "Leser"), fmt_rate(s.disk.read_rate)),
+                (l("Writing", "Skriver"), fmt_rate(s.disk.write_rate)),
+                (l("Used", "Brukt"), fmt_bytes(s.disk.used as f64)),
             ],
             &s.disk_w_hist,
             None,
@@ -1425,9 +1425,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             l("Downloading", "Laster ned").into(),
             fmt_rate(s.net.rate_in),
             [
-                ("Uploading", fmt_rate(s.net.rate_out)),
-                ("Received¹", fmt_bytes(s.net.total_in as f64)),
-                ("Sent¹", fmt_bytes(s.net.total_out as f64)),
+                (l("Uploading", "Laster opp"), fmt_rate(s.net.rate_out)),
+                (l("Received¹", "Mottatt¹"), fmt_bytes(s.net.total_in as f64)),
+                (l("Sent¹", "Sendt¹"), fmt_bytes(s.net.total_out as f64)),
             ],
             &s.net_in_hist,
             None,
@@ -1440,7 +1440,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .map(|v| format!("{:.0} %", v))
                 .unwrap_or("—".into()),
             [
-                ("Remaining", remaining),
+                (l("Remaining", "Gjenstår"), remaining),
                 (
                     crate::locale::text("Battery flow", "Batteristrøm"),
                     s.battery
@@ -1502,25 +1502,25 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     .grid_cols(3)
                     .gap(px(16.))
                     .when(favorites.iter().any(|key| key == "memory"), |row| row.child(donut_card(
-                        "Memory by Type",
+                        l("Memory by Type", "Minne etter type"),
                         Tab::Memory,
                         vec![
-                            BreakdownEntry::new("App", s.mem.app as f64, Metric::Cpu.accent(dark)),
+                            BreakdownEntry::new(l("App", "App"), s.mem.app as f64, Metric::Cpu.accent(dark)),
                             BreakdownEntry::new(
-                                "Wired",
+                                l("Wired", "Bundet"),
                                 s.mem.wired as f64,
                                 Metric::Memory.accent(dark),
                             ),
                             BreakdownEntry::new(
-                                "Compressed",
+                                l("Compressed", "Komprimert"),
                                 s.mem.compressed as f64,
                                 Metric::Gpu.accent(dark),
                             ),
-                            BreakdownEntry::new("Cached", s.mem.cached as f64, t::ink_dim(dark)),
-                            BreakdownEntry::new("Free", s.mem.free as f64, t::card_hi(dark)),
+                            BreakdownEntry::new(l("Cached", "Hurtigbufret"), s.mem.cached as f64, t::ink_dim(dark)),
+                            BreakdownEntry::new(l("Free", "Ledig"), s.mem.free as f64, t::card_hi(dark)),
                         ],
                         format!("{:.0}%", mem_pct),
-                        "in use",
+                        l("in use", "i bruk"),
                         fmt_bytes,
                         dark,
                     ))
@@ -1652,8 +1652,8 @@ fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
         });
     }
     let other: f64 = top.iter().skip(4).map(|a| a.mem_bytes as f64).sum();
-    if other > 0. { slices.push(BreakdownEntry::new("Other", other, color.opacity(0.35))); }
-    donut_card("Memory by App", Tab::Memory, slices, fmt_bytes(total), "all apps", fmt_bytes, dark)
+    if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
+    donut_card(l("Memory by App", "Minne etter app"), Tab::Memory, slices, fmt_bytes(total), l("all apps", "alle apper"), fmt_bytes, dark)
 }
 
 fn breakdown_watts(watts: f64) -> String {
@@ -1682,8 +1682,8 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
         });
     }
     let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
-    if other > 0. { slices.push(BreakdownEntry::new("Other", other, color.opacity(0.35))); }
-    donut_card("Power by App", Tab::Battery, slices, breakdown_watts(total), "estimated", breakdown_watts, dark)
+    if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
+    donut_card(l("Power by App", "Effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("estimated", "beregnet"), breakdown_watts, dark)
 }
 
 // ---------- metric tabs ----------
@@ -2186,7 +2186,7 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
         .child(hero(
             "GPU",
             s.gpu.utilization.map(|u| format!("{:.0}%", u)).unwrap_or_else(|| "—".into()),
-            if supported { "Apple GPU".into() } else { "Not available on this Mac".into() },
+            if supported { "Apple GPU".into() } else { l("Not available on this Mac", "Ikke tilgjengelig på denne Macen").into() },
             &s.gpu_hist,
             m.accent(dark),
             dark,
@@ -2201,7 +2201,7 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
                     div()
                         .text_sm()
                         .text_color(t::ink_dim(dark))
-                        .child("GPU utilization counters aren't exposed in virtual machines. On real Apple Silicon hardware this tab shows utilization and GPU memory."),
+                        .child(l("GPU utilization counters aren't exposed in virtual machines. On real Apple Silicon hardware this tab shows utilization and GPU memory.", "GPU-utnyttelse er ikke eksponert i virtuelle maskiner. På ekte Apple Silicon-maskinvare viser denne fanen utnyttelse og GPU-minne.")),
                 ),
             )
         })
@@ -2226,23 +2226,23 @@ fn neural_tab(s: &Snapshot, dark: bool) -> Div {
             "Neural Engine",
             s.neural.map(|v| format!("{:.0}%", v)).unwrap_or_else(|| "—".into()),
             if supported {
-                format!("Apple Neural Engine · {} cores", cores)
+                format!("Apple Neural Engine · {} {}", cores, l("cores", "kjerner"))
             } else {
-                "Not available on this Mac".into()
+                l("Not available on this Mac", "Ikke tilgjengelig på denne Macen").into()
             },
             &s.neural_hist,
             m.accent(dark),
             dark,
             vec![
-                ("Cores".into(), if supported { format!("{}", cores) } else { "—".into() }),
-                ("Thermal".into(), s.thermal.clone()),
-                ("State".into(), if s.neural.is_some() { "Ready".into() } else { "Unavailable".into() }),
+                (l("Cores", "Kjerner").into(), if supported { format!("{}", cores) } else { "—".into() }),
+                (l("Thermal", "Termisk").into(), s.thermal.clone()),
+                (l("State", "Tilstand").into(), if s.neural.is_some() { l("Ready", "Klar").into() } else { l("Unavailable", "Utilgjengelig").into() }),
             ],
             Some(100.0),
         ))
         .when(s.neural.is_none(), |d| {
             d.child(card(dark).child(div().text_sm().text_color(t::ink_dim(dark)).child(
-                "Neural Engine utilization needs real Apple Silicon hardware with IOReport access.",
+                l("Neural Engine utilization needs real Apple Silicon hardware with IOReport access.", "Neural Engine-utnyttelse krever ekte Apple Silicon-maskinvare med IOReport-tilgang."),
             )))
         })
 }
@@ -2479,10 +2479,10 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                             div()
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(if n == 0 { "No devices connected".into() } else { format!("{} connected", n) }),
+                                .child(if n == 0 { l("No devices connected", "Ingen enheter tilkoblet").into() } else { format!("{} {}", n, l("connected", "tilkoblede")) }),
                         )
                         .when_some(lowest, |d, (name, b)| {
-                            d.child(sub(format!("{} has the lowest battery", name)).text_color(t::ink_dim(dark)))
+                            d.child(sub(format!("{} {}", name, l("has the lowest battery", "har lavest batterinivå"))).text_color(t::ink_dim(dark)))
                         }),
                     )
                     ,
@@ -2494,9 +2494,9 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                 .text_sm()
                 .text_color(t::ink_dim(dark))
                 .child(if s.bt.enabled {
-                    "Paired devices will appear here with their battery level.".to_string()
+                    l("Paired devices will appear here with their battery level.", "Sammenkoblede enheter vises her med batterinivå.").to_string()
                 } else {
-                    "Bluetooth is off or unavailable on this Mac.".to_string()
+                    l("Bluetooth is off or unavailable on this Mac.", "Bluetooth er av eller utilgjengelig på denne Macen.").to_string()
                 }),
         ));
     } else {
@@ -2532,7 +2532,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                             .gap_4()
                             .px_2()
                             .children(
-                                [("Left", d.battery), ("Right", d.second_battery), ("Case", d.case_battery)]
+                                [(l("Left", "Venstre"), d.battery), (l("Right", "Høyre"), d.second_battery), (l("Case", "Etui"), d.case_battery)]
                                     .iter()
                                     .filter(|(_, b)| b.is_some())
                                     .map(|(n, b)| {
@@ -2688,16 +2688,23 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     .child(icon_img("icons/folder-code.svg", 20.0, accent))
                     .child(div().flex_1().text_sm().child(if all_idle {
                         format!(
-                            "{} dev {} {} running but idle",
+                            "{} {}",
                             total,
-                            if total == 1 { "server" } else { "servers" },
-                            if total == 1 { "is" } else { "are" }
+                            if total == 1 {
+                                l("dev server is running but idle", "utviklingsserver kjører, men er inaktiv")
+                            } else {
+                                l("dev servers are running but idle", "utviklingsservere kjører, men er inaktive")
+                            }
                         )
                     } else {
                         format!(
-                            "{} dev {} running",
+                            "{} {}",
                             total,
-                            if total == 1 { "server" } else { "servers" }
+                            if total == 1 {
+                                l("dev server running", "utviklingsserver kjører")
+                            } else {
+                                l("dev servers running", "utviklingsservere kjører")
+                            }
                         )
                     }))
                     .child(stop_button(
@@ -2766,8 +2773,8 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                                     .flex_1()
                                     .text_xs()
                                     .text_color(
-                                        if srv.status.starts_with("idle")
-                                            || srv.status.contains("barely")
+                                        if srv.status.starts_with(l("idle", "inaktiv"))
+                                            || srv.status.contains(l("barely", "nesten ikke"))
                                         {
                                             t::ink_dim(dark)
                                         } else {

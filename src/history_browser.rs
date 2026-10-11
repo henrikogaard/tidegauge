@@ -4,7 +4,12 @@ use crate::locale::text as l;
 use rusqlite::{params, Connection, OpenFlags};
 
 pub const BUCKETS: usize = 180;
-pub const RANGES: [(u32, &str); 4] = [(12, "12 h"), (24, "24 h"), (168, "7 d"), (720, "30 d")];
+pub const RANGES: [(u32, (&str, &str)); 4] = [
+    (12, ("12 h", "12 t")),
+    (24, ("24 h", "24 t")),
+    (168, ("7 d", "7 d")),
+    (720, ("30 d", "30 d")),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Metric {

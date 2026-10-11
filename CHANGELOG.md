@@ -53,6 +53,12 @@ hardware acceptance checks. A merge and a published release are separate events.
   The temperature card now renders at most 24 channels, hottest first with
   unavailable channels last, plus an exact shown/total/unavailable caption
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Remaining user-visible English strings are now localized to Norwegian
+  Bokmål: overview card stat labels, memory/power breakdown cards, GPU and
+  Neural Engine availability text, Bluetooth device kinds and counts, dev-server
+  status sentences, session-uptime durations with singular/plural forms, and
+  history range chips
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires
   observed ancestry before offering remaining-helper Stop.

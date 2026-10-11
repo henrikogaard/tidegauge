@@ -20,18 +20,18 @@ struct SPBluetooth {
 static CACHE: OnceLock<Mutex<(Instant, BtInfo)>> = OnceLock::new();
 
 fn classify(name: &str) -> &'static str {
+    use crate::locale::text as t;
     let l = name.to_lowercase();
-    if l.contains("airpods") { "Headphones" }
-    else if l.contains("beats") { "Headphones" }
-    else if l.contains("mouse") { "Mouse" }
-    else if l.contains("keyboard") { "Keyboard" }
-    else if l.contains("trackpad") { "Trackpad" }
-    else if l.contains("pencil") { "Pencil" }
-    else if l.contains("watch") { "Watch" }
-    else if l.contains("iphone") || l.contains("ipad") { "Phone" }
-    else if l.contains("controller") || l.contains("dualsense") { "Controller" }
-    else if l.contains("speaker") || l.contains("homepod") { "Speaker" }
-    else { "Device" }
+    if l.contains("airpods") || l.contains("beats") { t("Headphones", "Hodetelefoner") }
+    else if l.contains("mouse") { t("Mouse", "Mus") }
+    else if l.contains("keyboard") { t("Keyboard", "Tastatur") }
+    else if l.contains("trackpad") { t("Trackpad", "Styreflate") }
+    else if l.contains("pencil") { t("Pencil", "Penn") }
+    else if l.contains("watch") { t("Watch", "Klokke") }
+    else if l.contains("iphone") || l.contains("ipad") { t("Phone", "Telefon") }
+    else if l.contains("controller") || l.contains("dualsense") { t("Controller", "Kontroller") }
+    else if l.contains("speaker") || l.contains("homepod") { t("Speaker", "Høyttaler") }
+    else { t("Device", "Enhet") }
 }
 
 fn battery_of(v: &serde_json::Value) -> Option<f64> {

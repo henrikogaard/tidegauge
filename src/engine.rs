@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+use crate::locale::text as l;
 use crate::metrics::*;
 use crate::processes::*;
 use std::collections::HashMap;
@@ -493,13 +494,17 @@ pub fn fmt_pct(v: f64) -> String {
 pub fn fmt_up(secs: f64) -> String {
     let s = secs as u64;
     if s < 90 {
-        format!("{} seconds", s.max(1))
+        let n = s.max(1);
+        format!("{} {}", n, if n == 1 { l("second", "sekund") } else { l("seconds", "sekunder") })
     } else if s < 5400 {
-        format!("{} minutes", s / 60)
+        let n = s / 60;
+        format!("{} {}", n, if n == 1 { l("minute", "minutt") } else { l("minutes", "minutter") })
     } else if s < 129600 {
-        format!("{} hours", s / 3600)
+        let n = s / 3600;
+        format!("{} {}", n, if n == 1 { l("hour", "time") } else { l("hours", "timer") })
     } else {
-        format!("{} days", s / 86400)
+        let n = s / 86400;
+        format!("{} {}", n, if n == 1 { l("day", "døgn") } else { l("days", "dager") })
     }
 }
 
@@ -523,6 +528,38 @@ fn regroup_apps(procs: &[ProcInfo], previous: &[AppGroup]) -> Vec<AppGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fmt_up_uses_singular_and_plural_localized_units() {
+        for (secs, en, no) in [
+            (0., "second", "sekund"),
+            (1., "second", "sekund"),
+            (89., "seconds", "sekunder"),
+            (90., "minute", "minutt"),
+            (119., "minute", "minutt"),
+            (120., "minutes", "minutter"),
+            (5399., "minutes", "minutter"),
+            (5400., "hour", "time"),
+            (7199., "hour", "time"),
+            (7200., "hours", "timer"),
+            (129599., "hours", "timer"),
+            (129600., "day", "døgn"),
+            (172799., "day", "døgn"),
+            (172800., "days", "dager"),
+        ] {
+            let n = secs as u64;
+            let value = if n < 90 {
+                n.max(1)
+            } else if n < 5400 {
+                n / 60
+            } else if n < 129600 {
+                n / 3600
+            } else {
+                n / 86400
+            };
+            assert_eq!(fmt_up(secs), format!("{} {}", value, l(en, no)), "secs={secs}");
+        }
+    }
 
     #[test]
     fn regrouping_does_not_transfer_rates_to_replacement_processes() {

@@ -261,7 +261,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot) -> Vec<Readout> {
                     },
                 ),
                 "power" => (
-                    "PWR",
+                    l("PWR", "EFF"),
                     s.power_w.map(crate::engine::fmt_watts).unwrap_or_else(|| "—".into()),
                     s.power_hist.pts.clone(),
                 ),
