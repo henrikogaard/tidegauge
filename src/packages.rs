@@ -1805,7 +1805,12 @@ fn cask_appdir(config: &Value) -> Option<PathBuf> {
     }
     let appdir = appdir?;
     let path = PathBuf::from(appdir);
-    if !path.is_absolute() || path_has_symlink_component(&path) {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        || path_has_symlink_component(&path)
+    {
         return None;
     }
     let canonical = fs::canonicalize(&path).ok()?;
@@ -1823,7 +1828,10 @@ fn resolve_cask_targets(artifacts: &Value, appdir: &Path) -> Option<Vec<PathBuf>
         if object.len() == 1 && object.contains_key("zap") {
             continue;
         }
-        if object.keys().any(|key| key != "app") {
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "app" | "target"))
+        {
             return None;
         }
         let app = object.get("app")?.as_array()?;
@@ -1863,6 +1871,17 @@ fn resolve_cask_targets(artifacts: &Value, appdir: &Path) -> Option<Vec<PathBuf>
         let canonical = canonical_app_target(&target)?;
         if !canonical.starts_with(appdir) || !trusted_directory_path(&canonical) {
             return None;
+        }
+        if let Some(reported_target) = object.get("target") {
+            let reported_target = Path::new(reported_target.as_str()?);
+            if !reported_target.is_absolute()
+                || reported_target
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir)
+                || canonical_app_target(reported_target)? != canonical
+            {
+                return None;
+            }
         }
         if !targets.insert(canonical) {
             return None;
@@ -1922,10 +1941,10 @@ fn trusted_metadata_ancestors(path: &Path) -> bool {
 }
 
 fn read_trusted_json(path: &Path) -> Option<(Value, FsFingerprint)> {
+    let before = FsFingerprint::capture(path)?;
     if !trusted_metadata_path(path) {
         return None;
     }
-    let before = FsFingerprint::capture(path)?;
     let bytes = read_bounded_file(path).ok()?;
     let after = FsFingerprint::capture(path)?;
     if before != after {
@@ -2746,6 +2765,15 @@ mod tests {
         )
         .unwrap();
         let metadata = cask_metadata(&item, &root, "sample", "1").unwrap();
+        let reported_item = serde_json::json!({
+            "artifacts": [{"app": ["Sample.app"], "target": target}]
+        });
+        assert_eq!(
+            cask_metadata(&reported_item, &root, "sample", "1")
+                .unwrap()
+                .targets,
+            metadata.targets
+        );
         assert_eq!(
             package_action_eligibility(true, false, true, true, Some(false)),
             (true, true)
@@ -2819,6 +2847,11 @@ mod tests {
         let renamed = appdir.join("Nested/Renamed.app");
         fs::create_dir_all(renamed.join("Contents")).unwrap();
         fs::write(renamed.join("Contents/Info.plist"), b"metadata").unwrap();
+        assert!(resolve_cask_targets(
+            &serde_json::json!([{"app": ["Sample.app"], "target": renamed}]),
+            &appdir
+        )
+        .is_none());
         let renamed_item = serde_json::json!({
             "artifacts": [{"app": ["Sample.app", {"target": "Nested/Renamed.app"}]}]
         });
