@@ -93,11 +93,17 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         let key = group.bundle.clone();
         let cpu: f64 = group.rows.iter().map(|r| r.process.cpu_pct).sum();
         let memory: f64 = group.rows.iter().map(|r| r.process.mem_bytes as f64).sum();
+        let process_count = group.rows.len();
+        let process_label = if process_count == 1 {
+            l("process", "prosess")
+        } else {
+            l("processes", "prosesser")
+        };
         let summary = format!(
             "{} · {} {} · {:.1}% CPU · {}",
             group.name,
-            group.rows.len(),
-            l("processes", "prosesser"),
+            process_count,
+            process_label,
             cpu,
             fmt_bytes(memory)
         );
@@ -117,7 +123,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     });
                 },
             )));
-        if let Some(main) = &group.main {
+        if let [main] = group.mains.as_slice() {
             if activity::controllable(main, &group.bundle) && !view.process_pending {
                 let action = Action::Quit(main.clone(), group.bundle.clone());
                 let target = this.clone();
@@ -131,6 +137,12 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             }
         }
         let mut content = card(dark).child(row);
+        if group.mains.len() > 1 {
+            content = content.child(sub(l(
+                "Multiple app instances are running; quit them from their own app windows.",
+                "Flere appinstanser kjører; avslutt dem fra sine egne appvinduer.",
+            )));
+        }
         if group.remaining_count() > 0 {
             content = content.child(sub(format!(
                 "{} {}",
@@ -145,27 +157,27 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             content = content.child(sub(group.bundle.clone()));
             for row in &group.rows {
                 let p = &row.process;
-                let provenance = match &row.origin {
-                    Some(o) if o.main == activity::Identity::of(p) => {
-                        l("Main app process", "Appens hovedprosess").into()
+                let is_main = group
+                    .mains
+                    .iter()
+                    .any(|main| activity::Identity::of(main) == activity::Identity::of(p));
+                let provenance = if is_main {
+                    l("Main app process", "Appens hovedprosess").into()
+                } else {
+                    match &row.origin {
+                        Some(o) if o.observed_ancestor => format!(
+                            "{} {} · {} {}",
+                            l("Previously observed under", "Tidligere observert under"),
+                            group.name,
+                            l("app PID", "app-PID"),
+                            o.main.pid
+                        ),
+                        Some(_) | None => l(
+                            "Associated by bundle path; app lifecycle unknown",
+                            "Tilknyttet via appsti; appens livssyklus ukjent",
+                        )
+                        .into(),
                     }
-                    Some(o) if o.observed_ancestor => format!(
-                        "{} {} · {} {}",
-                        l("Previously observed under", "Tidligere observert under"),
-                        group.name,
-                        l("app PID", "app-PID"),
-                        o.main.pid
-                    ),
-                    Some(_) => l(
-                        "Associated by bundle path; launch ancestry not observed",
-                        "Tilknyttet via appsti; oppstartsopphav ikke observert",
-                    )
-                    .into(),
-                    None => l(
-                        "Associated by bundle path; app lifecycle unknown",
-                        "Tilknyttet via appsti; appens livssyklus ukjent",
-                    )
-                    .into(),
                 };
                 let mut details = div().flex().items_center().gap_2().child(
                     div()
@@ -186,7 +198,8 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                         .child(sub(provenance))
                         .child(sub(p.exe_path.clone())),
                 );
-                if row.remaining
+                if !is_main
+                    && row.remaining
                     && activity::controllable(p, &group.bundle)
                     && !view.process_pending
                 {

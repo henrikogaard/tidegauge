@@ -51,7 +51,7 @@ pub struct RegisteredApp {
 pub struct ProcessGroup {
     pub bundle: String,
     pub name: String,
-    pub main: Option<ProcInfo>,
+    pub mains: Vec<ProcInfo>,
     pub rows: Vec<ProcessRow>,
 }
 
@@ -88,14 +88,17 @@ impl Tracker {
         exited: &HashSet<Identity>,
     ) -> Vec<ProcessGroup> {
         let by_pid: HashMap<i32, &ProcInfo> = procs.iter().map(|p| (p.pid, p)).collect();
-        self.origins.retain(|id, _| {
-            enumerated.contains(&id.pid)
+        self.origins.retain(|id, origin| {
+            origin.observed_ancestor
+                && enumerated.contains(&id.pid)
                 && by_pid.get(&id.pid).is_none_or(|p| Identity::of(p) == *id)
         });
         let main_by_pid: HashMap<i32, &RegisteredApp> =
             apps.iter().map(|a| (a.process.pid, a)).collect();
-        let by_bundle: HashMap<&str, &RegisteredApp> =
-            apps.iter().map(|a| (a.bundle.as_str(), a)).collect();
+        let mut by_bundle: HashMap<&str, Vec<&RegisteredApp>> = HashMap::new();
+        for app in apps {
+            by_bundle.entry(app.bundle.as_str()).or_default().push(app);
+        }
         let previous = self.origins.clone();
         let mut groups: BTreeMap<String, ProcessGroup> = BTreeMap::new();
         for p in procs {
@@ -105,7 +108,14 @@ impl Tracker {
             }
             let own_bundle = bundle_root(&p.exe_path);
             // Retain the observed launch session, including across a later app relaunch.
-            let mut origin = previous.get(&id).cloned();
+            let mut origin = if main_by_pid.contains_key(&p.pid) {
+                None
+            } else {
+                previous
+                    .get(&id)
+                    .filter(|origin| origin.observed_ancestor)
+                    .cloned()
+            };
             if origin.is_none() {
                 let mut current = p;
                 let mut visited = HashSet::new();
@@ -114,7 +124,9 @@ impl Tracker {
                         break;
                     }
                     if let Some(app) = main_by_pid.get(&current.pid) {
-                        if Identity::of(&app.process) == Identity::of(current) {
+                        if Identity::of(&app.process) == Identity::of(current)
+                            && Identity::of(current) != id
+                        {
                             origin = Some(Origin {
                                 main: Identity::of(current),
                                 bundle: app.bundle.clone(),
@@ -124,7 +136,10 @@ impl Tracker {
                         break;
                     }
                     if current.pid != p.pid {
-                        if let Some(parent_origin) = previous.get(&Identity::of(current)) {
+                        if let Some(parent_origin) = previous
+                            .get(&Identity::of(current))
+                            .filter(|origin| origin.observed_ancestor)
+                        {
                             origin = Some(parent_origin.clone());
                             break;
                         }
@@ -146,30 +161,25 @@ impl Tracker {
                 if origin.as_ref().is_some_and(|o| o.bundle != *bundle) {
                     origin = None;
                 }
-                if origin.is_none() {
-                    if let Some(app) = by_bundle.get(bundle.as_str()) {
-                        if app.process.uid == p.uid {
-                            origin = Some(Origin {
-                                main: Identity::of(&app.process),
-                                bundle: bundle.clone(),
-                                observed_ancestor: false,
-                            });
-                        }
-                    }
-                }
+            }
+            if origin
+                .as_ref()
+                .is_some_and(|origin| !origin.observed_ancestor)
+            {
+                origin = None;
             }
             let Some(bundle) = own_bundle.or_else(|| origin.as_ref().map(|o| o.bundle.clone()))
             else {
                 continue;
             };
-            if let Some(o) = &origin {
+            if let Some(o) = origin.as_ref().filter(|o| o.observed_ancestor) {
                 self.origins.insert(id, o.clone());
             } else {
                 self.origins.remove(&id);
             }
             let remaining = origin
                 .as_ref()
-                .is_some_and(|o| o.main != id && exited.contains(&o.main));
+                .is_some_and(|o| o.observed_ancestor && o.main != id && exited.contains(&o.main));
             let group = groups
                 .entry(bundle.clone())
                 .or_insert_with(|| ProcessGroup {
@@ -178,7 +188,12 @@ impl Tracker {
                         .unwrap_or_default()
                         .to_string_lossy()
                         .into(),
-                    main: by_bundle.get(bundle.as_str()).map(|a| a.process.clone()),
+                    mains: by_bundle
+                        .get(bundle.as_str())
+                        .into_iter()
+                        .flatten()
+                        .map(|app| app.process.clone())
+                        .collect(),
                     bundle,
                     rows: Vec::new(),
                 });
@@ -291,11 +306,21 @@ pub fn stop_remaining(row: &ProcessRow, bundle: &str) -> Result<String, String> 
     let current = crate::engine::latest();
     let matches = current.process_groups.iter().any(|g| {
         g.bundle == bundle
-            && g.rows
-                .iter()
-                .any(|r| r.remaining && Identity::of(&r.process) == id && r.origin == row.origin)
+            && !g.mains.iter().any(|main| Identity::of(main) == id)
+            && g.rows.iter().any(|r| {
+                r.remaining
+                    && r.origin.as_ref().is_some_and(|o| o.observed_ancestor)
+                    && Identity::of(&r.process) == id
+                    && r.origin == row.origin
+            })
     });
-    if !row.remaining || !matches || !row.origin.as_ref().is_some_and(|o| confirmed_exit(o.main)) {
+    if !row.remaining
+        || !matches
+        || !row
+            .origin
+            .as_ref()
+            .is_some_and(|o| o.observed_ancestor && o.main != id && confirmed_exit(o.main))
+    {
         return Err(l("The confirmed helper is no longer eligible. Refresh and review its state.", "Den bekreftede hjelpeprosessen kan ikke stoppes nå. Oppdater og kontroller tilstanden.").into());
     }
     validate(&row.process, bundle)?;
@@ -426,14 +451,135 @@ mod tests {
         assert!(update(&mut tracker, &[detached], &[], &[Identity::of(&main)]).is_empty());
     }
     #[test]
-    fn does_not_invent_origin_for_preexisting_daemons_or_bundle_helpers() {
+    fn bundle_only_processes_have_unknown_lifecycle() {
         let mut tracker = Tracker::default();
         let daemon = proc(11, 1, "/opt/tool");
         let helper = proc(12, 1, "/Apps/Test.app/Contents/Helpers/helper");
         let groups = update(&mut tracker, &[daemon, helper], &[], &[]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].remaining_count(), 0);
-        assert!(groups[0].rows[0].origin.is_none());
+        assert!(groups[0].rows.iter().all(|row| row.origin.is_none()));
+    }
+    #[test]
+    fn bundle_only_helper_with_two_mains_never_becomes_remaining() {
+        let first = proc(10, 1, "/Apps/Test.app/Contents/MacOS/Test");
+        let second = proc(20, 1, "/Apps/Test.app/Contents/MacOS/Test");
+        let helper = proc(30, 1, "/Apps/Test.app/Contents/Helpers/helper");
+        let apps = [
+            RegisteredApp {
+                process: first.clone(),
+                bundle: "/Apps/Test.app".into(),
+            },
+            RegisteredApp {
+                process: second.clone(),
+                bundle: "/Apps/Test.app".into(),
+            },
+        ];
+        let mut tracker = Tracker::default();
+        let groups = update(
+            &mut tracker,
+            &[first.clone(), second.clone(), helper.clone()],
+            &apps,
+            &[],
+        );
+        assert_eq!(groups[0].mains.len(), 2);
+        assert!(groups[0]
+            .rows
+            .iter()
+            .filter(|row| row.process.pid == first.pid || row.process.pid == second.pid)
+            .all(|row| row.origin.is_none()));
+        let helper_row = groups[0]
+            .rows
+            .iter()
+            .find(|row| row.process.pid == helper.pid)
+            .unwrap();
+        assert!(helper_row.origin.is_none());
+        assert!(!helper_row.remaining);
+
+        tracker.origins.insert(
+            Identity::of(&helper),
+            Origin {
+                main: Identity::of(&first),
+                bundle: "/Apps/Test.app".into(),
+                observed_ancestor: false,
+            },
+        );
+        let groups = update(
+            &mut tracker,
+            &[second.clone(), helper.clone()],
+            &[apps[1].clone()],
+            &[Identity::of(&first)],
+        );
+        let helper_row = groups[0]
+            .rows
+            .iter()
+            .find(|row| row.process.pid == helper.pid)
+            .unwrap();
+        assert!(helper_row.origin.is_none());
+        assert!(!helper_row.remaining);
+
+        let groups = update(
+            &mut tracker,
+            std::slice::from_ref(&helper),
+            &[],
+            &[Identity::of(&first), Identity::of(&second)],
+        );
+        let helper_row = &groups[0].rows[0];
+        assert!(helper_row.origin.is_none());
+        assert!(!helper_row.remaining);
+    }
+    #[test]
+    fn observed_helper_is_remaining_after_its_main_exits_while_another_runs() {
+        let first = proc(10, 1, "/Apps/Test.app/Contents/MacOS/Test");
+        let second = proc(20, 1, "/Apps/Test.app/Contents/MacOS/Test");
+        let helper = proc(30, first.pid, "/opt/tool");
+        let apps = [
+            RegisteredApp {
+                process: first.clone(),
+                bundle: "/Apps/Test.app".into(),
+            },
+            RegisteredApp {
+                process: second.clone(),
+                bundle: "/Apps/Test.app".into(),
+            },
+        ];
+        let mut tracker = Tracker::default();
+        let groups = update(
+            &mut tracker,
+            &[first.clone(), second.clone(), helper.clone()],
+            &apps,
+            &[],
+        );
+        let origin = groups[0]
+            .rows
+            .iter()
+            .find(|row| row.process.pid == helper.pid)
+            .unwrap()
+            .origin
+            .as_ref()
+            .unwrap();
+        assert!(origin.observed_ancestor);
+        assert_eq!(origin.main, Identity::of(&first));
+
+        let mut detached = helper;
+        detached.ppid = 1;
+        let groups = update(
+            &mut tracker,
+            &[second.clone(), detached.clone()],
+            &[apps[1].clone()],
+            &[Identity::of(&first)],
+        );
+        assert_eq!(groups[0].mains.len(), 1);
+        let helper_row = groups[0]
+            .rows
+            .iter()
+            .find(|row| row.process.pid == detached.pid)
+            .unwrap();
+        assert!(helper_row.remaining);
+        assert_eq!(
+            helper_row.origin.as_ref().unwrap().main,
+            Identity::of(&first)
+        );
     }
     #[test]
     fn protected_targets_are_not_controllable() {
@@ -454,26 +600,28 @@ mod tests {
         assert!(!controllable(&p, "/System/Library/CoreServices/Finder.app"));
     }
     #[test]
-    fn bundle_association_is_not_ancestry_and_relaunch_does_not_rewrite_origin() {
+    fn observed_ancestry_survives_app_relaunch_without_reassignment() {
         let main = proc(10, 1, "/Apps/Test.app/Contents/MacOS/Test");
-        let helper = proc(11, 1, "/Apps/Test.app/Contents/Helpers/helper");
+        let helper = proc(11, main.pid, "/opt/tool");
         let app = RegisteredApp {
             process: main.clone(),
             bundle: "/Apps/Test.app".into(),
         };
         let mut tracker = Tracker::default();
         let groups = update(&mut tracker, &[main.clone(), helper.clone()], &[app], &[]);
-        assert!(
-            !groups[0]
-                .rows
-                .iter()
-                .find(|r| r.process.pid == 11)
-                .unwrap()
-                .origin
-                .as_ref()
-                .unwrap()
-                .observed_ancestor
-        );
+        let origin = groups[0]
+            .rows
+            .iter()
+            .find(|row| row.process.pid == helper.pid)
+            .unwrap()
+            .origin
+            .as_ref()
+            .unwrap();
+        assert!(origin.observed_ancestor);
+        assert_eq!(origin.main, Identity::of(&main));
+
+        let mut detached = helper;
+        detached.ppid = 1;
         let new_main = proc(15, 1, &main.exe_path);
         let new_app = RegisteredApp {
             process: new_main.clone(),
@@ -481,13 +629,21 @@ mod tests {
         };
         let groups = update(
             &mut tracker,
-            &[new_main, helper],
+            &[new_main, detached],
             &[new_app],
             &[Identity::of(&main)],
         );
         assert_eq!(groups[0].remaining_count(), 1);
         assert_eq!(
-            groups[0].rows[0].origin.as_ref().unwrap().main,
+            groups[0]
+                .rows
+                .iter()
+                .find(|row| row.process.pid == 11)
+                .unwrap()
+                .origin
+                .as_ref()
+                .unwrap()
+                .main,
             Identity::of(&main)
         );
     }
