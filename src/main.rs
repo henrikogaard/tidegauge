@@ -24,6 +24,7 @@ mod packages;
 mod processes;
 mod process_activity;
 mod process_panel;
+mod process_signing;
 mod projects;
 mod sensors;
 mod resource_activity;

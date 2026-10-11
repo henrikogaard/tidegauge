@@ -26,6 +26,10 @@ provenance, Norwegian layouts, and explicitly labeled hardware fixtures.
 
 ## Project status
 
+See the [changelog](CHANGELOG.md) for published releases and unreleased changes,
+including work still in review. Repository features are not necessarily present
+in the latest downloadable release.
+
 Tidegauge is an early development build. This repository contains the app source and recovered development notes. Some controls remain incomplete, while local `.app` packaging and a fail-closed production release helper are available. Production signing and notarization require the credentials described in [Releasing](docs/RELEASING.md). Collector regression tests cover the fixes described in [CONTRIBUTING](CONTRIBUTING.md). See the limitations below before relying on a metric or action.
 
 ## Build and run
@@ -96,6 +100,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 ## Current limitations
 
 - Project Stop rechecks ownership, start time, project eligibility, and a confirmed listening port. It requests termination with SIGTERM and reports whether the original process exited; it never escalates to force-kill. As with any PID-based API, validation and signaling are not an atomic operation.
+- Process signing metadata is fetched only on request and is not signature validation or a safety verdict. It never changes Quit/Stop eligibility. See [process semantics](docs/PROCESSES.md).
 - Sound controls apply to the default **media output**, not individual apps or the microphone. Unsupported device controls are unavailable. Per-app volume, mute, and signal meters remain deferred; no audio is captured. See [audio capabilities](docs/AUDIO.md).
 - Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
 - Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.

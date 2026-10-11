@@ -43,6 +43,13 @@ Keep screenshots and raw diagnostics outside commits unless they are deliberatel
 
 ## Review evidence
 
+Update [CHANGELOG.md](CHANGELOG.md)'s **Unreleased** section for user-visible
+changes. Link the implementation PR and distinguish merged work from work still
+in review. Do not describe an unmerged feature as shipped or check off physical
+acceptance based on fixtures. At publication, move only the included entries to
+the actual version/date and retain limitations that still apply. Release notes
+must match the verified artifact, not merely the current branch.
+
 For battery layout checks on a Mac without a battery, run a debug build with
 `TIDEGAUGE_BATTERY_PREVIEW=charging cargo run` (or `discharging`). The Battery
 tab displays an explicit sample-data banner. This UI-only fixture does not

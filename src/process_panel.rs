@@ -5,6 +5,7 @@ use crate::engine::fmt_bytes;
 use crate::locale::text as l;
 use crate::process_activity::{self as activity, ProcessRow};
 use crate::processes::ProcInfo;
+use crate::process_signing::{Failure, Key};
 use crate::theme as t;
 use crate::ui::{card, sub, TideGaugeView};
 use gpui_kit::prelude::*;
@@ -249,6 +250,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                         .border_color(t::line(dark))
                         .pt_3()
                         .child(details)
+                        .child(signing_details(view, p, dark, this.clone()))
                         .child(sub(association).text_color(t::ink_dim(dark))),
                 );
             }
@@ -257,6 +259,83 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         panel = panel.child(content);
     }
     panel
+}
+
+fn signing_details(
+    view: &TideGaugeView,
+    process: &ProcInfo,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> Div {
+    let key = Key::of(process);
+    let mut details = div().flex().flex_col().gap_1();
+    if view.process_signing.pending.as_ref() == Some(&key) {
+        return details.child(sub(l(
+            "Reading signing metadata…",
+            "Leser signeringsinformasjon…",
+        )));
+    }
+    if let Some(result) = view.process_signing.result(&key) {
+        details = details.child(sub(match result {
+            Ok(metadata) => format!(
+                "{}: {} · {}: {}",
+                l("Signing identifier", "Signeringsidentifikator"),
+                metadata
+                    .identifier
+                    .as_deref()
+                    .unwrap_or(l("Not reported", "Ikke rapportert")),
+                l("Team ID", "Team-ID"),
+                metadata
+                    .team
+                    .as_deref()
+                    .unwrap_or(l("Not reported", "Ikke rapportert"))
+            ),
+            Err(Failure::Changed) => l(
+                "The process exited or changed identity. Signing metadata was discarded.",
+                "Prosessen ble avsluttet eller endret identitet. Signeringsinformasjonen ble forkastet.",
+            )
+            .into(),
+            Err(Failure::Unavailable) => l(
+                "Signing metadata is unavailable. This does not establish that the process is unsigned or unsafe.",
+                "Signeringsinformasjon er utilgjengelig. Dette betyr ikke at prosessen er usignert eller utrygg.",
+            )
+            .into(),
+        }))
+        .child(sub(l(
+            "Lookup snapshot only; some metadata comes from disk. Signature validity and developer identity are not verified. Signed does not mean safe; unsigned does not mean harmful.",
+            "Kun et øyeblikksbilde; noe informasjon kommer fra disk. Signaturens gyldighet og utviklerens identitet er ikke bekreftet. Signert betyr ikke trygg; usignert betyr ikke skadelig.",
+        )));
+    }
+    if view.process_signing.pending.is_none() && !process.exe_path.is_empty() {
+        details = details.child(div().child(button(
+            format!("process-signing-{}", process.pid),
+            l("Read signing metadata", "Les signeringsinformasjon"),
+            false,
+            dark,
+            move |_, cx| {
+                if this.read(cx).process_signing.pending.is_some() {
+                    return;
+                }
+                let key = key.clone();
+                this.update(cx, |v, cx| {
+                    v.process_signing.pending = Some(key.clone());
+                    cx.notify();
+                });
+                let target = this.clone();
+                cx.spawn(async move |cx| {
+                    let lookup = key.clone();
+                    let result =
+                        smol::unblock(move || crate::process_signing::inspect(&lookup)).await;
+                    target.update(cx, |v, cx| {
+                        v.process_signing.finish(key, result);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            },
+        )));
+    }
+    details
 }
 
 #[derive(Clone)]
