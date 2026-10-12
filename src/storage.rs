@@ -348,6 +348,58 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    fn regular_files(root: &Path) -> Vec<(PathBuf, bool, u64, u64)> {
+        use std::os::macos::fs::MetadataExt;
+        let mut found = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                let meta = std::fs::symlink_metadata(&path).unwrap();
+                if meta.is_dir() {
+                    pending.push(path);
+                } else if meta.is_file() {
+                    let dataless = meta.st_flags() & 0x40000000 != 0;
+                    found.push((path, dataless, meta.st_blocks(), meta.st_size()));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "Scans the provider-backed folder in TIDEGAUGE_PROVIDER_FIXTURE; needs genuinely offloaded files"]
+    fn native_provider_placeholders_stay_offloaded() {
+        let root = PathBuf::from(
+            std::env::var_os("TIDEGAUGE_PROVIDER_FIXTURE")
+                .expect("set TIDEGAUGE_PROVIDER_FIXTURE to an owned provider-backed folder"),
+        );
+        let before = regular_files(&root);
+        let offloaded: Vec<_> = before.iter().filter(|f| f.1).collect();
+        let local: Vec<_> = before.iter().filter(|f| !f.1).collect();
+        assert!(!offloaded.is_empty(), "fixture has no offloaded files");
+        assert!(offloaded.iter().all(|f| f.2 == 0));
+
+        let p = Mutex::new(Progress::default());
+        let d = walk(&root, &AtomicBool::new(false), &p);
+        println!("before={before:#?}\nscan={d:#?}");
+
+        assert!(d.finished);
+        assert!(d.error.is_none());
+        assert_eq!(d.errors, 0);
+        assert_eq!(regular_files(&root), before);
+        assert_eq!(d.files, local.len() as u64);
+        assert_eq!(d.skipped, offloaded.len() as u64);
+        assert_eq!(d.logical, local.iter().map(|f| f.3).sum::<u64>());
+        assert!(d
+            .largest
+            .iter()
+            .all(|item| offloaded.iter().all(|f| f.0 != item.path)));
+    }
+
     #[test]
     fn observed_totals_withhold_sizes_when_coverage_is_unknown() {
         let finished_empty = Progress {

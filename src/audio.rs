@@ -411,6 +411,92 @@ mod tests {
         let state = output_state();
         assert!(!state.name.is_empty());
     }
+
+    struct RestoreOutput {
+        id: u32,
+        volume: f32,
+        muted: bool,
+    }
+    impl Drop for RestoreOutput {
+        fn drop(&mut self) {
+            let _ = set_output_volume(self.id, self.volume);
+            let _ = set_output_mute(self.id, self.muted);
+        }
+    }
+
+    fn speak(text: &str) {
+        // The lines are English; the system voice may not be.
+        let say = |voice: &[&str]| {
+            std::process::Command::new("/usr/bin/say")
+                .args(voice)
+                .arg(text)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(say(&["-v", "Samantha"]) || say(&[]));
+    }
+
+    fn observed(label: &str) -> OutputState {
+        let state = output_state();
+        println!(
+            "{label}: id={} name={:?} volume={:?} muted={:?} can_volume={} can_mute={}",
+            state.id, state.name, state.volume, state.muted, state.can_volume, state.can_mute
+        );
+        state
+    }
+
+    #[test]
+    #[ignore = "changes this Mac's output volume and mute, speaks aloud, then restores; needs a listener"]
+    fn native_output_controls_are_audible_and_restored() {
+        let before = observed("before");
+        assert!(before.id != 0 && before.can_volume && before.can_mute);
+        let volume = before.volume.unwrap();
+        let muted = before.muted.unwrap();
+        let _restore = RestoreOutput {
+            id: before.id,
+            volume,
+            muted,
+        };
+
+        assert!(set_output_volume(before.id + 1, 0.).is_err());
+        assert!(toggle_output_mute(before.id + 1).is_err());
+        let untouched = observed("after stale-target requests");
+        assert_eq!(untouched.volume, before.volume);
+        assert_eq!(untouched.muted, before.muted);
+
+        let reference = volume.clamp(0.3, 0.5);
+        set_output_mute(before.id, false).unwrap();
+        set_output_volume(before.id, reference).unwrap();
+        observed("reference");
+        speak("One. This is the reference volume.");
+
+        set_output_volume(before.id, reference * 0.3).unwrap();
+        let quiet = observed("quieter").volume.unwrap();
+        assert!((quiet - reference * 0.3).abs() < 0.03);
+        speak("Two. This should be much quieter.");
+
+        adjust_output_volume(before.id, reference + 0.2 - quiet).unwrap();
+        let loud = observed("louder").volume.unwrap();
+        assert!((loud - (reference + 0.2)).abs() < 0.03);
+        speak("Three. This should be louder than one.");
+
+        toggle_output_mute(before.id).unwrap();
+        assert_eq!(observed("muted").muted, Some(true));
+        speak("Four. You should not hear this sentence at all.");
+
+        toggle_output_mute(before.id).unwrap();
+        assert_eq!(observed("unmuted").muted, Some(false));
+        speak("Five. The sound is back.");
+
+        set_output_volume(before.id, volume).unwrap();
+        set_output_mute(before.id, muted).unwrap();
+        let after = observed("restored");
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.muted, before.muted);
+        assert!((after.volume.unwrap() - volume).abs() < 0.005);
+        speak("Six. The starting volume is restored.");
+    }
 }
 
 pub fn output_device_names() -> Vec<String> {
