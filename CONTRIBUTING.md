@@ -49,6 +49,17 @@ The check fails if the folder has no offloaded file or if any file's dataless
 flag, block count or size changes during the scan. A synthetic flag or a virtual
 Mac without a provider domain does not satisfy it.
 
+Output volume and mute need a person listening at a physical Mac. This check
+changes the default output's volume and mute, speaks six numbered lines, and
+restores the starting state even if it fails:
+
+```sh
+cargo test --locked native_output_controls_are_audible_and_restored -- --ignored --nocapture
+```
+
+Line four must be silent. Record what was heard; the assertions only prove the
+reported state, not the sound.
+
 Reported interrupt wakeups are a reported kernel counter, not energy use. The rusage layout was validated with a native C probe on Mac17,7 only; package-idle wakeups remain unvalidated and unavailable.
 
 ## Manual app verification
