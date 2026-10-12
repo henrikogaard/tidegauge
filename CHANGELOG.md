@@ -59,6 +59,18 @@ hardware acceptance checks. A merge and a published release are separate events.
   status sentences, session-uptime durations with singular/plural forms, and
   history range chips
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Detail pages now share one template: a hero card with an uppercase caption,
+  a 42 px headline value, a 130 px filled chart, and stat triplets, followed
+  by sectioned attribution and supplementary content. Disk gains the hero its
+  layout lacked, per-app GPU attribution is stated as unavailable instead of
+  implied, and Bluetooth and Sound use the same sectioned list anatomy.
+  The Neural Engine tab is folded into the GPU page as a section; saved tab
+  settings simply skip it. Captions render at 10 px uppercase with correct
+  light-mode contrast, and unavailable measurements use a compact empty-state
+  card instead of paragraphs. The footer gives Settings, Processes, and Tools
+  one bordered control style: Settings left, live counts centred, the two
+  panels grouped right
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Chart rendering is unified on two idioms: the Oversikt cards now draw the
   same filled sparkline as the detail tabs instead of a dense bar strip, and
   the shared area chart keeps headroom with a stroked line so a maxed-out or

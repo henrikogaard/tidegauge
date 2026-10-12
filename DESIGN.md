@@ -40,21 +40,39 @@ The soft metric tone uses 16% alpha. Chart fills use lower opacity. Selected nav
 ## Layout
 
 - **Window**: 1192×780 with a 1050×650 minimum, resizable native window with a transparent titlebar and system window controls. Closing hides the dashboard; a menu-bar readout reopens it.
-- **Navigation**: horizontal top tab bar with all 11 tabs, metric icon + label, selected tab = quiet metric-tinted surface. Tab/Shift-Tab moves keyboard focus; Enter/Space opens a tab or metric card.
-- **Footer**: Settings icon and label, plus live app and process counts, on the same uninterrupted canvas. No divider or decorative app-logo tile.
+- **Navigation**: horizontal top tab bar with all 11 tabs including Overview, metric icon + label, selected tab = quiet metric-tinted surface. Tab/Shift-Tab moves keyboard focus; Enter/Space opens a tab or metric card.
+- **Footer**: Settings icon and label, live app and process counts, and the Prosesser and Verktøy entry buttons, on the same uninterrupted canvas. No divider or decorative app-logo tile.
 - **Cards**: 12 px radius, `card` fill, 1 px `line` border.
-- **Overview**: six 222 px metric cards in three columns, 12 px radius, 16 px gaps; 34 px headline with a separate unit, three supporting readings, and a 38 px tinted bar-chart tray. Clicking a card opens its detail tab.
+- **Overview**: six 208 px metric cards in three columns (154 px in the user-toggleable `compact_dashboard` mode), 12 px radius, 16 px gaps; 34 px headline with a separate unit, three supporting readings, and a 38 px tinted strip holding a filled sparkline. Clicking a card opens its detail tab.
 - **Hero card**: caption, 42 px number, sub-caption, filled area chart (130 px), footer stat triplets.
 - **App rows**: rank, icon (rounded tile or cached app icon), name + `N processes`, usage bar, right-aligned value.
-- **Donuts**: convex ring segments (inner radius 0.70), 92 px chart with a center value and subtitle, legend beside the chart with actual amounts and app icons. App breakdowns show the top four entries and Other.
-- **Fonts**: `.AppleSystemUIFont`; captions uppercase 9 px, body 12–14 px, hero number 42 px bold.
+- **Donuts**: convex ring segments (inner radius 0.70), 92 px chart with a center value and subtitle, legend beside the chart with actual amounts and app icons. App breakdowns show the top four entries and Other. Donut cards pad 16 px with 12 px gaps.
+- **Fonts**: `.AppleSystemUIFont`; captions uppercase 10 px semibold, body 12–14 px, hero number 42 px bold. Explanatory sentences and honesty disclaimers stay at 12 px.
 - **Spacing**: 4/8/12/16 grid; overview padding 18–20 px; lists always expanded.
 
-Overview bar charts display at most 48 real samples and leave unfilled history slots blank. CPU/GPU averages and peaks cover the current session; network totals are interface counters since boot. Unavailable hardware readings show a dash. Per-app power remains labeled as estimated.
+Overview sparklines share the detail-tab area chart and show the same recent samples. CPU/GPU averages and peaks cover the current session; network totals are interface counters since boot. Unavailable hardware readings show a dash. Per-app power remains labeled as estimated.
+
+## Detail-page template
+
+Every metric tab composes the same ordered parts with 16 px between sections:
+
+1. **Hero card** — uppercase 10 px caption in the metric accent; 42 px bold value with the unit as separate smaller text; one sub-caption line for hardware/context; filled area chart (130 px) with its scale label top-right and older/now labels at the ends; a footer row of 3–4 stat triplets.
+2. **Attribution section** — a standard section header (uppercase 10 px `ink-dim` label left, optional qualifier right) followed by app rows in the anatomy above. Present only where genuine per-app data exists.
+3. **Supplementary sections** — same section-header pattern, each in a 12 px-radius card: CPU → temperatures and fans; Disk → devices and volumes; Battery → battery health and electrical details; GPU → Neural Engine; Sound → output control; Bluetooth → devices.
+
+## Empty states
+
+An empty or unavailable surface is a card of the standard radius containing: the metric icon at 20 px on a 16% metric-tint tile; one headline line at 13 px `ink`; at most two lines of explanation at 12 px `ink-dim`. It states plainly what is unavailable and why, and never implies a measurement exists. No wall of prose; no paragraph longer than two lines.
+
+## Controls
+
+Mutually exclusive choices use one segmented control (appearance, history ranges, package sources, baseline windows). Increment/decrement pairs form a single bordered group with the value between them. Actions are bordered buttons with 8 px radius. Every control is at least 24 px tall, keyboard focusable, and shows a metric-coloured focus border.
+
+The footer uses one control style for all three actions (Settings, Processes, Tools): a 14 px icon and 12 px label on a 28 px-tall button with 8 px radius, a 1 px `line` border, transparent fill at rest, `card_hi` on hover, and the metric accent on keyboard focus. Settings sits left-aligned; the live app/process counts stay centred as quiet `ink_dim` metadata (not a control); Processes and Tools form a tight right-aligned group with an 8 px gap, flush to the content inset. Keyboard focus order follows visual order after the tabs.
 
 ## Menu bar
 
-- Exactly one native `NSStatusItem` stays registered. Its default content is a 16 px Tidegauge wave icon. Clicking anywhere opens Open Dashboard, Settings, and Quit.
+- Exactly one native `NSStatusItem` stays registered. Its default content is a 16 px Tidegauge wave icon. Clicking anywhere opens Open Dashboard, Check for Updates, Settings, and Quit. The update item is disabled in preview builds and live in production.
 - Readings are opt-in through Settings, with `icon`, `value`, `graph`, and `both` styles. Existing preferences are preserved; Reset to icon only clears optional readings.
 - Enabled metrics share one transparent template image. Labels use 9 px system medium, values use 11 px system medium with monospaced digits, and slots have fixed widths. Spacing between readings is 10 px. Native template tint follows the menu bar and selected state.
 - Value and graph readings include CPU, MEM, GPU, DSK, NET, BAT, or PWR labels. Sparklines are 24×10 px with a 1 px stroke and at most 60 real samples. Missing samples show a dash.

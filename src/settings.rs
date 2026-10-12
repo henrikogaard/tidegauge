@@ -109,13 +109,12 @@ impl Settings {
     }
 }
 
-pub const DASHBOARD_TABS: [&str; 11] = [
+pub const DASHBOARD_TABS: [&str; 10] = [
     "cpu",
     "memory",
     "disk",
     "network",
     "gpu",
-    "neural",
     "battery",
     "sound",
     "bluetooth",
@@ -197,7 +196,7 @@ mod tests {
         )
         .unwrap();
         assert!(!settings.alert_cpu_enabled);
-        assert_eq!(settings.dashboard_tabs.len(), 11);
+        assert_eq!(settings.dashboard_tabs.len(), 10);
         settings.dashboard_tabs = vec![
             "history".into(),
             "cpu".into(),
