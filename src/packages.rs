@@ -659,22 +659,40 @@ fn discover_apps(
 
 fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
     let info = path.join("Contents/Info.plist");
+    let started = Instant::now();
     let bytes = read_bounded_file(&info).map_err(|_| {
         localized(
             "An application Info.plist could not be read safely.",
             "Info.plist for et program kunne ikke leses trygt.",
         )
     })?;
-    let (name, version) = match plutil_json(&bytes, timeout) {
-        Ok(json) => app_metadata(&json)?,
-        Err(()) => app_metadata_extracted(&bytes, timeout).map_err(|_| {
+    let remaining = timeout.saturating_sub(started.elapsed());
+    let (name, version) = app_metadata_with_budget(
+        &bytes,
+        remaining,
+        plutil_json,
+        app_metadata_extracted,
+    )?;
+    Ok(app_package(path, info, name, version))
+}
+
+fn app_metadata_with_budget(
+    bytes: &[u8],
+    timeout: Duration,
+    convert: impl FnOnce(&[u8], Duration) -> Result<Value, ()>,
+    extract: impl FnOnce(&[u8], Duration) -> Result<(String, String), ()>,
+) -> Result<(String, String), &'static str> {
+    let started = Instant::now();
+    let remaining = || timeout.saturating_sub(started.elapsed());
+    match convert(bytes, remaining()) {
+        Ok(json) => app_metadata(&json),
+        Err(()) => extract(bytes, remaining()).map_err(|_| {
             localized(
                 "An application Info.plist could not be parsed.",
                 "Info.plist for et program kunne ikke tolkes.",
             )
-        })?,
-    };
-    Ok(app_package(path, info, name, version))
+        }),
+    }
 }
 
 fn app_metadata(json: &Value) -> Result<(String, String), &'static str> {
@@ -3611,6 +3629,54 @@ mod tests {
             plutil_extract_string(PLIST_WITH_DATA, "CFBundleDisplayName", Duration::ZERO).is_err()
         );
         assert!(plutil_extract_string(b"not a plist", "CFBundleDisplayName", timeout).is_err());
+    }
+
+    #[test]
+    fn app_metadata_fallback_receives_zero_budget_after_exhaustion() {
+        let result = app_metadata_with_budget(
+            b"plist",
+            Duration::from_millis(1),
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(20));
+                Err(())
+            },
+            |_, budget| {
+                assert_eq!(budget, Duration::ZERO);
+                Err(())
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn app_metadata_fallback_receives_only_the_remaining_budget() {
+        let result = app_metadata_with_budget(
+            b"plist",
+            Duration::from_secs(2),
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(10));
+                Err(())
+            },
+            |_, budget| {
+                assert!(budget < Duration::from_secs(2));
+                Ok(("Fixture App".to_string(), "1.2.3".to_string()))
+            },
+        );
+        assert_eq!(
+            result.unwrap(),
+            ("Fixture App".to_string(), "1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn app_metadata_json_success_never_calls_fallback() {
+        let result = app_metadata_with_budget(
+            b"plist",
+            Duration::from_secs(1),
+            |_, _| Ok(serde_json::json!({"CFBundleName": "App", "CFBundleVersion": "1"})),
+            |_, _| panic!("fallback must not run"),
+        );
+        assert_eq!(result.unwrap(), ("App".to_string(), "1".to_string()));
     }
 
     #[test]

@@ -104,6 +104,11 @@ hardware acceptance checks. A merge and a published release are separate events.
   print-disabled` output shape instead of accepting any output containing
   quoted lines, so diagnostic noise can no longer be misread as an empty
   override set ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- The temperature card caption now counts every channel as unavailable when the
+  sensor sample is stale instead of reporting only the channels that were
+  already empty, and per-app metadata parsing shares one time budget between
+  the whole-file conversion and the per-key fallback
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - A failed Homebrew inventory scan now explains that the scan is bounded and
   that Refresh installed retries it without changing installed packages
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).

@@ -1846,7 +1846,10 @@ struct TemperatureDisplay {
 
 /// Order a local copy of the channels by value descending with unavailable
 /// channels last, then bound the rendered list. The snapshot is not mutated.
-fn bound_temperature_display(values: &[crate::sensors::Reading]) -> TemperatureDisplay {
+fn bound_temperature_display(
+    values: &[crate::sensors::Reading],
+    fresh: bool,
+) -> TemperatureDisplay {
     let mut rows = values.to_vec();
     rows.sort_by(|a, b| match (a.value, b.value) {
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -1858,7 +1861,11 @@ fn bound_temperature_display(values: &[crate::sensors::Reading]) -> TemperatureD
     TemperatureDisplay {
         rows,
         total: values.len(),
-        unavailable: values.iter().filter(|r| r.value.is_none()).count(),
+        unavailable: if fresh {
+            values.iter().filter(|r| r.value.is_none()).count()
+        } else {
+            values.len()
+        },
     }
 }
 
@@ -1904,7 +1911,7 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     } else {
         sample.source.label()
     };
-    let temperature_display = bound_temperature_display(&sample.temperatures);
+    let temperature_display = bound_temperature_display(&sample.temperatures, fresh);
     let temperature_caption = temperature_display_caption(&temperature_display, l);
     let readings = |title: &'static str,
                     values: &[crate::sensors::Reading],
@@ -3235,7 +3242,7 @@ mod tests {
     #[test]
     fn temperature_display_is_bounded_ordered_and_reports_counts() {
         let values = channel_pool(342, 22);
-        let display = bound_temperature_display(&values);
+        let display = bound_temperature_display(&values, true);
         assert_eq!(display.total, 342);
         assert_eq!(display.unavailable, 22);
         assert_eq!(display.rows.len(), MAX_DISPLAYED_TEMPERATURE_CHANNELS);
@@ -3258,7 +3265,7 @@ mod tests {
             reading("Td00", Some(50.0)),
             reading("Te00", None),
         ];
-        let display = bound_temperature_display(&values);
+        let display = bound_temperature_display(&values, true);
         let keys: Vec<&str> = display.rows.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, ["Tc00", "Td00", "Ta00", "Tb00", "Te00"]);
     }
@@ -3266,7 +3273,7 @@ mod tests {
     #[test]
     fn temperature_display_caption_is_exact_in_both_languages() {
         let values = channel_pool(342, 22);
-        let display = bound_temperature_display(&values);
+        let display = bound_temperature_display(&values, true);
         assert_eq!(
             temperature_display_caption(&display, english).as_deref(),
             Some("Showing 24 of 342 channels · 22 unavailable")
@@ -3280,7 +3287,7 @@ mod tests {
     #[test]
     fn temperature_display_caption_omits_zero_unavailable() {
         let values = channel_pool(30, 0);
-        let display = bound_temperature_display(&values);
+        let display = bound_temperature_display(&values, true);
         assert_eq!(
             temperature_display_caption(&display, english).as_deref(),
             Some("Showing 24 of 30 channels")
@@ -3290,8 +3297,43 @@ mod tests {
     #[test]
     fn temperature_display_caption_is_absent_when_unbounded_and_complete() {
         let values = vec![reading("TC0P", Some(54.5)), reading("TG0P", Some(48.0))];
-        let display = bound_temperature_display(&values);
+        let display = bound_temperature_display(&values, true);
         assert_eq!(display.rows.len(), 2);
+        assert!(temperature_display_caption(&display, english).is_none());
+    }
+
+    #[test]
+    fn stale_temperature_display_counts_every_channel_unavailable() {
+        let values = channel_pool(342, 22);
+        let display = bound_temperature_display(&values, false);
+        assert_eq!(display.rows.len(), MAX_DISPLAYED_TEMPERATURE_CHANNELS);
+        assert_eq!(display.total, 342);
+        assert_eq!(display.unavailable, 342);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 24 of 342 channels · 342 unavailable")
+        );
+        assert_eq!(
+            temperature_display_caption(&display, norwegian).as_deref(),
+            Some("Viser 24 av 342 kanaler · 342 utilgjengelige")
+        );
+        assert_eq!(values.len(), 342);
+        assert_eq!(values.iter().filter(|r| r.value.is_none()).count(), 22);
+
+        let two = vec![reading("TC0P", Some(54.5)), reading("TG0P", Some(48.0))];
+        let display = bound_temperature_display(&two, false);
+        assert_eq!(display.rows.len(), 2);
+        assert_eq!(display.total, 2);
+        assert_eq!(display.unavailable, 2);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 2 of 2 channels · 2 unavailable")
+        );
+        let display = bound_temperature_display(&two, true);
+        assert!(temperature_display_caption(&display, english).is_none());
+
+        let empty: Vec<Reading> = Vec::new();
+        let display = bound_temperature_display(&empty, false);
         assert!(temperature_display_caption(&display, english).is_none());
     }
 
