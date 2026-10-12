@@ -38,7 +38,7 @@ hardware acceptance checks. A merge and a published release are separate events.
   coverage seconds. These are reported kernel counts, not energy use;
   package-idle wakeups remain unvalidated and unavailable, and denied or new
   counters show a dash
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 
 ### Fixed
 
@@ -46,25 +46,25 @@ hardware acceptance checks. A merge and a published release are separate events.
   `plutil` JSON conversion fails. Valid Info.plist files containing `<data>` or
   `<date>` values no longer produce a parse warning or drop the application
   from the Apps & Packages inventory
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Battery capacity now reads the nested `BatteryData` dictionary used by newer
   Apple silicon firmware, restoring design/full capacities and health where
   the top level exposes only normalized percentages. A present battery with no
   reported health condition reads "No condition reported" instead of
   "Unavailable"
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Temperature channel discovery is bounded to 512 channels instead of 128.
   Because the controller enumerates keys in ASCII order, the old bound
   silently dropped whole `T…` families on hardware with larger inventories.
   The temperature card now renders at most 24 channels, hottest first with
   unavailable channels last, plus an exact shown/total/unavailable caption
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Remaining user-visible English strings are now localized to Norwegian
   Bokmål: overview card stat labels, memory/power breakdown cards, GPU and
   Neural Engine availability text, Bluetooth device kinds and counts, dev-server
   status sentences, session-uptime durations with singular/plural forms, and
   history range chips
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Detail pages now share one template: a hero card with an uppercase caption,
   a 42 px headline value, a 130 px filled chart, and stat triplets, followed
   by sectioned attribution and supplementary content. Disk gains the hero its
@@ -76,42 +76,42 @@ hardware acceptance checks. A merge and a published release are separate events.
   card instead of paragraphs. The footer gives Settings, Processes, and Tools
   one bordered control style: Settings left, live counts centred, the two
   panels grouped right
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Homebrew formula actions now verify the keg's `INSTALL_RECEIPT.json` through
   the same trusted, bounded read used for cask metadata. A missing, malformed,
   symlinked, or untrusted receipt keeps the formula in the inventory but
   disables its actions with an explicit reason; touching the receipt after the
   cached snapshot fails preflight before any manager command runs
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Package post-action matching no longer treats a legitimate change to the
   manager prefix directory's size or mtime as proof of failure. Outcome
   confirmation now matches the same installation — identical source category,
   manager and runtime fingerprints, and prefix canonical path, device, inode,
   ownership, and mode — while pre-action checks still require the exact cached
   identity
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Package update confirmation now compares the manager's typed installed
   version instead of the display label, so an ambiguous or unknown version
   (for example multiple retained kegs) can never be reported as a successful
   update even when the manager command exits cleanly
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Homebrew update checks now read the current `current_version` schema, so
   available updates are no longer reported as uninterpretable JSON. Packages
   with an ambiguous installed version also show their managed root path instead
   of a path containing the "Multiple versions" label, and remain read-only
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Startup override detection now validates the complete `launchctl
   print-disabled` output shape instead of accepting any output containing
   quoted lines, so diagnostic noise can no longer be misread as an empty
-  override set ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  override set ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - The temperature card caption now counts every channel as unavailable when the
   sensor sample is stale instead of reporting only the channels that were
   already empty, and per-app metadata parsing shares one time budget between
   the whole-file conversion and the per-key fallback
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - A failed Homebrew inventory scan now explains that the scan is bounded and
   that Refresh installed retries it without changing installed packages
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Chart rendering is unified on two idioms: the Oversikt cards now draw the
   same filled sparkline as the detail tabs instead of a dense bar strip, and
   the shared area chart keeps headroom with a stroked line so a maxed-out or
@@ -119,7 +119,7 @@ hardware acceptance checks. A merge and a published release are separate events.
   Historikk chart marks empty buckets with a faint baseline tick instead of
   leaving an unexplained gap, and a largely empty selected range says so in a
   localized line
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Controls now share one anatomy across the app: bordered 28 px buttons with
   transparent rest state, segmented radio groups for mutually exclusive
   choices (appearance, launcher visibility, menu readout styles, History
@@ -133,26 +133,26 @@ hardware acceptance checks. A merge and a published release are separate events.
   Projects gains a count summary and a sectioned list with a shared empty
   state; History uses section headers, shared empty states, and a labeled
   Recording details card that keeps every truthfulness note
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Development-server state is now a typed value (working / idle / barely
   used) instead of a parsed localized string, and project and summary counts
   count distinct server processes rather than listening ports. Menu-bar
   label slots are font-measured once per label instead of assuming a fixed
   width, so localized labels such as MINNE and EFF size correctly
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Keyboard activation now prevents the framework-generated second click, so
   Enter/Space invokes actions once and modified activation keys are ignored
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - The Tools Startup page bounds the rendered list to 20 registrations per
   page with Previous/Next navigation so every entry stays reachable; the
   collected inventory itself is never truncated
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Storage scans stop promptly when cancelled mid-walk, verified after real
   metadata traversal rather than only from a pre-set flag. When a scan's
   coverage is unknown — the folder could not be opened or stat'ed, or the scan
   ended with nothing readable — the status row now states that no size totals
   are available instead of presenting them as 0 B
-  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires
   observed ancestry before offering remaining-helper Stop.
@@ -165,18 +165,22 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 - Direct third-party startup disable/remove/restore remains unavailable.
 - Per-app audio routing and manual fan control are not implemented.
-- Baselines are system-level; per-app identity/history migration and validated
-  wakeup/energy attribution are not implemented.
-- Physical sensor, battery and disk telemetry were validated on Apple silicon
-  hardware against independent native diagnostics. Audio control and actual
-  sign-in launch checks remain open.
+- Baselines are system-level; per-app baseline identity and history migration
+  are not implemented. Reported interrupt wakeup rates are implemented, but
+  package-idle wakeups and energy attribution are not.
+- Physical sensor, battery and disk observations were checked on one Mac;
+  independent absolute fan RPM readings and idle/load/sleep-wake coverage are
+  still pending. Audio control and actual sign-in launch checks remain open.
 - Native invalid-signature rejection was verified on hardware using ad-hoc
   signed QA bundles: a valid update installed first, then a size-preservingly
   tampered archive was rejected at signature verification with no update
   applied. The unreachable-feed error/recovery test passed after 0.2.0. No
   production feed, key, or signed artifact was changed for either test.
-- Package actions have not been exercised against real installed packages.
-  Test mutations only in disposable environments.
+- Package actions were exercised only against disposable guest Homebrew
+  formula fixtures: a genuine 2.12.2 to 2.12.3 upgrade plus stale-identity,
+  cancel and removal checks. Retained old kegs correctly left the upgrade
+  result unverified instead of claimed. Native cask and npm mutations remain
+  unexercised, and host packages were never changed.
 
 See the [roadmap](https://github.com/henrikogaard/tidegauge/issues/12),
 [process semantics](docs/PROCESSES.md), and
