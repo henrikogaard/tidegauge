@@ -426,4 +426,11 @@ mod tests {
         assert_eq!(std::mem::size_of::<proc_vnodepathinfo_full>(), 2352);
         assert_eq!(std::mem::align_of::<proc_vnodepathinfo_full>(), 8);
     }
+
+    #[test]
+    fn rusage_wakeup_layout_matches_macos_sdk() {
+        assert_eq!(std::mem::size_of::<rusage_info_v4>(), 296);
+        assert_eq!(std::mem::offset_of!(rusage_info_v4, ri_pkg_idle_wkups), 32);
+        assert_eq!(std::mem::offset_of!(rusage_info_v4, ri_interrupt_wkups), 40);
+    }
 }

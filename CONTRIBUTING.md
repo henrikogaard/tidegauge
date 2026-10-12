@@ -28,6 +28,16 @@ For a documentation-only change, verify examples against the source, check local
 
 For a collector or FFI change, compare native structure sizes, field offsets, constants, and return-value conventions against the installed macOS SDK. Exercise the affected collector with a bounded, read-only probe. Prefer a focused regression test when the logic can run without native hardware.
 
+For interrupt-wakeup reporting or storage-scan changes, run the focused checks:
+
+```sh
+cargo test --locked resource_activity::
+cargo test --locked rusage_wakeup_layout
+cargo test --locked storage::
+```
+
+Reported interrupt wakeups are a reported kernel counter, not energy use. The rusage layout was validated with a native C probe on Mac17,7 only; package-idle wakeups remain unvalidated and unavailable.
+
 ## Manual app verification
 
 Run the build from the same commit being reviewed and record the macOS version and hardware. Check only the behavior affected by the change:

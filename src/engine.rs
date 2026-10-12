@@ -422,6 +422,7 @@ impl Engine {
                 disk_read: r.ri_diskio_bytesread,
                 disk_write: r.ri_diskio_byteswritten,
                 energy_nj: r.ri_billed_energy,
+                interrupt_wakeups: Some(r.ri_interrupt_wkups),
                 cpu_pct: cpu_pct.clamp(0.0, 3200.0),
                 read_rate: rr.max(0.0),
                 write_rate: wr.max(0.0),

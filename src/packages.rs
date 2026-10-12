@@ -114,6 +114,20 @@ struct SourceKey {
     runtime: Option<FsFingerprint>,
 }
 
+impl SourceKey {
+    fn same_installation(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.manager == other.manager
+            && self.runtime == other.runtime
+            && self.prefix.canonical_path == other.prefix.canonical_path
+            && self.prefix.device == other.prefix.device
+            && self.prefix.inode == other.prefix.inode
+            && self.prefix.owner == other.prefix.owner
+            && self.prefix.group == other.prefix.group
+            && self.prefix.mode == other.prefix.mode
+    }
+}
+
 impl Identity {
     fn source_key(&self) -> Option<SourceKey> {
         if self.source == Source::Npm && self.runtime_fingerprint.is_none() {
@@ -436,7 +450,10 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
         action,
         &fresh.version,
         action_result.is_ok(),
-        after.complete_sources.contains(&key),
+        after
+            .complete_sources
+            .iter()
+            .any(|candidate| candidate.same_installation(&key)),
         unique_after,
     )
 }
@@ -446,10 +463,13 @@ fn unique_source_package<'a>(
     key: &SourceKey,
     name: &str,
 ) -> Result<Option<&'a Package>, String> {
-    let mut matching = inventory
-        .items
-        .iter()
-        .filter(|item| item.identity.source_key().as_ref() == Some(key) && item.name == name);
+    let mut matching = inventory.items.iter().filter(|item| {
+        item.identity
+            .source_key()
+            .as_ref()
+            .is_some_and(|candidate| candidate.same_installation(key))
+            && item.name == name
+    });
     let first = matching.next();
     if matching.next().is_some() {
         return Err(outcome_unverified());
@@ -807,8 +827,8 @@ fn discover_brew_at(
     ) else {
         inventory.warnings.push(
             localized(
-                "Homebrew inventory could not be read.",
-                "Homebrew-inventaret kunne ikke leses.",
+                "Homebrew inventory could not be read. The scan is bounded; Refresh installed retries without changing installed packages.",
+                "Homebrew-inventaret kunne ikke leses. Skanningen er avgrenset; Oppdater installerte prøver på nytt uten å endre installerte pakker.",
             )
             .to_string(),
         );
@@ -921,7 +941,14 @@ fn discover_brew_at(
             let version_unambiguous = brew_version(item).is_some();
             let (path, path_verified, _overlap_paths) =
                 brew_package_path(item, source, name, &version, &prefix);
-            let path_verified = path_verified && version_unambiguous;
+            let receipt = if source == Source::BrewFormula {
+                formula_receipt_fingerprint(&path)
+            } else {
+                None
+            };
+            let path_verified = path_verified
+                && version_unambiguous
+                && (source != Source::BrewFormula || receipt.is_some());
             let tap = item.get("tap").and_then(Value::as_str).unwrap_or_default();
             let official = official_tap(tap, source);
             let pinned = item.get("pinned").and_then(Value::as_bool);
@@ -948,7 +975,17 @@ fn discover_brew_at(
             let related_paths = cask_metadata
                 .as_ref()
                 .map(|metadata| metadata.related_paths.clone())
-                .unwrap_or_else(|| cask_target_snapshot_paths(&overlap_paths));
+                .unwrap_or_else(|| {
+                    if source == Source::BrewFormula {
+                        vec![path.join("INSTALL_RECEIPT.json")]
+                    } else {
+                        cask_target_snapshot_paths(&overlap_paths)
+                    }
+                });
+            let expected_related = cask_metadata
+                .as_ref()
+                .map(|metadata| metadata.related_fingerprints.as_slice())
+                .or_else(|| receipt.as_ref().map(std::slice::from_ref));
             let identity = capture_identity_with_related_fingerprints(
                 name,
                 &version,
@@ -958,9 +995,7 @@ fn discover_brew_at(
                 Some(prefix.clone()),
                 None,
                 &related_paths,
-                cask_metadata
-                    .as_ref()
-                    .map(|metadata| metadata.related_fingerprints.as_slice()),
+                expected_related,
             );
             let target_snapshots_complete =
                 identity.related_fingerprints.len() == related_paths.len();
@@ -990,6 +1025,12 @@ fn discover_brew_at(
                 localized(
                     "Package managers and runtimes cannot be removed here.",
                     "Pakkehåndterere og kjøremiljøer kan ikke fjernes her.",
+                )
+                .to_string()
+            } else if source == Source::BrewFormula && receipt.is_none() {
+                localized(
+                    "The installed formula receipt could not be verified; actions are disabled.",
+                    "Installasjonskvitteringen for formelen kunne ikke bekreftes; handlinger er deaktivert.",
                 )
                 .to_string()
             } else if !path_verified {
@@ -1983,6 +2024,11 @@ fn read_trusted_json(path: &Path) -> Option<(Value, FsFingerprint)> {
     Some((serde_json::from_slice(&bytes).ok()?, before))
 }
 
+fn formula_receipt_fingerprint(keg: &Path) -> Option<FsFingerprint> {
+    let (json, fingerprint) = read_trusted_json(&keg.join("INSTALL_RECEIPT.json"))?;
+    json.is_object().then_some(fingerprint)
+}
+
 fn cask_target_snapshot_paths(targets: &[PathBuf]) -> Vec<PathBuf> {
     targets
         .iter()
@@ -2576,9 +2622,11 @@ mod tests {
         fs::create_dir_all(&prefix).unwrap();
         fs::write(&manager, b"manager").unwrap();
         fs::set_permissions(&manager, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(target.join("INSTALL_RECEIPT.json"), b"{}").unwrap();
         let path = fs::canonicalize(target).unwrap();
         let manager = fs::canonicalize(manager).unwrap();
         let prefix = fs::canonicalize(prefix).unwrap();
+        let receipt = formula_receipt_fingerprint(&path).unwrap();
         Package {
             name: "tool".to_owned(),
             version: "1".to_owned(),
@@ -2588,7 +2636,7 @@ mod tests {
             can_update: true,
             can_remove: true,
             reason: String::new(),
-            identity: capture_identity(
+            identity: capture_identity_with_related_fingerprints(
                 "tool",
                 "1",
                 Source::BrewFormula,
@@ -2596,7 +2644,8 @@ mod tests {
                 Some(manager),
                 Some(prefix),
                 None,
-                &[],
+                &[path.join("INSTALL_RECEIPT.json")],
+                Some(std::slice::from_ref(&receipt)),
             ),
         }
     }
@@ -3204,6 +3253,154 @@ mod tests {
     }
 
     #[test]
+    fn formula_receipt_requires_a_valid_trusted_json_object() {
+        let root = temporary_root("receipt");
+        let keg = fs::canonicalize({
+            let keg = root.join("Cellar/tool/1");
+            fs::create_dir_all(&keg).unwrap();
+            keg
+        })
+        .unwrap();
+        let receipt_path = keg.join("INSTALL_RECEIPT.json");
+
+        fs::write(&receipt_path, b"{}").unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_some());
+        fs::write(&receipt_path, b"[1]").unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+        fs::write(&receipt_path, b"not json").unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+        fs::remove_file(&receipt_path).unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+        let outside = root.join("elsewhere.json");
+        fs::write(&outside, b"{}").unwrap();
+        std::os::unix::fs::symlink(&outside, &receipt_path).unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_formula_receipt_rejects_preflight_before_any_action() {
+        let root = temporary_root("stale-receipt");
+        let package = fixture_formula(&root);
+        let complete = complete_snapshot(package.clone());
+        assert_eq!(package.identity.related_fingerprints.len(), 1);
+        assert!(preflight_action(&package, &complete, Action::Remove).is_ok());
+
+        fs::write(
+            package.path.join("INSTALL_RECEIPT.json"),
+            br#"{"changed":true}"#,
+        )
+        .unwrap();
+
+        assert!(preflight_action(&package, &complete, Action::Remove).is_err());
+        assert!(preflight_action(&package, &complete, Action::Update).is_err());
+        assert!(!fingerprints_are_current(&package.identity));
+        let fresh_receipt = formula_receipt_fingerprint(&package.path).unwrap();
+        assert_ne!(fresh_receipt, package.identity.related_fingerprints[0]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn post_action_matching_tolerates_prefix_content_changes() {
+        let root = temporary_root("post-source");
+        let package = fixture_formula(&root);
+        let old_key = package.identity.source_key().unwrap();
+        fs::create_dir(
+            package
+                .identity
+                .prefix
+                .as_ref()
+                .unwrap()
+                .join("new-content"),
+        )
+        .unwrap();
+
+        let mut fresh = package.clone();
+        fresh.identity.prefix_fingerprint =
+            FsFingerprint::capture(package.identity.prefix.as_ref().unwrap());
+        let fresh_key = fresh.identity.source_key().unwrap();
+        assert_ne!(old_key, fresh_key);
+        assert!(old_key.same_installation(&fresh_key));
+
+        let inventory = Inventory {
+            items: vec![fresh],
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            unique_source_package(&inventory, &old_key, "tool")
+                .unwrap()
+                .unwrap()
+                .path,
+            package.path
+        );
+
+        let complete_sources = HashSet::from([fresh_key]);
+        assert!(!complete_sources.contains(&old_key));
+        assert!(complete_sources
+            .iter()
+            .any(|candidate| candidate.same_installation(&old_key)));
+        assert_eq!(
+            verify_action_outcome(
+                Action::Remove,
+                "1",
+                true,
+                complete_sources
+                    .iter()
+                    .any(|candidate| candidate.same_installation(&old_key)),
+                None,
+            )
+            .unwrap(),
+            localized("The package was removed.", "Pakken ble fjernet.")
+        );
+
+        let fresh_snapshot = ScanSnapshot {
+            inventory: Inventory::default(),
+            complete_sources,
+        };
+        assert!(preflight_action(&package, &fresh_snapshot, Action::Remove).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_installation_rejects_identity_substitution() {
+        let root = temporary_root("installation");
+        let package = fixture_formula(&root);
+        let key = package.identity.source_key().unwrap();
+        assert!(key.same_installation(&key));
+
+        let mut drift = key.clone();
+        drift.prefix.size += 1;
+        drift.prefix.modified_seconds += 1;
+        drift.prefix.modified_nanoseconds += 1;
+        assert!(key.same_installation(&drift));
+
+        for mutate in [
+            |key: &mut SourceKey| key.prefix.canonical_path = PathBuf::from("/elsewhere"),
+            |key: &mut SourceKey| key.prefix.device += 1,
+            |key: &mut SourceKey| key.prefix.inode += 1,
+            |key: &mut SourceKey| key.prefix.owner += 1,
+            |key: &mut SourceKey| key.prefix.group += 1,
+            |key: &mut SourceKey| key.prefix.mode += 1,
+            |key: &mut SourceKey| key.manager.size += 1,
+            |key: &mut SourceKey| key.manager.inode += 1,
+            |key: &mut SourceKey| key.runtime = Some(key.manager.clone()),
+            |key: &mut SourceKey| key.source = Source::BrewCask,
+        ] {
+            let mut altered = key.clone();
+            mutate(&mut altered);
+            assert!(!key.same_installation(&altered));
+        }
+
+        let mut with_runtime = key.clone();
+        with_runtime.runtime = Some(key.manager.clone());
+        let mut changed_runtime = with_runtime.clone();
+        changed_runtime.runtime.as_mut().unwrap().size += 1;
+        assert!(!with_runtime.same_installation(&changed_runtime));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn action_outcomes_require_successful_action_and_complete_source() {
         let mut package = fixture_package(
             Source::BrewFormula,
@@ -3217,6 +3414,15 @@ mod tests {
         assert_eq!(
             verify_action_outcome(Action::Remove, "1", true, true, None).unwrap(),
             localized("The package was removed.", "Pakken ble fjernet.")
+        );
+        assert_eq!(
+            verify_action_outcome(Action::Update, "1", true, true, Some(&package)).unwrap(),
+            localized("The package was updated.", "Pakken ble oppdatert.")
+        );
+        let mut unchanged = package.clone();
+        unchanged.version = "1".to_owned();
+        assert!(
+            verify_action_outcome(Action::Update, "1", true, true, Some(&unchanged)).is_err()
         );
     }
 

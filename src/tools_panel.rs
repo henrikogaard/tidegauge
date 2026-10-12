@@ -6,6 +6,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivitySort {
+    #[default]
+    Cpu,
+    Disk,
+    InterruptWakeups,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
     #[default]
     Startup,
@@ -35,7 +43,7 @@ pub struct State {
     pub baseline_busy: bool,
     pub baseline_read_failed: bool,
     pub minutes: u32,
-    pub io_sort: bool,
+    pub activity_sort: ActivitySort,
     pub scan: Option<crate::storage::Scan>,
     pub packages: Option<crate::packages::Inventory>,
     pub packages_busy: bool,
@@ -56,7 +64,7 @@ impl Default for State {
             baseline_busy: false,
             baseline_read_failed: false,
             minutes: 5,
-            io_sort: false,
+            activity_sort: ActivitySort::Cpu,
             scan: None,
             packages: None,
             packages_busy: false,
@@ -376,37 +384,49 @@ fn startup_change(
 
 fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut actions = segment_group("activity-sort", l("Sort by", "Sorter etter"), dark);
-    for (io, label) in [(false, "CPU"), (true, l("Disk I/O", "Diskaktivitet"))] {
+    for (i, (sort, label)) in [
+        (ActivitySort::Cpu, "CPU"),
+        (ActivitySort::Disk, l("Disk I/O", "Diskaktivitet")),
+        (ActivitySort::InterruptWakeups, l("Wakeups", "Oppvåkninger")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let target = this.clone();
         actions = actions.child(segment(
-            format!("activity-sort-{io}"),
+            format!("activity-sort-{i}"),
             label,
-            view.tools.io_sort == io,
+            view.tools.activity_sort == sort,
             dark,
             t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
-                    v.tools.io_sort = io;
+                    v.tools.activity_sort = sort;
                     cx.notify();
                 });
             },
         ));
     }
+    let wakeups_label = l("reported interrupt wakeups/s", "rapporterte avbruddsoppvåkninger/s");
     let mut body=div().flex().flex_col().gap_3().child(card(dark).child(title(l("Recent resource activity","Nylig ressursaktivitet")))
         .child(sub(l("Time-weighted activity over up to 60 observed seconds per process. CPU: 100% is one core. No energy score or battery-drain estimate. New, missing or reset counters remain unavailable.","Tidsvektet aktivitet over inntil 60 observerte sekunder per prosess. CPU: 100 % er én kjerne. Ingen energipoeng eller anslag for batteriforbruk. Nye, manglende eller nullstilte tellere vises som utilgjengelige.")))
-        .child(sub(l("Wakeups: unavailable until counter behavior is validated on physical hardware. System processes may deny access. The list is limited to 8,192 sampled processes; the top 80 are shown.","Oppvåkninger: utilgjengelig inntil telleroppførselen er validert på fysisk maskinvare. Systemprosesser kan nekte tilgang. Listen er begrenset til 8 192 målte prosesser; de 80 øverste vises."))).child(actions));
+        .child(sub(l("Interrupt wakeups are reported kernel counts, not energy use. Package-idle wakeups remain unvalidated and unavailable. Denied or new counters show a dash.","Avbruddsoppvåkninger er rapporterte kjernetellere, ikke energibruk. Oppvåkninger fra pakkehvile er fortsatt uvaliderte og utilgjengelige. Nye tellere eller tellere uten tilgang vises med en strek.")))
+        .child(sub(l("System processes may deny access. The list is limited to 8,192 sampled processes; the top 80 are shown.","Systemprosesser kan nekte tilgang. Listen er begrenset til 8 192 målte prosesser; de 80 øverste vises."))).child(actions));
     let mut rows: Vec<_> = view.snap.resource_activity.iter().collect();
+    let metric = |r: &crate::resource_activity::Activity| match view.tools.activity_sort {
+        ActivitySort::Cpu => r.cpu,
+        ActivitySort::Disk => r.io,
+        ActivitySort::InterruptWakeups => r.interrupt_wakeups,
+    };
     rows.sort_by(|a, b| {
-        let value =
-            |r: &crate::resource_activity::Activity| if view.tools.io_sort { r.io } else { r.cpu };
-        value(b)
-            .partial_cmp(&value(a))
+        metric(b)
+            .partial_cmp(&metric(a))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.pid.cmp(&b.pid))
     });
     if let Some(own) = rows.iter().find(|r| r.own) {
         body = body.child(sub(format!(
-            "{}: {} CPU · {}",
+            "{}: {} CPU · {} · {} {} · {:.0} {}",
             l(
                 "Tidegauge monitoring process",
                 "Tidegauges overvåkingsprosess"
@@ -416,7 +436,13 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                 .unwrap_or_else(|| "—".into()),
             own.io
                 .map(crate::engine::fmt_rate)
-                .unwrap_or_else(|| "—".into())
+                .unwrap_or_else(|| "—".into()),
+            own.interrupt_wakeups
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "—".into()),
+            wakeups_label,
+            own.wakeups_covered,
+            l("s covered", "s dekket")
         )));
     }
     let mut list = card(dark);
@@ -430,7 +456,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                 .border_b_1()
                 .border_color(t::line(dark))
                 .child(sub(format!(
-                    "{} · PID {} · {} CPU · {} · {:.0} {}",
+                    "{} · PID {} · {} CPU · {} · {} {} · {:.0} {} / {:.0} {}",
                     r.name,
                     r.pid,
                     r.cpu
@@ -438,8 +464,14 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                         .unwrap_or_else(|| "—".into()),
                     r.io.map(crate::engine::fmt_rate)
                         .unwrap_or_else(|| "—".into()),
+                    r.interrupt_wakeups
+                        .map(|v| format!("{v:.1}"))
+                        .unwrap_or_else(|| "—".into()),
+                    wakeups_label,
                     r.covered,
-                    l("s observed", "s observert")
+                    l("s CPU/I/O", "s CPU/I/O"),
+                    r.wakeups_covered,
+                    l("s wakeups", "s oppvåkninger")
                 )))
                 .child(sub(r.path.clone()).text_color(t::ink_dim(dark))),
         );
@@ -716,19 +748,31 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         } else {
             l("Scanning…", "Skanner…")
         };
+        let totals = match crate::storage::observed_totals(&d) {
+            Some((files, allocated, logical)) => format!(
+                "{} · {}: {} {} · {} {} · {} {}",
+                status,
+                l("Observed totals", "Observerte summer"),
+                files,
+                l("files", "filer"),
+                crate::engine::fmt_bytes(allocated as f64),
+                l("allocated", "tildelt"),
+                crate::engine::fmt_bytes(logical as f64),
+                l("logical", "logisk")
+            ),
+            None => format!(
+                "{} · {}",
+                status,
+                l(
+                    "No size totals are available.",
+                    "Ingen størrelsessummer er tilgjengelige."
+                )
+            ),
+        };
         body = body.child(
             card(dark)
                 .child(sub(d.root.display().to_string()))
-                .child(sub(format!(
-                    "{} · {} {} · {} {} · {} {}",
-                    status,
-                    d.files,
-                    l("files", "filer"),
-                    crate::engine::fmt_bytes(d.allocated as f64),
-                    l("allocated", "tildelt"),
-                    crate::engine::fmt_bytes(d.logical as f64),
-                    l("logical", "logisk")
-                )))
+                .child(sub(totals))
                 .child(sub(format!(
                     "{} {} · {} {}",
                     d.errors,

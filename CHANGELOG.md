@@ -33,6 +33,12 @@ hardware acceptance checks. A merge and a published release are separate events.
   process identity checks and a bounded session cache. Metadata is **not** a
   signature-validity, developer-identity, or malware verdict
   ([#34](https://github.com/henrikogaard/tidegauge/pull/34), merged).
+- Resource activity now reports per-process interrupt-wakeup rates alongside CPU
+  and disk I/O, time-weighted over the same 60-second window with its own
+  coverage seconds. These are reported kernel counts, not energy use;
+  package-idle wakeups remain unvalidated and unavailable, and denied or new
+  counters show a dash
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 
 ### Fixed
 
@@ -71,6 +77,22 @@ hardware acceptance checks. A merge and a published release are separate events.
   one bordered control style: Settings left, live counts centred, the two
   panels grouped right
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Homebrew formula actions now verify the keg's `INSTALL_RECEIPT.json` through
+  the same trusted, bounded read used for cask metadata. A missing, malformed,
+  symlinked, or untrusted receipt keeps the formula in the inventory but
+  disables its actions with an explicit reason; touching the receipt after the
+  cached snapshot fails preflight before any manager command runs
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Package post-action matching no longer treats a legitimate change to the
+  manager prefix directory's size or mtime as proof of failure. Outcome
+  confirmation now matches the same installation — identical source category,
+  manager and runtime fingerprints, and prefix canonical path, device, inode,
+  ownership, and mode — while pre-action checks still require the exact cached
+  identity
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- A failed Homebrew inventory scan now explains that the scan is bounded and
+  that Refresh installed retries it without changing installed packages
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Chart rendering is unified on two idioms: the Oversikt cards now draw the
   same filled sparkline as the detail tabs instead of a dense bar strip, and
   the shared area chart keeps headroom with a stroked line so a maxed-out or
@@ -105,6 +127,12 @@ hardware acceptance checks. A merge and a published release are separate events.
 - The Tools Startup page bounds the rendered list to 20 registrations per
   page with Previous/Next navigation so every entry stays reachable; the
   collected inventory itself is never truncated
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Storage scans stop promptly when cancelled mid-walk, verified after real
+  metadata traversal rather than only from a pre-set flag. When a scan's
+  coverage is unknown — the folder could not be opened or stat'ed, or the scan
+  ended with nothing readable — the status row now states that no size totals
+  are available instead of presenting them as 0 B
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires

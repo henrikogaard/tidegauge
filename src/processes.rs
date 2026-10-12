@@ -24,6 +24,7 @@ pub struct ProcInfo {
     pub disk_read: u64,
     pub disk_write: u64,
     pub energy_nj: u64,
+    pub interrupt_wakeups: Option<u64>,
     // per-tick computed
     pub cpu_pct: f64,
     pub read_rate: f64,
