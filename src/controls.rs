@@ -611,6 +611,13 @@ pub fn history_panel(
                 "No recorded measurements in this range.",
                 "Ingen registrerte målinger i dette tidsrommet.",
             )));
+        } else if values.len() * 5 < data.values.len() {
+            // Under ~20% of the buckets hold data; say so instead of leaving
+            // a mostly blank plot unexplained.
+            plot = plot.child(sub(l(
+                "Few recorded measurements in this range — most intervals have no data.",
+                "Få registrerte målinger i dette tidsrommet — de fleste intervallene mangler data.",
+            )));
         }
         panel = panel.child(plot);
     } else if let Some(Err(error)) = &view.history_data {
@@ -631,17 +638,31 @@ fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElem
             let oy: f32 = bounds.origin.y.into();
             let step = width / values.len().max(1) as f32;
             for (index, value) in values.iter().enumerate() {
-                let Some(value) = value else { continue };
                 let left = ox + index as f32 * step;
                 let right = left + (step - 1.).max(1.);
                 let bottom = oy + height;
-                let top = bottom - ((*value / max).clamp(0., 1.) as f32 * (height - 2.)).max(1.);
-                let mut bar = Path::new(point(px(left), px(bottom)));
-                bar.line_to(point(px(left), px(top)));
-                bar.line_to(point(px(right), px(top)));
-                bar.line_to(point(px(right), px(bottom)));
-                bar.line_to(point(px(left), px(bottom)));
-                window.paint_path(bar, color.opacity(0.8));
+                match value {
+                    Some(value) => {
+                        let top =
+                            bottom - ((*value / max).clamp(0., 1.) as f32 * (height - 2.)).max(1.);
+                        let mut bar = Path::new(point(px(left), px(bottom)));
+                        bar.line_to(point(px(left), px(top)));
+                        bar.line_to(point(px(right), px(top)));
+                        bar.line_to(point(px(right), px(bottom)));
+                        bar.line_to(point(px(left), px(bottom)));
+                        window.paint_path(bar, color.opacity(0.8));
+                    }
+                    None => {
+                        // A faint baseline tick marks the empty slot so missing
+                        // data reads as intentional, not as a layout bug.
+                        let mut tick = Path::new(point(px(left), px(bottom)));
+                        tick.line_to(point(px(left), px(bottom - 2.)));
+                        tick.line_to(point(px(right), px(bottom - 2.)));
+                        tick.line_to(point(px(right), px(bottom)));
+                        tick.line_to(point(px(left), px(bottom)));
+                        window.paint_path(tick, color.opacity(0.12));
+                    }
+                }
             }
         },
     )

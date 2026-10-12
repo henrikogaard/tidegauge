@@ -59,6 +59,14 @@ hardware acceptance checks. A merge and a published release are separate events.
   status sentences, session-uptime durations with singular/plural forms, and
   history range chips
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Chart rendering is unified on two idioms: the Oversikt cards now draw the
+  same filled sparkline as the detail tabs instead of a dense bar strip, and
+  the shared area chart keeps headroom with a stroked line so a maxed-out or
+  constant series (e.g. a full battery) no longer reads as a solid block. The
+  Historikk chart marks empty buckets with a faint baseline tick instead of
+  leaving an unexplained gap, and a largely empty selected range says so in a
+  localized line
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires
   observed ancestry before offering remaining-helper Stop.

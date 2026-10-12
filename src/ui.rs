@@ -259,8 +259,41 @@ fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
         .child(initial)
 }
 
-/// Area+line chart drawn with canvas: filled path under the series and a
-/// thin ribbon stroke on top, plus a soft grid.
+/// Vertical scale for `area_chart`. Values map into a plot inset from the
+/// top and bottom edges so a maxed-out or constant series still reads as a
+/// stroked line instead of a solid block.
+struct ChartScale {
+    max: f64,
+    top: f32,
+    bottom: f32,
+}
+
+impl ChartScale {
+    /// A `max_hint` pins the scale (e.g. a 0–100 percentage); without one the
+    /// scale sits ~10% above the series maximum so the highest point keeps
+    /// visible headroom. Non-finite or non-positive hints and data fall back
+    /// to a unit scale.
+    fn new(data_max: f64, max_hint: Option<f64>) -> Self {
+        let data_max = if data_max.is_finite() { data_max.max(0.) } else { 0. };
+        match max_hint {
+            Some(hint) if hint.is_finite() && hint > 0. => {
+                Self { max: hint.max(data_max), top: 7., bottom: 4. }
+            }
+            _ => Self { max: (data_max * 1.1).max(1.0), top: 5., bottom: 4. },
+        }
+    }
+
+    /// Y position inside a `height`-pixel plot, measured from its top edge.
+    fn y(&self, value: f64, height: f32) -> f32 {
+        let inner = (height - self.top - self.bottom).max(1.);
+        height - self.bottom - ((value / self.max).clamp(0., 1.) as f32) * inner
+    }
+}
+
+/// Area+line chart drawn with canvas: low-opacity fill under the series and a
+/// full-opacity stroke on top, so a full or flat series stays legible. Empty
+/// series draw nothing; a single point draws a short tick; non-finite samples
+/// become gaps rather than fabricated values.
 fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
     let pts = pts.to_vec();
     canvas(
@@ -270,19 +303,37 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
             let h: f32 = bounds.size.height.into();
             let ox: f32 = bounds.origin.x.into();
             let oy: f32 = bounds.origin.y.into();
-            if pts.len() < 2 || w < 4.0 {
+            if pts.is_empty() || w < 4.0 {
                 return;
             }
             let n = pts.len().min(240);
             let tail = &pts[pts.len() - n..];
-            let data_max = tail.iter().cloned().fold(0.0f64, f64::max);
-            let max = max_hint.unwrap_or(data_max).max(data_max).max(1.0);
+            let data_max = tail.iter().copied().filter(|v| v.is_finite()).fold(0.0f64, f64::max);
+            let scale = ChartScale::new(data_max, max_hint);
+            let y_of = |v: f64| -> f32 { oy + scale.y(v, h) };
+
+            if n == 1 {
+                // A lone sample has no interval to span; draw it as a tick.
+                if tail[0].is_finite() {
+                    let yc = y_of(tail[0]);
+                    let xc = ox + w / 2.0;
+                    let mut tick = Path::new(point(px(xc - 3.0), px(yc - 0.8)));
+                    tick.line_to(point(px(xc + 3.0), px(yc - 0.8)));
+                    tick.line_to(point(px(xc + 3.0), px(yc + 0.8)));
+                    tick.line_to(point(px(xc - 3.0), px(yc + 0.8)));
+                    window.paint_path(tick, color);
+                }
+                return;
+            }
+
             let px_per = (w - 4.0) / (n - 1).max(1) as f32;
-            let y_of = |v: f64| -> f32 { oy + (h - 4.0) - ((v / max).clamp(0.0, 1.0) as f32) * (h - 8.0) };
 
             // Fill each interval with a convex trapezoid. A single concave
             // area path would be triangulated across the chart by GPUI.
             for i in 1..n {
+                if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
+                    continue;
+                }
                 let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
                 let x1 = ox + 2.0 + i as f32 * px_per;
                 let mut area = Path::new(point(px(x0), px(oy + h - 2.0)));
@@ -296,6 +347,9 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
             // stroke as thin quads (each segment its own sub-path)
             let mut stroke = Path::new(point(px(ox + 2.0), px(y_of(tail[0]))));
             for i in 1..n {
+                if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
+                    continue;
+                }
                 let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
                 let y0 = y_of(tail[i - 1]);
                 let x1 = ox + 2.0 + i as f32 * px_per;
@@ -1153,37 +1207,6 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 .on_click(|_, _, cx| cx.quit())))
 }
 
-/// Compact bars use the latest 48 real samples, aligned to the right while
-/// the history fills. Empty slots are left blank rather than inventing activity.
-fn bar_chart(pts: &[f64], color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
-    let pts = pts.to_vec();
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let w: f32 = bounds.size.width.into();
-            let h: f32 = bounds.size.height.into();
-            let ox: f32 = bounds.origin.x.into();
-            let oy: f32 = bounds.origin.y.into();
-            let n = pts.len().min(48);
-            let tail = &pts[pts.len() - n..];
-            let data_max = tail.iter().copied().fold(0.0f64, f64::max);
-            let max = max_hint.unwrap_or(data_max).max(data_max).max(1.0);
-            let slot = w / 48.0;
-            for (i, value) in tail.iter().enumerate() {
-                let height = ((*value / max).clamp(0.0, 1.0) as f32 * h).max(1.0);
-                let x = ox + (48 - n + i) as f32 * slot;
-                let width = (slot - 2.0).max(1.0);
-                let mut bar = Path::new(point(px(x), px(oy + h)));
-                bar.line_to(point(px(x), px(oy + h - height)));
-                bar.line_to(point(px(x + width), px(oy + h - height)));
-                bar.line_to(point(px(x + width), px(oy + h)));
-                bar.line_to(point(px(x), px(oy + h)));
-                window.paint_path(bar, color);
-            }
-        },
-    ).w_full().h_full()
-}
-
 fn metric_heading(tab: Tab, dark: bool) -> Div {
     let color = tab.metric().map(|m| m.accent(dark)).unwrap_or_else(|| t::accent(dark));
     div().flex().items_center().gap_2()
@@ -1308,7 +1331,7 @@ fn overview_card(
                     .px(px(6.))
                     .py(px(5.))
                     .bg(color.opacity(0.09))
-                    .child(bar_chart(&hist.pts, color, max)),
+                    .child(area_chart(&hist.pts, 28.0, color, max)),
             )
         })
         .when(hist.pts.is_empty(), |d| {
@@ -2817,7 +2840,7 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
+        ChartScale, MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
         temperature_display_caption,
     };
     use crate::sensors::Reading;
@@ -2913,5 +2936,42 @@ mod tests {
         let display = bound_temperature_display(&values);
         assert_eq!(display.rows.len(), 2);
         assert!(temperature_display_caption(&display, english).is_none());
+    }
+
+    #[test]
+    fn chart_scale_leaves_headroom_above_unpinned_maximum() {
+        let scale = ChartScale::new(80., None);
+        assert!(scale.max > 80., "unpinned scale must exceed the data max");
+        let y = scale.y(80., 92.);
+        assert!(
+            y > scale.top,
+            "series maximum must sit below the top inset, got {y}"
+        );
+    }
+
+    #[test]
+    fn chart_scale_pins_to_hint_but_never_below_data() {
+        let scale = ChartScale::new(12., Some(100.));
+        assert_eq!(scale.max, 100.);
+        assert!((scale.y(100., 92.) - scale.top).abs() < 0.01);
+        let grown = ChartScale::new(140., Some(100.));
+        assert_eq!(grown.max, 140.);
+    }
+
+    #[test]
+    fn chart_scale_handles_constant_zero_and_degenerate_series() {
+        // Constant series: a flat stroke at the mapped height, no NaN, not
+        // pinned to an edge.
+        let scale = ChartScale::new(42., None);
+        let y = scale.y(42., 92.);
+        assert!(y.is_finite() && y > scale.top && y < 92. - scale.bottom);
+        // All-zero data still gets a finite scale.
+        let scale = ChartScale::new(0., None);
+        assert!(scale.y(0., 92.).is_finite());
+        // NaN/inf inputs fall back rather than propagate into geometry.
+        let scale = ChartScale::new(f64::NAN, Some(f64::INFINITY));
+        assert!(scale.max.is_finite() && scale.y(0., 92.).is_finite());
+        let scale = ChartScale::new(f64::INFINITY, None);
+        assert!(scale.max.is_finite());
     }
 }
