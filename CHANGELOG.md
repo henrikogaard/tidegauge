@@ -90,6 +90,16 @@ hardware acceptance checks. A merge and a published release are separate events.
   ownership, and mode — while pre-action checks still require the exact cached
   identity
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Package update confirmation now compares the manager's typed installed
+  version instead of the display label, so an ambiguous or unknown version
+  (for example multiple retained kegs) can never be reported as a successful
+  update even when the manager command exits cleanly
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Homebrew update checks now read the current `current_version` schema, so
+  available updates are no longer reported as uninterpretable JSON. Packages
+  with an ambiguous installed version also show their managed root path instead
+  of a path containing the "Multiple versions" label, and remain read-only
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - A failed Homebrew inventory scan now explains that the scan is bounded and
   that Refresh installed retries it without changing installed packages
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).

@@ -56,6 +56,7 @@ impl Source {
 pub struct Package {
     pub name: String,
     pub version: String,
+    pub installed_version: Option<String>,
     pub source: Source,
     pub path: PathBuf,
     pub latest: Option<String>,
@@ -439,6 +440,9 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
     if !fingerprints_are_current(&fresh.identity) {
         return Err(identity_changed_message());
     }
+    let Some(before_version) = fresh.installed_version.clone() else {
+        return Err(identity_changed_message());
+    };
     let action_result = run_action(&plan);
     let after = scan_detailed(false);
     let key = fresh
@@ -448,7 +452,7 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
     let unique_after = unique_source_package(&after.inventory, &key, &fresh.name)?;
     verify_action_outcome(
         action,
-        &fresh.version,
+        &before_version,
         action_result.is_ok(),
         after
             .complete_sources
@@ -545,7 +549,12 @@ fn verify_action_outcome(
         (Action::Remove, None) => {
             Ok(localized("The package was removed.", "Pakken ble fjernet.").to_string())
         }
-        (Action::Update, Some(package)) if package.version != before_version => {
+        (Action::Update, Some(package))
+            if package
+                .installed_version
+                .as_deref()
+                .is_some_and(|version| version != before_version) =>
+        {
             Ok(localized("The package was updated.", "Pakken ble oppdatert.").to_string())
         }
         _ => Err(outcome_unverified()),
@@ -724,6 +733,7 @@ fn app_package(path: &Path, info: PathBuf, name: String, version: String) -> Pac
     Package {
         name,
         version,
+        installed_version: None,
         source: Source::App,
         path: path.to_path_buf(),
         latest: None,
@@ -923,7 +933,8 @@ fn discover_brew_at(
                 .get("installed")
                 .and_then(Value::as_array)
                 .is_some_and(|installed| installed.len() > 1);
-            let version = brew_version(item).or_else(|| {
+            let installed_version = brew_version(item);
+            let version = installed_version.clone().or_else(|| {
                 multiple_versions
                     .then(|| localized("Multiple versions", "Flere versjoner").to_string())
             });
@@ -938,9 +949,9 @@ fn discover_brew_at(
                 category_complete = false;
                 continue;
             };
-            let version_unambiguous = brew_version(item).is_some();
+            let version_unambiguous = installed_version.is_some();
             let (path, path_verified, _overlap_paths) =
-                brew_package_path(item, source, name, &version, &prefix);
+                brew_package_path(item, source, name, installed_version.as_deref(), &prefix);
             let receipt = if source == Source::BrewFormula {
                 formula_receipt_fingerprint(&path)
             } else {
@@ -1074,6 +1085,7 @@ fn discover_brew_at(
                 package: Package {
                     name: name.to_owned(),
                     version: version.clone(),
+                    installed_version,
                     source,
                     path: path.clone(),
                     latest,
@@ -1266,11 +1278,11 @@ fn discover_npm(
                 break;
             }
             let valid_name = valid_npm_name(name);
-            let version = item
+            let installed_version = item
                 .get("version")
                 .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(localized("Unknown", "Ukjent"));
+                .filter(|value| !value.is_empty());
+            let version = installed_version.unwrap_or(localized("Unknown", "Ukjent"));
             if item.get("version").and_then(Value::as_str).is_none() {
                 inventory.warnings.push(
                     localized(
@@ -1352,6 +1364,7 @@ fn discover_npm(
                 package: Package {
                     name: name.clone(),
                     version: version.to_owned(),
+                    installed_version: installed_version.map(str::to_owned),
                     source: Source::Npm,
                     path: package_path,
                     latest,
@@ -1589,8 +1602,8 @@ fn brew_outdated(
     parse_brew_outdated(&output.stdout).unwrap_or_else(|| {
         inventory.warnings.push(
             localized(
-                "Homebrew update information was not valid JSON.",
-                "Homebrew-oppdateringsinformasjonen var ikke gyldig JSON.",
+                "Homebrew update information could not be interpreted.",
+                "Homebrew-oppdateringsinformasjonen kunne ikke tolkes.",
             )
             .to_string(),
         );
@@ -1662,7 +1675,8 @@ fn parse_brew_outdated(bytes: &[u8]) -> Option<HashMap<String, String>> {
                 .or_else(|| item.get("token"))?
                 .as_str()?;
             let latest = item
-                .get("latest_version")
+                .get("current_version")
+                .or_else(|| item.get("latest_version"))
                 .or_else(|| item.get("latest"))
                 .or_else(|| item.get("wanted"))?
                 .as_str()?;
@@ -1770,7 +1784,7 @@ fn brew_package_path(
     item: &Value,
     source: Source,
     name: &str,
-    version: &str,
+    version: Option<&str>,
     prefix: &Path,
 ) -> (PathBuf, bool, Vec<PathBuf>) {
     let token = name.rsplit('/').next().unwrap_or(name);
@@ -1780,6 +1794,9 @@ fn brew_package_path(
         "Cellar"
     };
     let managed_root = prefix.join(root_name);
+    let Some(version) = version else {
+        return (managed_root.join(token), false, Vec::new());
+    };
     let reported = if source == Source::BrewFormula {
         item.get("installed")
             .and_then(Value::as_array)
@@ -2630,6 +2647,7 @@ mod tests {
         Package {
             name: "tool".to_owned(),
             version: "1".to_owned(),
+            installed_version: Some("1".to_owned()),
             source: Source::BrewFormula,
             path: path.clone(),
             latest: Some("2".to_owned()),
@@ -2673,6 +2691,7 @@ mod tests {
         Package {
             name: name.to_owned(),
             version: version.clone(),
+            installed_version: (source != Source::App).then(|| "1".to_owned()),
             source,
             path: path.to_path_buf(),
             latest: None,
@@ -3050,7 +3069,7 @@ mod tests {
 
     #[test]
     fn outdated_parsers_accept_partial_json() {
-        let brew = br#"{"formulae":[{"name":"tool","current_version":"1","latest_version":"2"}],"casks":[{"token":"app","current_version":"1","latest_version":"3"}]}"#;
+        let brew = br#"{"formulae":[{"name":"tool","installed_versions":["1"],"latest_version":"2"}],"casks":[{"token":"app","installed_versions":["1"],"latest_version":"3"}]}"#;
         let outdated = parse_brew_outdated(brew).unwrap();
         assert_eq!(outdated.get("tool"), Some(&"2".to_owned()));
         assert_eq!(outdated.get("app"), Some(&"3".to_owned()));
@@ -3059,6 +3078,58 @@ mod tests {
             parse_npm_outdated(npm).unwrap().get("tool"),
             Some(&"2".to_owned())
         );
+    }
+
+    #[test]
+    fn brew_outdated_prefers_current_version_and_rejects_wrong_types() {
+        let real_schema = br#"{"formulae":[{"name":"hello","installed_versions":["2.12.2"],"current_version":"2.12.3","pinned":false}],"casks":[{"name":"example","installed_versions":["1"],"current_version":"2"}]}"#;
+        let outdated = parse_brew_outdated(real_schema).unwrap();
+        assert_eq!(outdated.get("hello"), Some(&"2.12.3".to_owned()));
+        assert_eq!(outdated.get("example"), Some(&"2".to_owned()));
+
+        let both = br#"{"formulae":[{"name":"tool","current_version":"2","latest_version":"3"}],"casks":[]}"#;
+        assert_eq!(
+            parse_brew_outdated(both).unwrap().get("tool"),
+            Some(&"2".to_owned())
+        );
+        let wrong_type =
+            br#"{"formulae":[{"name":"tool","installed_versions":["1"],"current_version":2}],"casks":[]}"#;
+        assert!(parse_brew_outdated(wrong_type).is_none());
+        let missing =
+            br#"{"formulae":[{"name":"tool","installed_versions":["1"]}],"casks":[]}"#;
+        assert!(parse_brew_outdated(missing).is_none());
+    }
+
+    #[test]
+    fn brew_package_path_without_version_reports_rack_read_only() {
+        let prefix = Path::new("/opt/homebrew");
+        let formula = serde_json::json!({"installed":[]});
+        let (path, verified, overlap) = brew_package_path(
+            &formula,
+            Source::BrewFormula,
+            "homebrew/core/hello",
+            None,
+            prefix,
+        );
+        assert_eq!(path, prefix.join("Cellar/hello"));
+        assert!(!verified);
+        assert!(overlap.is_empty());
+
+        let cask = serde_json::json!({});
+        let (path, verified, overlap) =
+            brew_package_path(&cask, Source::BrewCask, "example", None, prefix);
+        assert_eq!(path, prefix.join("Caskroom/example"));
+        assert!(!verified);
+        assert!(overlap.is_empty());
+
+        let (path, _, _) = brew_package_path(
+            &cask,
+            Source::BrewFormula,
+            "homebrew/core/tool",
+            Some("1"),
+            prefix,
+        );
+        assert_eq!(path, prefix.join("Cellar/tool/1"));
     }
 
     #[test]
@@ -3110,6 +3181,7 @@ mod tests {
         let package = Package {
             name: "tool".into(),
             version: "1".into(),
+            installed_version: Some("1".into()),
             source: Source::Npm,
             path: PathBuf::from("/opt/homebrew/lib/node_modules/tool"),
             latest: Some("2".into()),
@@ -3408,6 +3480,7 @@ mod tests {
             Path::new("/opt/homebrew/Cellar/tool/2"),
         );
         package.version = "2".to_owned();
+        package.installed_version = Some("2".to_owned());
         assert!(verify_action_outcome(Action::Remove, "1", true, false, None).is_err());
         assert!(verify_action_outcome(Action::Update, "1", false, true, Some(&package)).is_err());
         assert!(verify_action_outcome(Action::Remove, "1", true, true, Some(&package)).is_err());
@@ -3421,8 +3494,15 @@ mod tests {
         );
         let mut unchanged = package.clone();
         unchanged.version = "1".to_owned();
+        unchanged.installed_version = Some("1".to_owned());
         assert!(
             verify_action_outcome(Action::Update, "1", true, true, Some(&unchanged)).is_err()
+        );
+        let mut ambiguous = package.clone();
+        ambiguous.version = localized("Multiple versions", "Flere versjoner").to_owned();
+        ambiguous.installed_version = None;
+        assert!(
+            verify_action_outcome(Action::Update, "1", true, true, Some(&ambiguous)).is_err()
         );
     }
 
