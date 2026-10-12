@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use crate::controls::is_activation_key;
 use crate::engine::*;
 use crate::locale::text as l;
 use crate::processes::AppGroup;
@@ -17,7 +18,6 @@ pub enum Tab {
     Disk,
     Network,
     Gpu,
-    Neural,
     Battery,
     Sound,
     Bluetooth,
@@ -26,14 +26,13 @@ pub enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 12] = [
+    const ALL: [Tab; 11] = [
         Tab::Overview,
         Tab::Cpu,
         Tab::Memory,
         Tab::Disk,
         Tab::Network,
         Tab::Gpu,
-        Tab::Neural,
         Tab::Battery,
         Tab::Sound,
         Tab::Bluetooth,
@@ -48,7 +47,6 @@ impl Tab {
             Self::Disk => "disk",
             Self::Network => "network",
             Self::Gpu => "gpu",
-            Self::Neural => "neural",
             Self::Battery => "battery",
             Self::Sound => "sound",
             Self::Bluetooth => "bluetooth",
@@ -77,7 +75,6 @@ impl Tab {
             Tab::Disk => "Disk",
             Tab::Network => l("Network", "Nettverk"),
             Tab::Gpu => "GPU",
-            Tab::Neural => "Neural",
             Tab::Battery => l("Battery", "Batteri"),
             Tab::Sound => l("Sound", "Lyd"),
             Tab::Bluetooth => "Bluetooth",
@@ -93,7 +90,6 @@ impl Tab {
             Tab::Disk => "icons/hard-drive.svg",
             Tab::Network => "icons/globe.svg",
             Tab::Gpu => "icons/gpu.svg",
-            Tab::Neural => "icons/brain.svg",
             Tab::Battery => "icons/battery-charging.svg",
             Tab::Sound => "icons/volume-2.svg",
             Tab::Bluetooth => "icons/bluetooth.svg",
@@ -108,7 +104,6 @@ impl Tab {
             Tab::Disk => Some(Metric::Disk),
             Tab::Network => Some(Metric::Network),
             Tab::Gpu => Some(Metric::Gpu),
-            Tab::Neural => Some(Metric::Neural),
             Tab::Battery => Some(Metric::Battery),
             Tab::Sound => Some(Metric::Sound),
             Tab::Bluetooth => Some(Metric::Bluetooth),
@@ -217,11 +212,13 @@ impl TideGaugeView {
 
 // ---------- small builders ----------
 
-fn caption(text: &str) -> Div {
+/// Section/field caption: uppercase 10 px semibold in `ink_dim`. Sentences
+/// and disclaimers use `sub()` at 12 px instead.
+pub(crate) fn caption(text: &str, dark: bool) -> Div {
     div()
-        .text_xs()
+        .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(t::ink_dim(true))
+        .text_color(t::ink_dim(dark))
         .child(text.to_uppercase())
 }
 
@@ -259,8 +256,41 @@ fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
         .child(initial)
 }
 
-/// Area+line chart drawn with canvas: filled path under the series and a
-/// thin ribbon stroke on top, plus a soft grid.
+/// Vertical scale for `area_chart`. Values map into a plot inset from the
+/// top and bottom edges so a maxed-out or constant series still reads as a
+/// stroked line instead of a solid block.
+struct ChartScale {
+    max: f64,
+    top: f32,
+    bottom: f32,
+}
+
+impl ChartScale {
+    /// A `max_hint` pins the scale (e.g. a 0–100 percentage); without one the
+    /// scale sits ~10% above the series maximum so the highest point keeps
+    /// visible headroom. Non-finite or non-positive hints and data fall back
+    /// to a unit scale.
+    fn new(data_max: f64, max_hint: Option<f64>) -> Self {
+        let data_max = if data_max.is_finite() { data_max.max(0.) } else { 0. };
+        match max_hint {
+            Some(hint) if hint.is_finite() && hint > 0. => {
+                Self { max: hint.max(data_max), top: 7., bottom: 4. }
+            }
+            _ => Self { max: (data_max * 1.1).max(1.0), top: 5., bottom: 4. },
+        }
+    }
+
+    /// Y position inside a `height`-pixel plot, measured from its top edge.
+    fn y(&self, value: f64, height: f32) -> f32 {
+        let inner = (height - self.top - self.bottom).max(1.);
+        height - self.bottom - ((value / self.max).clamp(0., 1.) as f32) * inner
+    }
+}
+
+/// Area+line chart drawn with canvas: low-opacity fill under the series and a
+/// full-opacity stroke on top, so a full or flat series stays legible. Empty
+/// series draw nothing; a single point draws a short tick; non-finite samples
+/// become gaps rather than fabricated values.
 fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
     let pts = pts.to_vec();
     canvas(
@@ -270,19 +300,37 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
             let h: f32 = bounds.size.height.into();
             let ox: f32 = bounds.origin.x.into();
             let oy: f32 = bounds.origin.y.into();
-            if pts.len() < 2 || w < 4.0 {
+            if pts.is_empty() || w < 4.0 {
                 return;
             }
             let n = pts.len().min(240);
             let tail = &pts[pts.len() - n..];
-            let data_max = tail.iter().cloned().fold(0.0f64, f64::max);
-            let max = max_hint.unwrap_or(data_max).max(data_max).max(1.0);
+            let data_max = tail.iter().copied().filter(|v| v.is_finite()).fold(0.0f64, f64::max);
+            let scale = ChartScale::new(data_max, max_hint);
+            let y_of = |v: f64| -> f32 { oy + scale.y(v, h) };
+
+            if n == 1 {
+                // A lone sample has no interval to span; draw it as a tick.
+                if tail[0].is_finite() {
+                    let yc = y_of(tail[0]);
+                    let xc = ox + w / 2.0;
+                    let mut tick = Path::new(point(px(xc - 3.0), px(yc - 0.8)));
+                    tick.line_to(point(px(xc + 3.0), px(yc - 0.8)));
+                    tick.line_to(point(px(xc + 3.0), px(yc + 0.8)));
+                    tick.line_to(point(px(xc - 3.0), px(yc + 0.8)));
+                    window.paint_path(tick, color);
+                }
+                return;
+            }
+
             let px_per = (w - 4.0) / (n - 1).max(1) as f32;
-            let y_of = |v: f64| -> f32 { oy + (h - 4.0) - ((v / max).clamp(0.0, 1.0) as f32) * (h - 8.0) };
 
             // Fill each interval with a convex trapezoid. A single concave
             // area path would be triangulated across the chart by GPUI.
             for i in 1..n {
+                if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
+                    continue;
+                }
                 let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
                 let x1 = ox + 2.0 + i as f32 * px_per;
                 let mut area = Path::new(point(px(x0), px(oy + h - 2.0)));
@@ -296,6 +344,9 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
             // stroke as thin quads (each segment its own sub-path)
             let mut stroke = Path::new(point(px(ox + 2.0), px(y_of(tail[0]))));
             for i in 1..n {
+                if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
+                    continue;
+                }
                 let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
                 let y0 = y_of(tail[i - 1]);
                 let x1 = ox + 2.0 + i as f32 * px_per;
@@ -414,13 +465,15 @@ fn hero(
                         .w(px(240.))
                         .flex_shrink_0()
                         .child(
-                            sub(label.to_uppercase())
-                                .text_color(t::ink_dim(dark))
-                                .font_weight(FontWeight::SEMIBOLD),
+                            div()
+                                .text_size(px(10.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(color)
+                                .child(label.to_uppercase()),
                         )
                         .child(
                             div()
-                                .text_size(px(36.))
+                                .text_size(px(42.))
                                 .font_weight(FontWeight::BOLD)
                                 .child(value),
                         )
@@ -445,7 +498,7 @@ fn hero(
                                         || l("Auto scale", "Automatisk skala").into(),
                                     )),
                             )
-                            .child(area_chart(&hist.pts, 92.0, color, max_hint))
+                            .child(area_chart(&hist.pts, 130.0, color, max_hint))
                             .child(
                                 div()
                                     .flex()
@@ -467,7 +520,12 @@ fn hero(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(sub(k).text_color(t::ink_dim(dark)))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(t::ink_dim(dark))
+                                    .child(k),
+                            )
                             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(v))
                     })),
             )
@@ -476,7 +534,7 @@ fn hero(
 
 fn stat_card(label: &str, value: String, color: Option<Hsla>, dark: bool) -> Div {
     card(dark)
-        .child(sub(label.to_uppercase()).text_color(t::ink_dim(dark)).font_weight(FontWeight::SEMIBOLD))
+        .child(caption(label, dark))
         .child(
             div()
                 .text_xl()
@@ -486,28 +544,71 @@ fn stat_card(label: &str, value: String, color: Option<Hsla>, dark: bool) -> Div
         )
 }
 
-fn section_header(left: &str, right: &str, dark: bool) -> Div {
+pub(crate) fn section_header(left: &str, right: &str, dark: bool) -> Div {
     div()
         .flex()
         .justify_between()
         .items_end()
         .px_4()
+        .child(caption(left, dark))
         .child(
             div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t::ink_dim(dark))
-                .child(left.to_uppercase()),
-        )
-        .child(
-            div()
-                .text_xs()
+                .text_size(px(10.))
                 .text_color(t::ink_dim(dark))
                 .child(right.to_string()),
         )
 }
 
-fn list_card(rows: Vec<Div>, dark: bool) -> Div {
+struct FooterAction {
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    tab_index: isize,
+    selected: bool,
+}
+
+/// One shared control style for the footer actions: icon + label on a
+/// bordered, transparent-at-rest button with the metric accent on focus.
+fn footer_button(
+    action_def: FooterAction,
+    accent: Hsla,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let action = std::rc::Rc::new(action);
+    let keyboard = action.clone();
+    div()
+        .id(action_def.id)
+        .role(Role::Button)
+        .aria_label(SharedString::from(action_def.label))
+        .tab_index(action_def.tab_index)
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .px_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(t::line(dark))
+        .when(action_def.selected, |d| d.bg(accent.opacity(0.12)))
+        .text_size(px(12.))
+        .text_color(t::ink(dark))
+        .cursor_pointer()
+        .hover(|d| d.bg(t::card_hi(dark)))
+        .focus_visible(|d| d.border_color(accent))
+        .child(icon_img(action_def.icon, 14., t::ink_dim(dark)))
+        .child(action_def.label)
+        .on_click(move |_, window, cx| action(window, cx))
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
+                keyboard(window, cx);
+                cx.stop_propagation();
+            }
+        })
+}
+
+pub(crate) fn list_card(rows: Vec<Div>, dark: bool) -> Div {
     card(dark).p_0().py_2().gap_0().children(rows)
 }
 
@@ -575,9 +676,9 @@ impl Render for TideGaugeView {
                                     .focus_visible(|d| {
                                         d.border_color(accent).bg(accent.opacity(0.12))
                                     })
-                                    .on_key_down(move |event, _, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
+                                    .capture_key_down(move |event, window, cx| {
+                                        if is_activation_key(&event.keystroke) {
+                                            window.prevent_default();
                                             select_tab(&keyboard_target, tb, cx);
                                             cx.stop_propagation();
                                         }
@@ -642,8 +743,9 @@ impl Render for TideGaugeView {
                         .hover(|d| d.bg(t::card_hi(dark)))
                         .focus_visible(|d| d.bg(t::card_hi(dark)))
                         .child(icon_img("icons/arrow-left.svg", 16., t::ink(dark)))
-                        .on_key_down(move |event, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        .capture_key_down(move |event, window, cx| {
+                            if is_activation_key(&event.keystroke) {
+                                window.prevent_default();
                                 select_tab(&keyboard_back, tab, cx);
                                 cx.stop_propagation();
                             }
@@ -661,59 +763,76 @@ impl Render for TideGaugeView {
             topbar.into_any_element()
         };
 
+        let accent = tab.metric().unwrap_or(Metric::Cpu).accent(dark);
+        let settings_target = this.clone();
+        let process_target = this.clone();
+        let tools_target = this.clone();
         let footer = div()
             .w_full()
-            .px_3()
-            .py_1()
+            .px(px(20.))
+            .py_2()
             .flex()
             .items_center()
-            .justify_between()
-            .child(div().flex().items_center().gap_2().child({
-                let click_target = this.clone();
-                let key_target = this.clone();
-                div()
-                    .id("dashboard-settings")
-                    .role(Role::Button)
-                    .aria_label(l("Settings", "Innstillinger"))
-                    .tab_index(11)
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(t::ink_dim(dark))
-                    .hover(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
-                    .focus_visible(|d| d.bg(t::card_hi(dark)).text_color(t::ink(dark)))
-                    .child(icon_img("icons/settings.svg", 13., t::ink_dim(dark)))
-                    .child(l("Settings", "Innstillinger"))
-                    .on_click(move |_, _, cx| open_settings(&click_target, cx))
-                    .on_key_down(move |event, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            open_settings(&key_target, cx);
-                            cx.stop_propagation();
-                        }
-                    })
-            }))
+            .child(footer_button(
+                FooterAction {
+                    id: "dashboard-settings",
+                    icon: "icons/settings.svg",
+                    label: l("Settings", "Innstillinger"),
+                    tab_index: 11,
+                    selected: self.show_settings,
+                },
+                accent,
+                dark,
+                move |_, cx| open_settings(&settings_target, cx),
+            ))
             .child(
                 div()
-                    .text_size(px(10.))
-                    .text_color(t::ink_dim(dark))
-                    .child(format!(
-                        "{} {} · {} {}",
-                        s.app_count,
-                        l("apps", "apper"),
-                        s.proc_count,
-                        l("processes", "prosesser")
+                    .flex_1()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(t::ink_dim(dark))
+                            .child(format!(
+                                "{} {} · {} {}",
+                                s.app_count,
+                                l("apps", "apper"),
+                                s.proc_count,
+                                l("processes", "prosesser")
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(footer_button(
+                        FooterAction {
+                            id: "open-processes",
+                            icon: "icons/list.svg",
+                            label: l("Processes", "Prosesser"),
+                            tab_index: 12,
+                            selected: self.show_processes,
+                        },
+                        accent,
+                        dark,
+                        move |_, cx| crate::process_panel::open(&process_target, cx),
+                    ))
+                    .child(footer_button(
+                        FooterAction {
+                            id: "open-tools",
+                            icon: "icons/wrench.svg",
+                            label: l("Tools", "Verktøy"),
+                            tab_index: 13,
+                            selected: self.show_tools,
+                        },
+                        accent,
+                        dark,
+                        move |_, cx| crate::tools_panel::open(&tools_target, cx),
                     )),
             );
-
-        let process_target = this.clone();
-        let footer = footer.child(crate::controls::button("open-processes", l("Processes", "Prosesser"), self.show_processes, dark, move |_, cx| crate::process_panel::open(&process_target, cx)));
-        let tools_target = this.clone();
-        let footer = footer.child(crate::controls::button("open-tools", l("Tools", "Verktøy"), self.show_tools, dark, move |_, cx| crate::tools_panel::open(&tools_target, cx)));
 
         let content = div()
             .id("content")
@@ -816,7 +935,6 @@ impl TideGaugeView {
             Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), cx).into_any_element(),
             Tab::Network => network_tab(s, dark).into_any_element(),
             Tab::Gpu => gpu_tab(s, dark).into_any_element(),
-            Tab::Neural => neural_tab(s, dark).into_any_element(),
             Tab::Battery => battery_tab(s, dark).into_any_element(),
             Tab::Sound => div().flex().flex_col().gap_3()
                 .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
@@ -869,50 +987,20 @@ fn settings_choice(
     this: Entity<TideGaugeView>,
     change: impl Fn(&mut crate::settings::Settings) + 'static,
 ) -> impl IntoElement {
-    let change = std::rc::Rc::new(change);
-    let keyboard_change = change.clone();
-    let keyboard_target = this.clone();
-    let accent = t::accent(dark);
-    div()
-        .id(SharedString::from(id))
-        .role(Role::RadioButton)
-        .aria_label(SharedString::from(description))
-        .aria_toggled(if active {
-            Toggled::True
-        } else {
-            Toggled::False
-        })
-        .tab_index(index)
-        .rounded(px(8.))
-        .px_3()
-        .py_2()
-        .border_1()
-        .border_color(if active { accent } else { t::line(dark) })
-        .bg(if active {
-            accent.opacity(0.12)
-        } else {
-            t::card_hi(dark)
-        })
-        .text_color(if active { accent } else { t::ink_dim(dark) })
-        .text_size(px(12.))
-        .cursor_pointer()
-        .hover(|d| d.text_color(t::ink(dark)))
-        .focus_visible(|d| d.border_color(accent))
-        .child(label.to_string())
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                update_preference(
-                    &keyboard_target,
-                    |settings| keyboard_change(settings),
-                    window,
-                    cx,
-                );
-                cx.stop_propagation();
-            }
-        })
-        .on_click(move |_, window, cx| {
-            update_preference(&this, |settings| change(settings), window, cx)
-        })
+    crate::controls::control(
+        crate::controls::ControlSpec {
+            id,
+            label: label.to_string(),
+            aria: Some(description),
+            role: Role::RadioButton,
+            tab_index: index,
+            selected: active,
+            accent: t::accent(dark),
+            dark,
+            framed: false,
+        },
+        move |window, cx| update_preference(&this, |settings| change(settings), window, cx),
+    )
 }
 
 fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
@@ -936,28 +1024,34 @@ fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App
     });
 }
 
-fn login_control(status: crate::login::LoginStatus, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+fn login_control(
+    status: crate::login::LoginStatus,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> AnyElement {
     if !status.can_change() {
-        return div().text_sm().text_color(t::ink_dim(dark))
-            .child(l("Unavailable", "Utilgjengelig")).into_any_element();
+        return div()
+            .text_sm()
+            .text_color(t::ink_dim(dark))
+            .child(l("Unavailable", "Utilgjengelig"))
+            .into_any_element();
     }
     let active = status.is_registered();
-    let keyboard_target = this.clone();
-    div().id("launch-at-login").role(Role::Switch)
-        .aria_label(l("Launch at login", "Start ved pålogging"))
-        .aria_toggled(if active { Toggled::True } else { Toggled::False })
-        .tab_index(3).px_4().py_2().rounded(px(8.))
-        .bg(t::card_hi(dark)).border_1().border_color(t::line(dark))
-        .text_sm().text_color(t::ink(dark)).cursor_pointer()
-        .child(status.control_label())
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                set_launch_at_login(!active, &keyboard_target, cx);
-                cx.stop_propagation();
-            }
-        })
-        .on_click(move |_, _, cx| set_launch_at_login(!active, &this, cx))
-        .into_any_element()
+    crate::controls::control(
+        crate::controls::ControlSpec {
+            id: "launch-at-login".into(),
+            label: status.control_label().into(),
+            aria: Some(l("Launch at login", "Start ved pålogging").into()),
+            role: Role::Switch,
+            tab_index: 3,
+            selected: active,
+            accent: t::accent(dark),
+            dark,
+            framed: true,
+        },
+        move |_, cx| set_launch_at_login(!active, &this, cx),
+    )
+    .into_any_element()
 }
 
 fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) -> Div {
@@ -965,12 +1059,11 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
         localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
     };
     let settings = Settings::load();
-    let mut panel = div().flex().flex_col().gap_4().child(
-        div()
-            .text_size(px(24.))
-            .font_weight(FontWeight::BOLD)
-            .child(l("Settings", "Innstillinger")),
-    );
+    let mut panel = div().flex().flex_col().gap_3().child(section_header(
+        l("Settings", "Innstillinger"),
+        l("Saved locally", "Lagres lokalt"),
+        dark,
+    ));
     if let Some(error) = error {
         panel = panel.child(
             div()
@@ -987,8 +1080,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
                     "Choose a theme, or follow your Mac.", "Velg et tema, eller følg Macens utseende.",
                 ))))
-            .child(div().id("appearance-options").role(Role::RadioGroup)
-                .aria_label(l("Appearance", "Utseende")).tab_group().flex().gap_2()
+            .child(crate::controls::segment_group("appearance-options", l("Appearance", "Utseende"), dark)
                 .children([(None, l("System", "System")), (Some(false), l("Light", "Lyst")), (Some(true), l("Dark", "Mørkt"))]
                     .into_iter().enumerate().map(|(i, (value, label))| {
                         settings_choice(format!("appearance-{i}"), label, format!("{}: {label}", l("Appearance", "Utseende")),
@@ -1026,30 +1118,28 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                     ))),
             )
             .child(
-                div()
-                    .id("launcher-options")
-                    .role(Role::RadioGroup)
-                    .aria_label(l("Tidegauge icon", "Tidegauge-ikon"))
-                    .tab_group()
-                    .flex()
-                    .gap_2()
-                    .children(
-                        [(true, l("Shown", "Vises")), (false, l("Hidden", "Skjult"))]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, (shown, label))| {
-                                settings_choice(
-                                    format!("launcher-{shown}"),
-                                    label,
-                                    format!("{icon_name}: {label}"),
-                                    settings.show_app_icon == shown,
-                                    i as isize,
-                                    dark,
-                                    this.clone(),
-                                    move |settings| settings.show_app_icon = shown,
-                                )
-                            }),
-                    ),
+                crate::controls::segment_group(
+                    "launcher-options",
+                    l("Tidegauge icon", "Tidegauge-ikon"),
+                    dark,
+                )
+                .children(
+                    [(true, l("Shown", "Vises")), (false, l("Hidden", "Skjult"))]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (shown, label))| {
+                            settings_choice(
+                                format!("launcher-{shown}"),
+                                label,
+                                format!("{icon_name}: {label}"),
+                                settings.show_app_icon == shown,
+                                i as isize,
+                                dark,
+                                this.clone(),
+                                move |settings| settings.show_app_icon = shown,
+                            )
+                        }),
+                ),
             ),
     );
     let rows = MENU_METRICS
@@ -1072,10 +1162,6 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 },
             ));
             div()
-                .id(SharedString::from(format!("settings-{key}")))
-                .role(Role::RadioGroup)
-                .aria_label(name)
-                .tab_group()
                 .flex()
                 .items_center()
                 .justify_between()
@@ -1089,25 +1175,27 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                         .font_weight(FontWeight::MEDIUM)
                         .child(name),
                 )
-                .child(div().flex().gap_2().children(choices.enumerate().map(
-                    |(i, (style, label))| {
-                        settings_choice(
-                            format!("{key}-{style}"),
-                            label,
-                            format!("{name}: {label}"),
-                            selected == style,
-                            i as isize,
-                            dark,
-                            this.clone(),
-                            move |settings| {
-                                settings.set_menu_style(
-                                    key,
-                                    if style == "off" { None } else { Some(style) },
-                                )
-                            },
-                        )
-                    },
-                )))
+                .child(
+                    crate::controls::segment_group(format!("settings-{key}"), name, dark).children(
+                        choices.enumerate().map(|(i, (style, label))| {
+                            settings_choice(
+                                format!("{key}-{style}"),
+                                label,
+                                format!("{name}: {label}"),
+                                selected == style,
+                                i as isize,
+                                dark,
+                                this.clone(),
+                                move |settings| {
+                                    settings.set_menu_style(
+                                        key,
+                                        if style == "off" { None } else { Some(style) },
+                                    )
+                                },
+                            )
+                        }),
+                    ),
+                )
         })
         .collect::<Vec<_>>();
     panel.child(card(dark).gap_0().py_1().children(rows))
@@ -1118,70 +1206,40 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
             )))
         .child(div().flex().justify_end().gap_3()
             .child({
-                let click_target = this.clone();
-                let key_target = this.clone();
-                div().id("settings-icon-only").role(Role::Button).aria_label(l("Reset to icon only", "Tilbakestill til bare ikon"))
-                    .tab_index(29).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
-                    .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                    .child(l("Reset to icon only", "Tilbakestill til bare ikon"))
-                    .on_key_down(move |event, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            update_preference(&key_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, window, cx);
-                            cx.stop_propagation();
-                        }
-                    })
-                    .on_click(move |_, window, cx| update_preference(&click_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, window, cx))
+                let target = this.clone();
+                crate::controls::button_indexed(
+                    "settings-icon-only",
+                    l("Reset to icon only", "Tilbakestill til bare ikon"),
+                    false,
+                    dark,
+                    29,
+                    move |window, cx| {
+                        update_preference(&target, |settings| {
+                            settings.show_app_icon = true;
+                            settings.menu_items.clear();
+                        }, window, cx)
+                    },
+                )
             })
-            .child(div().id("settings-app-menu").role(Role::Button).aria_label(l("App menu", "Appmeny"))
-                .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
-                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                .child(l("App menu", "Appmeny"))
-                .on_key_down(|event, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
-                        cx.stop_propagation();
-                    }
-                })
-                .on_click(|_, _, _| crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst)))
-            .child(div().id("settings-quit").role(Role::Button).aria_label(l("Quit Tidegauge", "Avslutt Tidegauge"))
-                .tab_index(31).rounded_md().px_4().py_2().bg(t::card_hi(dark))
-                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                .child(l("Quit Tidegauge", "Avslutt Tidegauge"))
-                .on_key_down(|event, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.quit(); }
-                })
-                .on_click(|_, _, cx| cx.quit())))
-}
-
-/// Compact bars use the latest 48 real samples, aligned to the right while
-/// the history fills. Empty slots are left blank rather than inventing activity.
-fn bar_chart(pts: &[f64], color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
-    let pts = pts.to_vec();
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let w: f32 = bounds.size.width.into();
-            let h: f32 = bounds.size.height.into();
-            let ox: f32 = bounds.origin.x.into();
-            let oy: f32 = bounds.origin.y.into();
-            let n = pts.len().min(48);
-            let tail = &pts[pts.len() - n..];
-            let data_max = tail.iter().copied().fold(0.0f64, f64::max);
-            let max = max_hint.unwrap_or(data_max).max(data_max).max(1.0);
-            let slot = w / 48.0;
-            for (i, value) in tail.iter().enumerate() {
-                let height = ((*value / max).clamp(0.0, 1.0) as f32 * h).max(1.0);
-                let x = ox + (48 - n + i) as f32 * slot;
-                let width = (slot - 2.0).max(1.0);
-                let mut bar = Path::new(point(px(x), px(oy + h)));
-                bar.line_to(point(px(x), px(oy + h - height)));
-                bar.line_to(point(px(x + width), px(oy + h - height)));
-                bar.line_to(point(px(x + width), px(oy + h)));
-                bar.line_to(point(px(x), px(oy + h)));
-                window.paint_path(bar, color);
-            }
-        },
-    ).w_full().h_full()
+            .child(crate::controls::button_indexed(
+                "settings-app-menu",
+                l("App menu", "Appmeny"),
+                false,
+                dark,
+                30,
+                |_, _| {
+                    crate::statusbar::SHOW_CONTEXT_MENU
+                        .store(true, std::sync::atomic::Ordering::SeqCst)
+                },
+            ))
+            .child(crate::controls::button_indexed(
+                "settings-quit",
+                l("Quit Tidegauge", "Avslutt Tidegauge"),
+                false,
+                dark,
+                31,
+                |_, cx| cx.quit(),
+            )))
 }
 
 fn metric_heading(tab: Tab, dark: bool) -> Div {
@@ -1220,8 +1278,9 @@ fn overview_card(
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .focus_visible(|d| d.border_color(color))
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
                 select_tab(&keyboard_target, tab, cx);
                 cx.stop_propagation();
             }
@@ -1308,7 +1367,7 @@ fn overview_card(
                     .px(px(6.))
                     .py(px(5.))
                     .bg(color.opacity(0.09))
-                    .child(bar_chart(&hist.pts, color, max)),
+                    .child(area_chart(&hist.pts, 28.0, color, max)),
             )
         })
         .when(hist.pts.is_empty(), |d| {
@@ -1341,9 +1400,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             l("Now", "Nå").into(),
             format!("{:.0} %", s.cpu_pct),
             [
-                ("Load · 1 min", format!("{:.2}", s.load_avg[0])),
-                ("Cores", s.chip.cores.to_string()),
-                ("Average", history_average(&s.cpu_hist)),
+                (l("Load · 1 min", "Last · 1 min"), format!("{:.2}", s.load_avg[0])),
+                (l("Cores", "Kjerner"), s.chip.cores.to_string()),
+                (l("Average", "Gjennomsnitt"), history_average(&s.cpu_hist)),
             ],
             &s.cpu_hist,
             Some(100.),
@@ -1357,9 +1416,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ),
             fmt_bytes(s.mem.used as f64),
             [
-                ("App", fmt_bytes(s.mem.app as f64)),
-                ("Wired", fmt_bytes(s.mem.wired as f64)),
-                ("Compressed", fmt_bytes(s.mem.compressed as f64)),
+                (l("App", "App"), fmt_bytes(s.mem.app as f64)),
+                (l("Wired", "Bundet"), fmt_bytes(s.mem.wired as f64)),
+                (l("Compressed", "Komprimert"), fmt_bytes(s.mem.compressed as f64)),
             ],
             &s.mem_hist,
             Some(100.),
@@ -1378,14 +1437,14 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .unwrap_or("—".into()),
             [
                 (
-                    "Memory",
+                    l("Memory", "Minne"),
                     s.gpu
                         .mem_in_use
                         .map(|v| fmt_bytes(v as f64))
                         .unwrap_or("—".into()),
                 ),
                 (
-                    "Average",
+                    l("Average", "Gjennomsnitt"),
                     if s.gpu.utilization.is_some() {
                         history_average(&s.gpu_hist)
                     } else {
@@ -1393,7 +1452,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     },
                 ),
                 (
-                    "Peak",
+                    l("Peak", "Topp"),
                     if s.gpu.utilization.is_some() {
                         fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))
                     } else {
@@ -1413,9 +1472,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ),
             fmt_bytes(s.disk.free as f64),
             [
-                ("Reading", fmt_rate(s.disk.read_rate)),
-                ("Writing", fmt_rate(s.disk.write_rate)),
-                ("Used", fmt_bytes(s.disk.used as f64)),
+                (l("Reading", "Leser"), fmt_rate(s.disk.read_rate)),
+                (l("Writing", "Skriver"), fmt_rate(s.disk.write_rate)),
+                (l("Used", "Brukt"), fmt_bytes(s.disk.used as f64)),
             ],
             &s.disk_w_hist,
             None,
@@ -1425,9 +1484,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             l("Downloading", "Laster ned").into(),
             fmt_rate(s.net.rate_in),
             [
-                ("Uploading", fmt_rate(s.net.rate_out)),
-                ("Received¹", fmt_bytes(s.net.total_in as f64)),
-                ("Sent¹", fmt_bytes(s.net.total_out as f64)),
+                (l("Uploading", "Laster opp"), fmt_rate(s.net.rate_out)),
+                (l("Received¹", "Mottatt¹"), fmt_bytes(s.net.total_in as f64)),
+                (l("Sent¹", "Sendt¹"), fmt_bytes(s.net.total_out as f64)),
             ],
             &s.net_in_hist,
             None,
@@ -1440,7 +1499,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .map(|v| format!("{:.0} %", v))
                 .unwrap_or("—".into()),
             [
-                ("Remaining", remaining),
+                (l("Remaining", "Gjenstår"), remaining),
                 (
                     crate::locale::text("Battery flow", "Batteristrøm"),
                     s.battery
@@ -1502,25 +1561,25 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     .grid_cols(3)
                     .gap(px(16.))
                     .when(favorites.iter().any(|key| key == "memory"), |row| row.child(donut_card(
-                        "Memory by Type",
+                        l("Memory by Type", "Minne etter type"),
                         Tab::Memory,
                         vec![
-                            BreakdownEntry::new("App", s.mem.app as f64, Metric::Cpu.accent(dark)),
+                            BreakdownEntry::new(l("App", "App"), s.mem.app as f64, Metric::Cpu.accent(dark)),
                             BreakdownEntry::new(
-                                "Wired",
+                                l("Wired", "Bundet"),
                                 s.mem.wired as f64,
                                 Metric::Memory.accent(dark),
                             ),
                             BreakdownEntry::new(
-                                "Compressed",
+                                l("Compressed", "Komprimert"),
                                 s.mem.compressed as f64,
                                 Metric::Gpu.accent(dark),
                             ),
-                            BreakdownEntry::new("Cached", s.mem.cached as f64, t::ink_dim(dark)),
-                            BreakdownEntry::new("Free", s.mem.free as f64, t::card_hi(dark)),
+                            BreakdownEntry::new(l("Cached", "Hurtigbufret"), s.mem.cached as f64, t::ink_dim(dark)),
+                            BreakdownEntry::new(l("Free", "Ledig"), s.mem.free as f64, t::card_hi(dark)),
                         ],
                         format!("{:.0}%", mem_pct),
-                        "in use",
+                        l("in use", "i bruk"),
                         fmt_bytes,
                         dark,
                     ))
@@ -1622,8 +1681,8 @@ fn donut_card(
             .child(div().flex_shrink_0().text_size(px(11.)).text_color(t::ink_dim(dark))
                 .child(format(entry.value)))
     }).collect::<Vec<_>>();
-    div().min_w_0().h(px(184.)).rounded(px(12.)).bg(t::card(dark)).p(px(18.))
-        .flex().flex_col().gap(px(14.))
+    div().min_w_0().h(px(184.)).rounded(px(12.)).bg(t::card(dark)).p(px(16.))
+        .flex().flex_col().gap(px(12.))
         .child(div().flex().items_center().gap_2()
             .child(div().size(px(22.)).rounded(px(7.)).bg(tab.metric().unwrap().soft(dark))
                 .flex().items_center().justify_center()
@@ -1652,8 +1711,8 @@ fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
         });
     }
     let other: f64 = top.iter().skip(4).map(|a| a.mem_bytes as f64).sum();
-    if other > 0. { slices.push(BreakdownEntry::new("Other", other, color.opacity(0.35))); }
-    donut_card("Memory by App", Tab::Memory, slices, fmt_bytes(total), "all apps", fmt_bytes, dark)
+    if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
+    donut_card(l("Memory by App", "Minne etter app"), Tab::Memory, slices, fmt_bytes(total), l("all apps", "alle apper"), fmt_bytes, dark)
 }
 
 fn breakdown_watts(watts: f64) -> String {
@@ -1682,8 +1741,8 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
         });
     }
     let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
-    if other > 0. { slices.push(BreakdownEntry::new("Other", other, color.opacity(0.35))); }
-    donut_card("Power by App", Tab::Battery, slices, breakdown_watts(total), "estimated", breakdown_watts, dark)
+    if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
+    donut_card(l("Power by App", "Effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("estimated", "beregnet"), breakdown_watts, dark)
 }
 
 // ---------- metric tabs ----------
@@ -1774,6 +1833,70 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
         .child(sensor_panel(s, dark))
 }
 
+const MAX_DISPLAYED_TEMPERATURE_CHANNELS: usize = 24;
+
+/// Ordered display rows and counts for the temperature card. Real hardware can
+/// expose hundreds of channels, so the card renders at most
+/// `MAX_DISPLAYED_TEMPERATURE_CHANNELS` rows.
+struct TemperatureDisplay {
+    rows: Vec<crate::sensors::Reading>,
+    total: usize,
+    unavailable: usize,
+}
+
+/// Order a local copy of the channels by value descending with unavailable
+/// channels last, then bound the rendered list. The snapshot is not mutated.
+fn bound_temperature_display(
+    values: &[crate::sensors::Reading],
+    fresh: bool,
+) -> TemperatureDisplay {
+    let mut rows = values.to_vec();
+    rows.sort_by(|a, b| match (a.value, b.value) {
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal),
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    rows.truncate(MAX_DISPLAYED_TEMPERATURE_CHANNELS);
+    TemperatureDisplay {
+        rows,
+        total: values.len(),
+        unavailable: if fresh {
+            values.iter().filter(|r| r.value.is_none()).count()
+        } else {
+            values.len()
+        },
+    }
+}
+
+/// Exact counts when the temperature list is bounded or has unavailable
+/// channels; `None` when every channel fits and reported a value. `l` is
+/// `locale::text` in the app and a fixed-language selector in tests.
+fn temperature_display_caption(
+    display: &TemperatureDisplay,
+    l: fn(&'static str, &'static str) -> &'static str,
+) -> Option<String> {
+    if display.total <= MAX_DISPLAYED_TEMPERATURE_CHANNELS && display.unavailable == 0 {
+        return None;
+    }
+    let shown = display.rows.len();
+    let total = display.total;
+    let mut caption = format!(
+        "{} {shown} {} {total} {}",
+        l("Showing", "Viser"),
+        l("of", "av"),
+        l("channels", "kanaler")
+    );
+    if display.unavailable > 0 {
+        caption.push_str(&format!(
+            " · {} {}",
+            display.unavailable,
+            l("unavailable", "utilgjengelige")
+        ));
+    }
+    Some(caption)
+}
+
 fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     use crate::locale::text as l;
     let preview = crate::sensors::preview();
@@ -1788,6 +1911,8 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     } else {
         sample.source.label()
     };
+    let temperature_display = bound_temperature_display(&sample.temperatures, fresh);
+    let temperature_caption = temperature_display_caption(&temperature_display, l);
     let readings = |title: &'static str,
                     values: &[crate::sensors::Reading],
                     unit: &'static str,
@@ -1825,7 +1950,10 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
         .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), l("Read-only", "Kun avlesning"), dark))
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample sensor values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke sensormålinger")).text_color(t::ink_dim(dark)))))
         .child(div().grid().grid_cols(2).gap_3()
-            .child(readings(l("Temperature channels", "Temperaturkanaler"), &sample.temperatures, "°C", if sample.discovering { l("Discovering temperature channels…", "Finner temperaturkanaler…") } else { l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.") }))
+            .child(readings(l("Temperature channels", "Temperaturkanaler"), &temperature_display.rows, "°C", if sample.discovering { l("Discovering temperature channels…", "Finner temperaturkanaler…") } else { l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.") })
+                .when_some(temperature_caption, |d, caption| {
+                    d.child(sub(caption).text_color(t::ink_dim(dark)))
+                }))
             .child(readings(l("Fan speed", "Viftehastighet"), &sample.fans, "RPM", if sample.fan_count == Some(0) && fresh {
                 l("The controller reports no fans.", "Kontrolleren rapporterer ingen vifter.")
             } else { l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.") })))
@@ -1905,10 +2033,31 @@ fn disk_tab(
         .map(|a| a.disk_read_rate + a.disk_write_rate)
         .unwrap_or(1.0)
         .max(1.0);
+    let mut combined = s.disk_r_hist.pts.clone();
+    for (i, v) in combined.iter_mut().enumerate() {
+        *v += s.disk_w_hist.pts.get(i).copied().unwrap_or(0.0);
+    }
+    let io_hist = Hist {
+        pts: combined,
+        max_len: 360,
+    };
     div()
         .flex()
         .flex_col()
         .gap_3()
+        .child(hero(
+            l("Disk activity · all devices", "Diskaktivitet · alle enheter"),
+            fmt_rate(s.disk.read_rate + s.disk.write_rate),
+            l("System-wide read + write", "Lesing + skriving i hele systemet").into(),
+            &io_hist,
+            m.accent(dark),
+            dark,
+            vec![
+                (l("Reading", "Leser").into(), fmt_rate(s.disk.read_rate)),
+                (l("Writing", "Skriver").into(), fmt_rate(s.disk.write_rate)),
+            ],
+            None,
+        ))
         .child(section_header(l("Storage devices", "Lagringsenheter"), l("Read-only", "Kun avlesning"), dark))
         .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
         .child(div().id("disk-device-picker").role(Role::RadioGroup).aria_label(l("Storage devices", "Lagringsenheter")).tab_group().flex().flex_wrap().gap_2().children(inventory.devices.iter().enumerate().map(|(index, device)| {
@@ -1923,9 +2072,9 @@ fn disk_tab(
                 .cursor_pointer().max_w(px(320.))
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(device.id.clone()))
                 .child(sub(device.name.clone()).text_color(t::ink_dim(dark)))
-                .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        view.selected_disk = Some(key_id.clone()); cx.notify(); cx.stop_propagation();
+                .capture_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                    if is_activation_key(&event.keystroke) {
+                        window.prevent_default(); view.selected_disk = Some(key_id.clone()); cx.notify(); cx.stop_propagation();
                     }
                 }))
                 .on_click(cx.listener(move |view, _, _, cx| { view.selected_disk = Some(id.clone()); cx.notify(); }))
@@ -1981,7 +2130,7 @@ fn disk_detail(
     };
     let flow = |title: &'static str, rate: Option<f64>, history: &[f64]| {
         card(dark)
-            .child(caption(title).text_color(t::ink_dim(dark)))
+            .child(caption(title, dark))
             .child(
                 div()
                     .text_2xl()
@@ -1994,24 +2143,159 @@ fn disk_detail(
     };
     div().flex().flex_col().gap_3()
         .child(card(dark)
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(device.name.clone()))
-            .child(sub(format!("{} · {} · {} · {}", device.id, location, media, device.protocol.as_deref().unwrap_or(l("Protocol unavailable", "Protokoll utilgjengelig")))).text_color(t::ink_dim(dark))))
-        .child(stat_card(l("Device capacity", "Enhetskapasitet"), bytes(device.size), None, dark))
+            .child(div().flex().items_center().gap_3()
+                .child(div().flex_1().min_w_0()
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(device.name.clone()))
+                    .child(sub(format!("{} · {} · {} · {}", device.id, location, media, device.protocol.as_deref().unwrap_or(l("Protocol unavailable", "Protokoll utilgjengelig")))).text_color(t::ink_dim(dark))))
+                .child(div().flex_shrink_0().flex().flex_col().items_end().gap_1()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(bytes(device.size)))
+                    .child(caption(l("Physical capacity", "Fysisk kapasitet"), dark)))))
         .when(device.smart.health == Health::Failed, |d| d.child(card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("SMART reports a failure. Back up important data and inspect this drive.", "SMART rapporterer en feil. Sikkerhetskopier viktige data og undersøk disken.")))))
         .child(section_header(l("Volumes and containers", "Volumer og beholdere"), "diskutil", dark))
         .when(device.volumes.is_empty(), |d| d.child(sub(l("No readable volume information.", "Ingen lesbar voluminformasjon.")).text_color(t::ink_dim(dark))))
-        .children(device.volumes.iter().map(|volume| {
-            card(dark)
-                .child(div().flex().justify_between().gap_3().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(volume.name.clone())).child(sub(volume.id.clone()).text_color(t::ink_dim(dark))))
-                .child(sub(volume.mount.clone().unwrap_or_else(|| l("Not mounted", "Ikke montert").into())).text_color(t::ink_dim(dark)))
-                .when_some(volume.container.as_ref(), |d, container| d.child(sub(format!("APFS {} · {}", container, volume.stores.join(", "))).text_color(t::ink_dim(dark))))
-                .child(div().grid().grid_cols(3).gap_3().children([
-                    (if volume.container.is_some() { l("Container capacity", "Beholderkapasitet") } else { l("Volume capacity", "Volumkapasitet") }, bytes(volume.total)),
-                    (if volume.container.is_some() { l("Volume footprint", "Volumets plassbruk") } else { l("Used", "Brukt") }, bytes(volume.used)),
-                    (if volume.container.is_some() { l("Shared free", "Delt ledig plass") } else { l("Free", "Ledig") }, bytes(volume.free)),
-                ].into_iter().map(|(label, value)| div().flex().flex_col().gap_1().child(caption(label).text_color(t::ink_dim(dark))).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(value)))))
+        .children(crate::disks::volume_groups(&device.volumes).iter().map(|group| {
+            let mut volume_card = card(dark);
+            match &group.container {
+                Some(container) => {
+                    volume_card = volume_card
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!("APFS {container}")),
+                                        )
+                                        .when(!group.stores.is_empty(), |d| {
+                                            d.child(
+                                                sub(group.stores.join(", "))
+                                                    .text_color(t::ink_dim(dark)),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .gap_4()
+                                        .children(
+                                            [
+                                                (
+                                                    l("Shared capacity", "Delt kapasitet"),
+                                                    bytes(group.total),
+                                                ),
+                                                (l("Shared free", "Delt ledig"), bytes(group.free)),
+                                            ]
+                                            .into_iter()
+                                            .map(|(label, value)| {
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_end()
+                                                    .gap_1()
+                                                    .child(caption(label, dark))
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(value),
+                                                    )
+                                            }),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .pt(px(4.))
+                                .child(
+                                    div()
+                                        .w(px(150.))
+                                        .flex_shrink_0()
+                                        .child(caption(l("Volume", "Volum"), dark)),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .w(px(90.))
+                                        .flex_shrink_0()
+                                        .text_right()
+                                        .child(caption(
+                                            l("Volume footprint", "Volumets plassbruk"),
+                                            dark,
+                                        )),
+                                ),
+                        )
+                        .children(group.volumes.iter().map(|volume| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .py(px(4.))
+                                .child(
+                                    div()
+                                        .w(px(150.))
+                                        .flex_shrink_0()
+                                        .min_w_0()
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(volume.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .text_xs()
+                                        .text_color(t::ink_dim(dark))
+                                        .child(format!(
+                                            "{} · {}",
+                                            volume.id,
+                                            volume.mount.clone().unwrap_or_else(|| {
+                                                l("Not mounted", "Ikke montert").into()
+                                            })
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(90.))
+                                        .flex_shrink_0()
+                                        .text_right()
+                                        .text_xs()
+                                        .text_color(t::ink_dim(dark))
+                                        .child(bytes(volume.used)),
+                                )
+                        }));
+                }
+                None => {
+                    for volume in &group.volumes {
+                        volume_card = volume_card
+                            .child(div().flex().justify_between().gap_3().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(volume.name.clone())).child(sub(volume.id.clone()).text_color(t::ink_dim(dark))))
+                            .child(sub(volume.mount.clone().unwrap_or_else(|| l("Not mounted", "Ikke montert").into())).text_color(t::ink_dim(dark)))
+                            .child(div().grid().grid_cols(3).gap_3().children([
+                                (l("Volume capacity", "Volumkapasitet"), bytes(volume.total)),
+                                (l("Used", "Brukt"), bytes(volume.used)),
+                                (l("Free", "Ledig"), bytes(volume.free)),
+                            ].into_iter().map(|(label, value)| div().flex().flex_col().gap_1().child(caption(label, dark)).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(value)))));
+                    }
+                }
+            }
+            volume_card
         }))
-        .child(sub(l("APFS volumes share container space. Container capacity and shared free space are repeated for context, never summed as separate disks or per-volume free space.", "APFS-volumer deler beholderplass. Beholderkapasitet og delt ledig plass gjentas som kontekst, og summeres aldri som separate disker eller ledig plass per volum.")).text_color(t::ink_dim(dark)))
+        .child(sub(l("APFS volumes share container space. Shared capacity and free space are shown per container, never summed per volume.", "APFS-volumer deler beholderplass. Delt kapasitet og ledig plass vises per beholder og summeres aldri per volum.")).text_color(t::ink_dim(dark)))
         .child(section_header(l("Device activity", "Enhetsaktivitet"), l("Read + write", "Lesing + skriving"), dark))
         .child(div().grid().grid_cols(2).gap_3()
             .child(flow(l("Device read", "Enhetens lesing"), io.and_then(|v| v.read_rate), io.map(|v| v.read_history.as_slice()).unwrap_or(&[])))
@@ -2107,82 +2391,150 @@ fn network_tab(s: &Snapshot, dark: bool) -> Div {
         )
 }
 
+/// Empty-state card per the detail-page template: a metric-tinted icon tile,
+/// a 13 px headline, and at most two lines of `ink_dim` explanation. States
+/// what is unavailable and why; never implies a measurement exists.
+pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, explanation: String, dark: bool) -> Div {
+    div()
+        .bg(t::card(dark))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(t::line(dark))
+        .p_4()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .size(px(36.))
+                .flex_shrink_0()
+                .rounded(px(9.))
+                .bg(color.opacity(0.16))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon_img(icon, 20., color)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(headline),
+                )
+                .child(sub(explanation).text_color(t::ink_dim(dark))),
+        )
+}
+
 fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
     let m = Metric::Gpu;
     let supported = s.gpu.supported;
+    let mut page = div().flex().flex_col().gap_3();
     if s.gpu.utilization.is_none() {
-        return card(dark)
-            .child(section_header("GPU", l("Read-only", "Kun avlesning"), dark).px_0())
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(l("Utilization unavailable", "Utnyttelse utilgjengelig")))
-            .child(sub(l("The current collector does not expose GPU utilization on this Mac. Missing readings are not zero usage.", "Den aktive datakilden viser ikke GPU-utnyttelse på denne Macen. Manglende målinger betyr ikke null bruk.")).text_color(t::ink_dim(dark)))
-            .when_some(s.gpu.mem_in_use, |d, bytes| d.child(sub(format!("{}: {}", l("GPU memory", "GPU-minne"), fmt_bytes(bytes as f64))).text_color(t::ink_dim(dark))));
+        page = page
+            .child(empty_state(
+                "icons/gpu.svg",
+                m.accent(dark),
+                l("Utilization unavailable", "Utnyttelse utilgjengelig").into(),
+                l("The current collector does not expose GPU utilization on this Mac. Missing readings are not zero usage.", "Den aktive datakilden viser ikke GPU-utnyttelse på denne Macen. Manglende målinger betyr ikke null bruk.").into(),
+                dark,
+            ))
+            .when_some(s.gpu.mem_in_use, |d, bytes| {
+                d.child(stat_card(l("GPU memory", "GPU-minne"), fmt_bytes(bytes as f64), None, dark))
+            });
+    } else {
+        page = page
+            .child(hero(
+                "GPU",
+                s.gpu.utilization.map(|u| format!("{:.0}%", u)).unwrap_or_else(|| "—".into()),
+                if supported { "Apple GPU".into() } else { l("Not available on this Mac", "Ikke tilgjengelig på denne Macen").into() },
+                &s.gpu_hist,
+                m.accent(dark),
+                dark,
+                vec![
+                    (l("GPU memory", "GPU-minne").into(), s.gpu.mem_in_use.map(|b| fmt_bytes(b as f64)).unwrap_or("—".into())),
+                    (l("Average", "Gjennomsnitt").into(), history_average(&s.gpu_hist)),
+                    (l("Peak", "Topp").into(), fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))),
+                ],
+                Some(100.0),
+            ))
+            .when(!supported, |d| {
+                d.child(empty_state(
+                    "icons/gpu.svg",
+                    m.accent(dark),
+                    l("Limited GPU counters", "Begrensede GPU-målere").into(),
+                    l("GPU utilization counters aren't exposed in virtual machines. On real Apple Silicon hardware this tab shows utilization and GPU memory.", "GPU-utnyttelse er ikke eksponert i virtuelle maskiner. På ekte Apple Silicon-maskinvare viser denne fanen utnyttelse og GPU-minne.").into(),
+                    dark,
+                ))
+            })
+            .child(section_header(
+                l("Apps", "Apper"),
+                l("GPU attribution", "GPU-tilskrivning"),
+                dark,
+            ))
+            .child(empty_state(
+                "icons/gpu.svg",
+                m.accent(dark),
+                l("Per-app GPU usage unavailable", "GPU-bruk per app er ikke tilgjengelig").into(),
+                l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen.").into(),
+                dark,
+            ));
     }
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(hero(
-            "GPU",
-            s.gpu.utilization.map(|u| format!("{:.0}%", u)).unwrap_or_else(|| "—".into()),
-            if supported { "Apple GPU".into() } else { "Not available on this Mac".into() },
-            &s.gpu_hist,
-            m.accent(dark),
-            dark,
-            vec![
-                (l("GPU memory", "GPU-minne").into(), s.gpu.mem_in_use.map(|b| fmt_bytes(b as f64)).unwrap_or("—".into())),
-            ],
-            Some(100.0),
-        ))
-        .when(!supported, |d| {
-            d.child(
-                card(dark).child(
-                    div()
-                        .text_sm()
-                        .text_color(t::ink_dim(dark))
-                        .child("GPU utilization counters aren't exposed in virtual machines. On real Apple Silicon hardware this tab shows utilization and GPU memory."),
-                ),
-            )
-        })
+    page.child(neural_section(s, dark))
 }
 
-fn neural_tab(s: &Snapshot, dark: bool) -> Div {
+/// Neural Engine as a supplementary section of the GPU page. Utilization is
+/// not exposed by the collector on this Mac, so the section reports its core
+/// count honestly rather than implying a live reading.
+fn neural_section(s: &Snapshot, dark: bool) -> Div {
     let m = Metric::Neural;
     let cores = s.chip.neural_cores;
-    let supported = cores > 0;
-    if s.neural.is_none() {
-        return card(dark)
-            .child(section_header("Neural Engine", l("Read-only", "Kun avlesning"), dark).px_0())
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(l("Utilization unavailable", "Utnyttelse utilgjengelig")))
-            .child(sub(l("Neural Engine utilization is not implemented by the current collector. A core count does not imply live utilization support.", "Den aktive datakilden støtter ikke måling av Neural Engine-utnyttelse. Et antall kjerner betyr ikke at direkte måling er støttet.")).text_color(t::ink_dim(dark)))
-            .when(supported, |d| d.child(sub(format!("{}: {}", l("Reported cores", "Rapporterte kjerner"), cores)).text_color(t::ink_dim(dark))));
-    }
-    div()
+    let mut section = div()
         .flex()
         .flex_col()
         .gap_3()
-        .child(hero(
-            "Neural Engine",
-            s.neural.map(|v| format!("{:.0}%", v)).unwrap_or_else(|| "—".into()),
-            if supported {
-                format!("Apple Neural Engine · {} cores", cores)
-            } else {
-                "Not available on this Mac".into()
-            },
-            &s.neural_hist,
+        .child(section_header("Neural Engine", l("Read-only", "Kun avlesning"), dark));
+    if s.neural.is_some() {
+        section = section.child(
+            div()
+                .grid()
+                .grid_cols(3)
+                .gap_3()
+                .child(stat_card(
+                    l("Utilization", "Utnyttelse"),
+                    s.neural.map(|v| format!("{:.0}%", v)).unwrap_or("—".into()),
+                    Some(m.accent(dark)),
+                    dark,
+                ))
+                .child(stat_card(
+                    l("Cores", "Kjerner"),
+                    if cores > 0 { format!("{}", cores) } else { "—".into() },
+                    None,
+                    dark,
+                ))
+                .child(stat_card(l("Thermal", "Termisk"), s.thermal.clone(), None, dark)),
+        );
+    } else {
+        section = section.child(empty_state(
+            "icons/brain.svg",
             m.accent(dark),
+            l("Utilization unavailable", "Utnyttelse utilgjengelig").into(),
+            format!(
+                "{} {}",
+                l("Neural Engine utilization needs real Apple Silicon hardware with IOReport access; the current collector does not report it.", "Neural Engine-utnyttelse krever ekte Apple Silicon-maskinvare med IOReport-tilgang; den aktive datakilden rapporterer det ikke."),
+                if cores > 0 {
+                    format!("{}: {} · {}", l("Reported cores", "Rapporterte kjerner"), cores, l("a core count does not imply live utilization support", "et kjerneantall betyr ikke at direkte måling er støttet"))
+                } else {
+                    l("A core count does not imply live utilization support.", "Et kjerneantall betyr ikke at direkte måling er støttet.").to_string()
+                }
+            ),
             dark,
-            vec![
-                ("Cores".into(), if supported { format!("{}", cores) } else { "—".into() }),
-                ("Thermal".into(), s.thermal.clone()),
-                ("State".into(), if s.neural.is_some() { "Ready".into() } else { "Unavailable".into() }),
-            ],
-            Some(100.0),
-        ))
-        .when(s.neural.is_none(), |d| {
-            d.child(card(dark).child(div().text_sm().text_color(t::ink_dim(dark)).child(
-                "Neural Engine utilization needs real Apple Silicon hardware with IOReport access.",
-            )))
-        })
+        ));
+    }
+    section
 }
 
 fn battery_tab(s: &Snapshot, dark: bool) -> Div {
@@ -2218,20 +2570,14 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             ],
             Some(100.0),
         )))
-        .when(b.present, |d| d
-            .child(section_header(l("Battery health", "Batterihelse"), l("Read-only", "Kun avlesning"), dark))
-            .child(div().grid().grid_cols(3).gap_3()
-                .child(stat_card(l("Full-charge capacity", "Fulladekapasitet"), b.full_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
-                .child(stat_card(l("Design capacity", "Designkapasitet"), b.design_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
-                .child(stat_card(l("macOS condition", "Tilstand fra macOS"), b.condition_label().into(), None, dark)))
-            .child(sub(l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS.")).text_color(t::ink_dim(dark)))
-)
-        .when(!b.present, |d| d.child(card(dark)
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(status))
-            .child(div().text_sm().text_color(t::ink_dim(dark)).child(
-            if b.available { l("This Mac has no internal battery. Battery health and charge readings do not apply.", "Denne Macen har ikke et internt batteri. Batterihelse og lademålinger er ikke relevante.") }
-            else { l("macOS did not provide battery information. No charge or health values are assumed.", "macOS ga ingen batteriinformasjon. Ingen verdier for ladenivå eller helse blir antatt.") }
-        ))))
+        .when(!b.present, |d| d.child(empty_state(
+            "icons/battery-charging.svg",
+            m.accent(dark),
+            status.into(),
+            if b.available { l("This Mac has no internal battery. Battery health and charge readings do not apply.", "Denne Macen har ikke et internt batteri. Batterihelse og lademålinger er ikke relevante.").into() }
+            else { l("macOS did not provide battery information. No charge or health values are assumed.", "macOS ga ingen batteriinformasjon. Ingen verdier for ladenivå eller helse blir antatt.").into() },
+            dark,
+        )))
         .child(section_header(l("App", "App"), l("Estimated power usage", "Anslått strømforbruk"), dark))
         .when(s.apps.iter().any(|a| a.power_w > 0.0), |d| d.child(list_card(
             {
@@ -2251,6 +2597,12 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             "Ingen energianslag per app er tilgjengelige nå.",
         )).text_color(t::ink_dim(dark)))))
         .when(b.present, |d| d
+            .child(section_header(l("Battery health", "Batterihelse"), l("Read-only", "Kun avlesning"), dark))
+            .child(div().grid().grid_cols(3).gap_3()
+                .child(stat_card(l("Full-charge capacity", "Fulladekapasitet"), b.full_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
+                .child(stat_card(l("Design capacity", "Designkapasitet"), b.design_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
+                .child(stat_card(l("macOS condition", "Tilstand fra macOS"), b.condition_label().into(), None, dark)))
+            .child(sub(l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS.")).text_color(t::ink_dim(dark)))
             .child(section_header(l("Electrical details", "Elektriske detaljer"), l("Live battery readings", "Aktuelle batterimålinger"), dark))
             .child(div().grid().grid_cols(4).gap_3()
                 .child(stat_card(l("Battery flow", "Batteristrøm"), b.power_w.map(|w| format!("{:+.1} W", w)).unwrap_or("—".into()), None, dark))
@@ -2417,75 +2769,116 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                             div()
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(if n == 0 { "No devices connected".into() } else { format!("{} connected", n) }),
+                                .child(if n == 0 { l("No devices connected", "Ingen enheter tilkoblet").into() } else { format!("{} {}", n, l("connected", "tilkoblede")) }),
                         )
                         .when_some(lowest, |d, (name, b)| {
-                            d.child(sub(format!("{} has the lowest battery", name)).text_color(t::ink_dim(dark)))
+                            d.child(sub(format!("{} {}", name, l("has the lowest battery", "har lavest batterinivå"))).text_color(t::ink_dim(dark)))
                         }),
                     )
                     ,
             ),
     );
     if s.bt.devices.is_empty() {
-        c = c.child(card(dark).child(
-            div()
-                .text_sm()
-                .text_color(t::ink_dim(dark))
-                .child(if s.bt.enabled {
-                    "Paired devices will appear here with their battery level.".to_string()
-                } else {
-                    "Bluetooth is off or unavailable on this Mac.".to_string()
-                }),
+        c = c.child(empty_state(
+            "icons/bluetooth.svg",
+            m.accent(dark),
+            l("No paired devices", "Ingen sammenkoblede enheter").into(),
+            if s.bt.enabled {
+                l("Paired devices will appear here with their battery level.", "Sammenkoblede enheter vises her med batterinivå.").to_string()
+            } else {
+                l("Bluetooth is off or unavailable on this Mac.", "Bluetooth er av eller utilgjengelig på denne Macen.").to_string()
+            },
+            dark,
         ));
     } else {
-        for d in &s.bt.devices {
-            c = c.child(
-                card(dark).p_3().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(icon_img("icons/bluetooth.svg", 16.0, m.accent(dark)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(d.name.clone()))
-                                .child(sub(d.kind.clone()).text_color(t::ink_dim(dark))),
-                        )
-                        .child(
-                            div()
-                                .w(px(70.))
-                                .text_right()
-                                .text_sm()
-                                .child(d.battery.map(|b| format!("{:.0}%", b)).unwrap_or("—".into())),
-                        )
-                        .child(level_meter((d.battery.unwrap_or(0.0) / 100.0) as f32, m.accent(dark), dark, 8)),
-                ),
-            );
-            if d.second_battery.is_some() || d.case_battery.is_some() {
-                c = c.child(
-                    card(dark).p_2().child(
+        c = c
+            .child(section_header(
+                l("Devices", "Enheter"),
+                &format!("{} {}", n, l("connected", "tilkoblede")),
+                dark,
+            ))
+            .child(list_card(
+                s.bt.devices
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| {
+                        let mut kind_line = d.kind.clone();
+                        if d.second_battery.is_some() || d.case_battery.is_some() {
+                            for (part, value) in [
+                                (l("Left", "Venstre"), d.battery),
+                                (l("Right", "Høyre"), d.second_battery),
+                                (l("Case", "Etui"), d.case_battery),
+                            ] {
+                                if let Some(b) = value {
+                                    kind_line.push_str(&format!(" · {} {:.0}%", part, b));
+                                }
+                            }
+                        }
                         div()
                             .flex()
-                            .gap_4()
-                            .px_2()
-                            .children(
-                                [("Left", d.battery), ("Right", d.second_battery), ("Case", d.case_battery)]
-                                    .iter()
-                                    .filter(|(_, b)| b.is_some())
-                                    .map(|(n, b)| {
+                            .items_center()
+                            .gap_2()
+                            .py(px(5.))
+                            .px_4()
+                            .child(
+                                div()
+                                    .w(px(16.))
+                                    .text_xs()
+                                    .text_color(t::ink_dim(dark))
+                                    .child(format!("{}", i + 1)),
+                            )
+                            .child(
+                                div()
+                                    .size(px(20.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(m.accent(dark).opacity(0.16))
+                                    .child(icon_img("icons/bluetooth.svg", 13., m.accent(dark))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
                                         div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(sub(n.to_string()).text_color(t::ink_dim(dark)))
-                                            .child(div().text_xs().child(format!("{:.0}%", b.unwrap())))
-                                    }),
-                            ),
-                    ),
-                );
-            }
-        }
+                                            .text_sm()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .whitespace_nowrap()
+                                            .overflow_hidden()
+                                            .child(d.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(t::ink_dim(dark))
+                                            .whitespace_nowrap()
+                                            .overflow_hidden()
+                                            .child(kind_line),
+                                    ),
+                            )
+                            .child(level_meter(
+                                (d.battery.unwrap_or(0.0) / 100.0) as f32,
+                                m.accent(dark),
+                                dark,
+                                8,
+                            ))
+                            .child(
+                                div()
+                                    .w(px(70.))
+                                    .text_right()
+                                    .text_sm()
+                                    .child(
+                                        d.battery
+                                            .map(|b| format!("{:.0}%", b))
+                                            .unwrap_or("—".into()),
+                                    ),
+                            )
+                    })
+                    .collect(),
+                dark,
+            ));
     }
     c
 }
@@ -2584,60 +2977,88 @@ fn stop_button(
     dark: bool,
     this: Entity<TideGaugeView>,
 ) -> impl IntoElement {
-    let key_targets = targets.clone();
-    let key_this = this.clone();
-    div()
-        .id(SharedString::from(id))
-        .role(Role::Button)
-        .aria_label(label)
-        .tab_index(0)
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(t::line(dark))
-        .text_xs()
-        .cursor_pointer()
-        .hover(|d| d.bg(t::card_hi(dark)))
-        .focus_visible(|d| d.bg(t::card_hi(dark)))
-        .child(label)
-        .on_click(move |_, window, cx| request_stop(targets.clone(), this.clone(), window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                request_stop(key_targets.clone(), key_this.clone(), window, cx);
-                cx.stop_propagation();
-            }
-        })
+    crate::controls::button_accent(
+        id,
+        label,
+        false,
+        dark,
+        Metric::Projects.accent(dark),
+        move |window, cx| request_stop(targets.clone(), this.clone(), window, cx),
+    )
 }
 
 fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Projects;
     let accent = m.accent(dark);
-    let total: usize = s.projects.iter().map(|g| g.servers.len()).sum();
+    let total = s
+        .projects
+        .iter()
+        .flat_map(|g| g.servers.iter().map(|server| server.pid))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let projects = s.projects.len();
     let all_idle = s.projects.iter().all(|g| g.idle) && total > 0;
-    let mut c = div().flex().flex_col().gap_3();
-    if total > 0 {
-        c = c.child(
+    let mut c = div().flex().flex_col().gap_4();
+    if total == 0 {
+        return c.child(empty_state(
+            "icons/folder-code.svg",
+            accent,
+            l("No development servers detected", "Ingen utviklingsservere funnet").into(),
+            l(
+                "Local TCP listeners owned by you appear here when their working directory sits near a supported project marker.",
+                "Lokale TCP-lyttere som du eier vises her når arbeidsmappen ligger nær en støttet prosjektmarkør.",
+            )
+            .into(),
+            dark,
+        ));
+    }
+    c = c
+        .child(
             card(dark).child(
                 div()
                     .flex()
                     .items_center()
                     .gap_3()
                     .child(icon_img("icons/folder-code.svg", 20.0, accent))
-                    .child(div().flex_1().text_sm().child(if all_idle {
-                        format!(
-                            "{} dev {} {} running but idle",
-                            total,
-                            if total == 1 { "server" } else { "servers" },
-                            if total == 1 { "is" } else { "are" }
-                        )
-                    } else {
-                        format!(
-                            "{} dev {} running",
-                            total,
-                            if total == 1 { "server" } else { "servers" }
-                        )
-                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!(
+                                        "{} {} · {} {}",
+                                        projects,
+                                        if projects == 1 {
+                                            l("project", "prosjekt")
+                                        } else {
+                                            l("projects", "prosjekter")
+                                        },
+                                        total,
+                                        if total == 1 {
+                                            l("server", "server")
+                                        } else {
+                                            l("servers", "servere")
+                                        },
+                                    )),
+                            )
+                            .child(
+                                sub(if all_idle {
+                                    l(
+                                        "All detected servers have low CPU activity.",
+                                        "Alle oppdagede servere har lav CPU-aktivitet.",
+                                    )
+                                } else {
+                                    l(
+                                        "Stop asks for confirmation before sending SIGTERM to the project's own processes.",
+                                        "Stopp ber om bekreftelse før SIGTERM sendes til prosjektets egne prosesser.",
+                                    )
+                                })
+                                .text_color(t::ink_dim(dark)),
+                            ),
+                    )
                     .child(stop_button(
                         "stop-all".into(),
                         l("Stop all…", "Stopp alle…"),
@@ -2646,101 +3067,310 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         this.clone(),
                     )),
             ),
-        );
-        for g in &s.projects {
-            c = c.child(
-                card(dark)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(icon_img("icons/folder.svg", 16.0, accent))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(g.name.clone()),
-                            )
-                            .child(sub(g.dir.clone()).text_color(t::ink_dim(dark))),
-                    )
-                    .children(g.servers.iter().map(|srv| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .py(px(4.))
-                            .px_1()
-                            .child(
-                                div()
-                                    .w(px(120.))
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_sm()
-                                    .whitespace_nowrap()
-                                    .child(srv.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .py(px(1.))
-                                    .rounded_sm()
-                                    .bg(t::card_hi(dark))
-                                    .text_xs()
-                                    .child(srv.runtime.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .py(px(1.))
-                                    .rounded_sm()
-                                    .bg(accent.opacity(0.15))
-                                    .text_xs()
-                                    .text_color(accent)
-                                    .child(format!(":{}", srv.port)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_xs()
-                                    .text_color(
-                                        if srv.status.starts_with("idle")
-                                            || srv.status.contains("barely")
-                                        {
-                                            t::ink_dim(dark)
-                                        } else {
-                                            t::ok(dark)
-                                        },
-                                    )
-                                    .child(srv.status.clone()),
-                            )
-                            .child(
-                                div()
-                                    .w(px(70.))
-                                    .text_right()
-                                    .text_xs()
-                                    .child(fmt_bytes(srv.mem_bytes as f64)),
-                            )
-                            .child(stop_button(
-                                format!("stop-{}-{}", srv.pid, srv.port),
-                                l("Stop…", "Stopp…"),
-                                project_targets(g)
-                                    .into_iter()
-                                    .filter(|target| target.server.pid == srv.pid)
-                                    .collect(),
-                                dark,
-                                this.clone(),
-                            ))
-                    })),
-            );
-        }
-    } else {
-        c = c.child(card(dark).child(
-            div()
-                .text_sm()
-                .text_color(t::ink_dim(dark))
-                .child(l("No development servers detected. Local TCP listeners owned by you appear when their working directory is near a Git root or supported project manifest.", "Ingen utviklingsservere funnet. Lokale TCP-lyttere som du eier vises når arbeidsmappen ligger nær en Git-rot eller en støttet prosjektfil.")),
+        )
+        .child(section_header(
+            l("Projects", "Prosjekter"),
+            &format!(
+                "{} {}",
+                total,
+                if total == 1 {
+                    l("server", "server")
+                } else {
+                    l("servers", "servere")
+                }
+            ),
+            dark,
         ));
+    for g in &s.projects {
+        let server_count = g
+            .servers
+            .iter()
+            .map(|server| server.pid)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        c = c.child(
+            card(dark)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon_img("icons/folder.svg", 16.0, accent))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .whitespace_nowrap()
+                                        .child(g.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(t::ink_dim(dark))
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .child(g.dir.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(t::ink_dim(dark))
+                                .child(format!(
+                                    "{} {}",
+                                    server_count,
+                                    if server_count == 1 {
+                                        l("server", "server")
+                                    } else {
+                                        l("servers", "servere")
+                                    }
+                                )),
+                        ),
+                )
+                .children(g.servers.iter().map(|srv| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .py(px(4.))
+                        .px_1()
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_sm()
+                                .whitespace_nowrap()
+                                .child(srv.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded_sm()
+                                .bg(t::card_hi(dark))
+                                .text_xs()
+                                .child(srv.runtime.clone()),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded_sm()
+                                .bg(accent.opacity(0.15))
+                                .text_xs()
+                                .text_color(accent)
+                                .child(format!(":{}", srv.port)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(if srv.state.is_idle() {
+                                    t::ink_dim(dark)
+                                } else {
+                                    t::ok(dark)
+                                })
+                                .child(srv.state.label()),
+                        )
+                        .child(
+                            div()
+                                .w(px(70.))
+                                .text_right()
+                                .text_xs()
+                                .child(fmt_bytes(srv.mem_bytes as f64)),
+                        )
+                        .child(stop_button(
+                            format!("stop-{}-{}", srv.pid, srv.port),
+                            l("Stop…", "Stopp…"),
+                            project_targets(g)
+                                .into_iter()
+                                .filter(|target| target.server.pid == srv.pid)
+                                .collect(),
+                            dark,
+                            this.clone(),
+                        ))
+                })),
+        );
     }
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ChartScale, MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
+        temperature_display_caption,
+    };
+    use crate::sensors::Reading;
+
+    fn reading(key: &str, value: Option<f64>) -> Reading {
+        Reading {
+            key: key.to_string(),
+            value,
+        }
+    }
+
+    fn english(english: &'static str, _: &'static str) -> &'static str {
+        english
+    }
+
+    fn norwegian(_: &'static str, norwegian: &'static str) -> &'static str {
+        norwegian
+    }
+
+    fn channel_pool(channels: usize, unavailable: usize) -> Vec<Reading> {
+        let mut values: Vec<Reading> = (0..channels)
+            .map(|i| {
+                reading(
+                    &format!("T{i:03}"),
+                    Some(30.0 + (channels - i) as f64 / 10.0),
+                )
+            })
+            .collect();
+        for r in values.iter_mut().take(unavailable) {
+            r.value = None;
+        }
+        values
+    }
+
+    #[test]
+    fn temperature_display_is_bounded_ordered_and_reports_counts() {
+        let values = channel_pool(342, 22);
+        let display = bound_temperature_display(&values, true);
+        assert_eq!(display.total, 342);
+        assert_eq!(display.unavailable, 22);
+        assert_eq!(display.rows.len(), MAX_DISPLAYED_TEMPERATURE_CHANNELS);
+        assert!(display.rows.iter().all(|r| r.value.is_some()));
+        assert!(display
+            .rows
+            .windows(2)
+            .all(|w| w[0].value.unwrap() >= w[1].value.unwrap()));
+        // The input order is untouched: sorting happened on a local copy.
+        assert_eq!(values[0].key, "T000");
+        assert!(values[0].value.is_none());
+    }
+
+    #[test]
+    fn temperature_display_orders_unavailable_last_and_stays_stable() {
+        let values = vec![
+            reading("Ta00", Some(40.0)),
+            reading("Tb00", None),
+            reading("Tc00", Some(50.0)),
+            reading("Td00", Some(50.0)),
+            reading("Te00", None),
+        ];
+        let display = bound_temperature_display(&values, true);
+        let keys: Vec<&str> = display.rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["Tc00", "Td00", "Ta00", "Tb00", "Te00"]);
+    }
+
+    #[test]
+    fn temperature_display_caption_is_exact_in_both_languages() {
+        let values = channel_pool(342, 22);
+        let display = bound_temperature_display(&values, true);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 24 of 342 channels · 22 unavailable")
+        );
+        assert_eq!(
+            temperature_display_caption(&display, norwegian).as_deref(),
+            Some("Viser 24 av 342 kanaler · 22 utilgjengelige")
+        );
+    }
+
+    #[test]
+    fn temperature_display_caption_omits_zero_unavailable() {
+        let values = channel_pool(30, 0);
+        let display = bound_temperature_display(&values, true);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 24 of 30 channels")
+        );
+    }
+
+    #[test]
+    fn temperature_display_caption_is_absent_when_unbounded_and_complete() {
+        let values = vec![reading("TC0P", Some(54.5)), reading("TG0P", Some(48.0))];
+        let display = bound_temperature_display(&values, true);
+        assert_eq!(display.rows.len(), 2);
+        assert!(temperature_display_caption(&display, english).is_none());
+    }
+
+    #[test]
+    fn stale_temperature_display_counts_every_channel_unavailable() {
+        let values = channel_pool(342, 22);
+        let display = bound_temperature_display(&values, false);
+        assert_eq!(display.rows.len(), MAX_DISPLAYED_TEMPERATURE_CHANNELS);
+        assert_eq!(display.total, 342);
+        assert_eq!(display.unavailable, 342);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 24 of 342 channels · 342 unavailable")
+        );
+        assert_eq!(
+            temperature_display_caption(&display, norwegian).as_deref(),
+            Some("Viser 24 av 342 kanaler · 342 utilgjengelige")
+        );
+        assert_eq!(values.len(), 342);
+        assert_eq!(values.iter().filter(|r| r.value.is_none()).count(), 22);
+
+        let two = vec![reading("TC0P", Some(54.5)), reading("TG0P", Some(48.0))];
+        let display = bound_temperature_display(&two, false);
+        assert_eq!(display.rows.len(), 2);
+        assert_eq!(display.total, 2);
+        assert_eq!(display.unavailable, 2);
+        assert_eq!(
+            temperature_display_caption(&display, english).as_deref(),
+            Some("Showing 2 of 2 channels · 2 unavailable")
+        );
+        let display = bound_temperature_display(&two, true);
+        assert!(temperature_display_caption(&display, english).is_none());
+
+        let empty: Vec<Reading> = Vec::new();
+        let display = bound_temperature_display(&empty, false);
+        assert!(temperature_display_caption(&display, english).is_none());
+    }
+
+    #[test]
+    fn chart_scale_leaves_headroom_above_unpinned_maximum() {
+        let scale = ChartScale::new(80., None);
+        assert!(scale.max > 80., "unpinned scale must exceed the data max");
+        let y = scale.y(80., 92.);
+        assert!(
+            y > scale.top,
+            "series maximum must sit below the top inset, got {y}"
+        );
+    }
+
+    #[test]
+    fn chart_scale_pins_to_hint_but_never_below_data() {
+        let scale = ChartScale::new(12., Some(100.));
+        assert_eq!(scale.max, 100.);
+        assert!((scale.y(100., 92.) - scale.top).abs() < 0.01);
+        let grown = ChartScale::new(140., Some(100.));
+        assert_eq!(grown.max, 140.);
+    }
+
+    #[test]
+    fn chart_scale_handles_constant_zero_and_degenerate_series() {
+        // Constant series: a flat stroke at the mapped height, no NaN, not
+        // pinned to an edge.
+        let scale = ChartScale::new(42., None);
+        let y = scale.y(42., 92.);
+        assert!(y.is_finite() && y > scale.top && y < 92. - scale.bottom);
+        // All-zero data still gets a finite scale.
+        let scale = ChartScale::new(0., None);
+        assert!(scale.y(0., 92.).is_finite());
+        // NaN/inf inputs fall back rather than propagate into geometry.
+        let scale = ChartScale::new(f64::NAN, Some(f64::INFINITY));
+        assert!(scale.max.is_finite() && scale.y(0., 92.).is_finite());
+        let scale = ChartScale::new(f64::INFINITY, None);
+        assert!(scale.max.is_finite());
+    }
 }

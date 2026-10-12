@@ -5,7 +5,7 @@ use crate::metrics::{
     cf_to_bool, cf_to_i64, cf_to_string, dict_get, entry_prop, matching_services,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -99,6 +99,66 @@ impl IoSample {
     pub fn fresh(&self) -> bool {
         self.at.elapsed() < Duration::from_secs(10)
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct VolumeGroup {
+    pub container: Option<String>,
+    pub total: Option<u64>,
+    pub free: Option<u64>,
+    pub stores: Vec<String>,
+    pub volumes: Vec<Volume>,
+}
+
+pub fn volume_groups(volumes: &[Volume]) -> Vec<VolumeGroup> {
+    fn group(volume: &Volume) -> VolumeGroup {
+        VolumeGroup {
+            container: volume.container.clone(),
+            total: volume.total,
+            free: volume.free,
+            stores: volume.stores.clone(),
+            volumes: vec![volume.clone()],
+        }
+    }
+    let mut first_seen: HashMap<&str, &Volume> = HashMap::new();
+    let mut inconsistent: HashSet<&str> = HashSet::new();
+    for volume in volumes {
+        let Some(container) = volume.container.as_deref() else {
+            continue;
+        };
+        match first_seen.get(container) {
+            Some(first)
+                if first.total != volume.total
+                    || first.free != volume.free
+                    || first.stores != volume.stores =>
+            {
+                inconsistent.insert(container);
+            }
+            _ => {
+                first_seen.entry(container).or_insert(volume);
+            }
+        }
+    }
+    let mut groups: Vec<VolumeGroup> = Vec::new();
+    let mut containers: HashMap<&str, usize> = HashMap::new();
+    for volume in volumes {
+        let Some(container) = volume.container.as_deref() else {
+            groups.push(group(volume));
+            continue;
+        };
+        if inconsistent.contains(container) {
+            groups.push(group(volume));
+            continue;
+        }
+        match containers.get(container) {
+            Some(&index) => groups[index].volumes.push(volume.clone()),
+            None => {
+                containers.insert(container, groups.len());
+                groups.push(group(volume));
+            }
+        }
+    }
+    groups
 }
 
 type SharedInventory = Arc<Mutex<Inventory>>;
@@ -792,6 +852,195 @@ mod tests {
             assert_eq!(reset.read_rate, None);
             assert!(reset.read_history.is_empty());
         }
+    }
+
+    fn test_volume(
+        id: &str,
+        container: Option<&str>,
+        total: Option<u64>,
+        used: Option<u64>,
+        free: Option<u64>,
+        stores: &[&str],
+    ) -> Volume {
+        Volume {
+            id: id.into(),
+            name: id.into(),
+            mount: Some(format!("/{id}")),
+            container: container.map(Into::into),
+            stores: stores.iter().map(|s| s.to_string()).collect(),
+            total,
+            used,
+            free,
+        }
+    }
+
+    #[test]
+    fn volume_groups_share_one_container_header() {
+        let volumes = vec![
+            test_volume(
+                "disk2s1",
+                Some("disk2"),
+                Some(900),
+                Some(100),
+                Some(300),
+                &["disk0s2"],
+            ),
+            test_volume(
+                "disk2s2",
+                Some("disk2"),
+                Some(900),
+                Some(400),
+                Some(300),
+                &["disk0s2"],
+            ),
+        ];
+        let groups = volume_groups(&volumes);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].container.as_deref(), Some("disk2"));
+        assert_eq!((groups[0].total, groups[0].free), (Some(900), Some(300)));
+        assert_eq!(groups[0].stores, vec!["disk0s2".to_string()]);
+        assert_eq!(groups[0].volumes.len(), 2);
+        assert_eq!(groups[0].volumes[0].used, Some(100));
+        assert_eq!(groups[0].volumes[1].used, Some(400));
+    }
+
+    #[test]
+    fn volume_groups_keep_distinct_containers_and_standalone_apart() {
+        let volumes = vec![
+            test_volume(
+                "disk2s1",
+                Some("disk2"),
+                Some(900),
+                Some(100),
+                Some(300),
+                &["disk0s2"],
+            ),
+            test_volume(
+                "disk3s1",
+                Some("disk3"),
+                Some(500),
+                Some(50),
+                Some(200),
+                &["disk1s1"],
+            ),
+            test_volume("disk4s1", None, Some(64), Some(10), Some(54), &[]),
+            test_volume("disk4s2", None, Some(64), Some(20), Some(44), &[]),
+        ];
+        let groups = volume_groups(&volumes);
+        assert_eq!(groups.len(), 4);
+        assert_eq!(groups[0].container.as_deref(), Some("disk2"));
+        assert_eq!(groups[1].container.as_deref(), Some("disk3"));
+        assert!(groups[2].container.is_none() && groups[3].container.is_none());
+        assert!(groups.iter().all(|g| g.volumes.len() == 1));
+    }
+
+    #[test]
+    fn volume_groups_leave_inconsistent_metadata_independent() {
+        let volumes = vec![
+            test_volume(
+                "disk2s1",
+                Some("disk2"),
+                Some(900),
+                Some(100),
+                Some(300),
+                &["disk0s2"],
+            ),
+            test_volume(
+                "disk2s2",
+                Some("disk2"),
+                Some(450),
+                Some(400),
+                Some(150),
+                &["disk0s3"],
+            ),
+            test_volume(
+                "disk2s3",
+                Some("disk2"),
+                Some(900),
+                Some(20),
+                Some(300),
+                &["disk0s2"],
+            ),
+        ];
+        let groups = volume_groups(&volumes);
+        assert_eq!(groups.len(), 3);
+        assert!(groups.iter().all(|g| g.volumes.len() == 1));
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| g.volumes[0].id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["disk2s1", "disk2s2", "disk2s3"]
+        );
+        assert_eq!(
+            groups.iter().map(|g| (g.total, g.free)).collect::<Vec<_>>(),
+            vec![
+                (Some(900), Some(300)),
+                (Some(450), Some(150)),
+                (Some(900), Some(300))
+            ]
+        );
+    }
+
+    #[test]
+    fn volume_groups_treat_store_or_free_mismatch_as_inconsistent() {
+        let store_mismatch = vec![
+            test_volume(
+                "disk2s1",
+                Some("disk2"),
+                Some(900),
+                Some(100),
+                Some(300),
+                &["disk0s2"],
+            ),
+            test_volume(
+                "disk2s2",
+                Some("disk2"),
+                Some(900),
+                Some(400),
+                Some(300),
+                &["disk0s3"],
+            ),
+        ];
+        let groups = volume_groups(&store_mismatch);
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|g| g.volumes.len() == 1));
+
+        let free_mismatch = vec![
+            test_volume(
+                "disk2s1",
+                Some("disk2"),
+                Some(900),
+                Some(100),
+                Some(300),
+                &["disk0s2"],
+            ),
+            test_volume(
+                "disk2s2",
+                Some("disk2"),
+                Some(900),
+                Some(400),
+                Some(250),
+                &["disk0s2"],
+            ),
+        ];
+        let groups = volume_groups(&free_mismatch);
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|g| g.volumes.len() == 1));
+    }
+
+    #[test]
+    fn volume_groups_preserve_missing_metadata_without_zeroing() {
+        let volumes = vec![
+            test_volume("disk2s1", Some("disk2"), None, Some(100), None, &[]),
+            test_volume("disk2s2", Some("disk2"), None, Some(400), None, &[]),
+            test_volume("disk4s1", None, None, None, None, &[]),
+        ];
+        let groups = volume_groups(&volumes);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].volumes.len(), 2);
+        assert_eq!((groups[0].total, groups[0].free), (None, None));
+        assert_eq!((groups[1].total, groups[1].volumes[0].used), (None, None));
     }
 
     #[test]

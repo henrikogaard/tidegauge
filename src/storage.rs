@@ -30,6 +30,17 @@ pub struct Progress {
     pub largest: Vec<Item>,
     pub error: Option<String>,
 }
+
+pub fn observed_totals(p: &Progress) -> Option<(u64, u64, u64)> {
+    if p.error.is_some()
+        || (p.files == 0 && (p.errors > 0 || p.skipped > 0 || p.limited || p.cancelled))
+    {
+        None
+    } else {
+        Some((p.files, p.allocated, p.logical))
+    }
+}
+
 #[derive(Clone)]
 pub struct Scan {
     pub progress: Arc<Mutex<Progress>>,
@@ -92,6 +103,16 @@ fn open_dir(parent: i32, name: &CStr) -> Option<Directory> {
 }
 
 fn walk(root: &Path, cancel: &AtomicBool, progress: &Mutex<Progress>) -> Progress {
+    walk_with_progress(root, cancel, |data| {
+        *progress.lock().unwrap() = data.clone()
+    })
+}
+
+fn walk_with_progress(
+    root: &Path,
+    cancel: &AtomicBool,
+    mut publish: impl FnMut(&Progress),
+) -> Progress {
     let mut data = Progress {
         root: root.into(),
         ..Default::default()
@@ -127,6 +148,13 @@ fn walk(root: &Path, cancel: &AtomicBool, progress: &Mutex<Progress>) -> Progres
     let mut root_stat = unsafe { std::mem::zeroed::<libc::stat>() };
     if unsafe { libc::fstat(libc::dirfd(dir.0), &mut root_stat) } != 0 {
         data.errors += 1;
+        data.error = Some(
+            l(
+                "The folder's metadata could not be read.",
+                "Mappens metadata kunne ikke leses.",
+            )
+            .into(),
+        );
         data.finished = true;
         return data;
     }
@@ -241,7 +269,7 @@ fn walk(root: &Path, cancel: &AtomicBool, progress: &Mutex<Progress>) -> Progres
                 _ => data.skipped += 1,
             }
             if visited % 250 == 0 {
-                *progress.lock().unwrap() = data.clone();
+                publish(&data);
             }
         }
         if data.cancelled || visited >= 100_000 {
@@ -291,5 +319,88 @@ mod tests {
         assert!(d.cancelled);
         assert_eq!(d.files, 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mid_scan_cancellation_stops_after_real_traversal() {
+        let root = std::env::temp_dir().join(format!(
+            "tidegauge-storage-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..300 {
+            std::fs::write(root.join(format!("f{i}")), [1u8]).unwrap();
+        }
+        let cancel = AtomicBool::new(false);
+        let d = walk_with_progress(&root, &cancel, |_| {
+            cancel.store(true, Ordering::Relaxed);
+        });
+        assert!(d.finished);
+        assert!(d.cancelled);
+        assert_eq!(d.files, 250);
+        assert_eq!(d.logical, 250);
+        assert_eq!(d.errors, 0);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 300);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn observed_totals_withhold_sizes_when_coverage_is_unknown() {
+        let finished_empty = Progress {
+            finished: true,
+            ..Default::default()
+        };
+        assert_eq!(observed_totals(&finished_empty), Some((0, 0, 0)));
+
+        let errored = Progress {
+            finished: true,
+            error: Some("unreadable".into()),
+            ..Default::default()
+        };
+        assert_eq!(observed_totals(&errored), None);
+
+        for data in [
+            Progress {
+                files: 0,
+                errors: 1,
+                ..Default::default()
+            },
+            Progress {
+                files: 0,
+                skipped: 1,
+                ..Default::default()
+            },
+            Progress {
+                files: 0,
+                limited: true,
+                ..Default::default()
+            },
+            Progress {
+                files: 0,
+                cancelled: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(observed_totals(&data), None);
+        }
+
+        let partial_known = Progress {
+            files: 1,
+            errors: 1,
+            ..Default::default()
+        };
+        assert_eq!(observed_totals(&partial_known), Some((1, 0, 0)));
+
+        let measured = Progress {
+            files: 2,
+            allocated: 4096,
+            logical: 1000000,
+            ..Default::default()
+        };
+        assert_eq!(observed_totals(&measured), Some((2, 4096, 1000000)));
     }
 }

@@ -19,6 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_JSON_BYTES: u64 = 4 * 1024 * 1024;
+/// Bundle names and versions are short; a longer extracted value is not a
+/// plausible metadata string.
+const MAX_EXTRACTED_VALUE_BYTES: usize = 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 512;
 const MAX_TOTAL_DIRECTORY_ENTRIES: usize = 2048;
 const MAX_PACKAGES_PER_MANAGER: usize = 512;
@@ -53,6 +56,7 @@ impl Source {
 pub struct Package {
     pub name: String,
     pub version: String,
+    pub installed_version: Option<String>,
     pub source: Source,
     pub path: PathBuf,
     pub latest: Option<String>,
@@ -109,6 +113,20 @@ struct SourceKey {
     manager: FsFingerprint,
     prefix: FsFingerprint,
     runtime: Option<FsFingerprint>,
+}
+
+impl SourceKey {
+    fn same_installation(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.manager == other.manager
+            && self.runtime == other.runtime
+            && self.prefix.canonical_path == other.prefix.canonical_path
+            && self.prefix.device == other.prefix.device
+            && self.prefix.inode == other.prefix.inode
+            && self.prefix.owner == other.prefix.owner
+            && self.prefix.group == other.prefix.group
+            && self.prefix.mode == other.prefix.mode
+    }
 }
 
 impl Identity {
@@ -422,6 +440,9 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
     if !fingerprints_are_current(&fresh.identity) {
         return Err(identity_changed_message());
     }
+    let Some(before_version) = fresh.installed_version.clone() else {
+        return Err(identity_changed_message());
+    };
     let action_result = run_action(&plan);
     let after = scan_detailed(false);
     let key = fresh
@@ -431,9 +452,12 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
     let unique_after = unique_source_package(&after.inventory, &key, &fresh.name)?;
     verify_action_outcome(
         action,
-        &fresh.version,
+        &before_version,
         action_result.is_ok(),
-        after.complete_sources.contains(&key),
+        after
+            .complete_sources
+            .iter()
+            .any(|candidate| candidate.same_installation(&key)),
         unique_after,
     )
 }
@@ -443,10 +467,13 @@ fn unique_source_package<'a>(
     key: &SourceKey,
     name: &str,
 ) -> Result<Option<&'a Package>, String> {
-    let mut matching = inventory
-        .items
-        .iter()
-        .filter(|item| item.identity.source_key().as_ref() == Some(key) && item.name == name);
+    let mut matching = inventory.items.iter().filter(|item| {
+        item.identity
+            .source_key()
+            .as_ref()
+            .is_some_and(|candidate| candidate.same_installation(key))
+            && item.name == name
+    });
     let first = matching.next();
     if matching.next().is_some() {
         return Err(outcome_unverified());
@@ -522,7 +549,12 @@ fn verify_action_outcome(
         (Action::Remove, None) => {
             Ok(localized("The package was removed.", "Pakken ble fjernet.").to_string())
         }
-        (Action::Update, Some(package)) if package.version != before_version => {
+        (Action::Update, Some(package))
+            if package
+                .installed_version
+                .as_deref()
+                .is_some_and(|version| version != before_version) =>
+        {
             Ok(localized("The package was updated.", "Pakken ble oppdatert.").to_string())
         }
         _ => Err(outcome_unverified()),
@@ -627,18 +659,43 @@ fn discover_apps(
 
 fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
     let info = path.join("Contents/Info.plist");
+    let started = Instant::now();
     let bytes = read_bounded_file(&info).map_err(|_| {
         localized(
             "An application Info.plist could not be read safely.",
             "Info.plist for et program kunne ikke leses trygt.",
         )
     })?;
-    let json = plutil_json(&bytes, timeout).map_err(|_| {
-        localized(
-            "An application Info.plist could not be parsed.",
-            "Info.plist for et program kunne ikke tolkes.",
-        )
-    })?;
+    let remaining = timeout.saturating_sub(started.elapsed());
+    let (name, version) = app_metadata_with_budget(
+        &bytes,
+        remaining,
+        plutil_json,
+        app_metadata_extracted,
+    )?;
+    Ok(app_package(path, info, name, version))
+}
+
+fn app_metadata_with_budget(
+    bytes: &[u8],
+    timeout: Duration,
+    convert: impl FnOnce(&[u8], Duration) -> Result<Value, ()>,
+    extract: impl FnOnce(&[u8], Duration) -> Result<(String, String), ()>,
+) -> Result<(String, String), &'static str> {
+    let started = Instant::now();
+    let remaining = || timeout.saturating_sub(started.elapsed());
+    match convert(bytes, remaining()) {
+        Ok(json) => app_metadata(&json),
+        Err(()) => extract(bytes, remaining()).map_err(|_| {
+            localized(
+                "An application Info.plist could not be parsed.",
+                "Info.plist for et program kunne ikke tolkes.",
+            )
+        }),
+    }
+}
+
+fn app_metadata(json: &Value) -> Result<(String, String), &'static str> {
     let dictionary = json.as_object().ok_or_else(|| {
         localized(
             "An application has invalid metadata.",
@@ -661,10 +718,40 @@ fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
         .or_else(|| dictionary.get("CFBundleVersion"))
         .and_then(Value::as_str)
         .unwrap_or(localized("Unknown", "Ukjent"));
+    Ok((name.to_owned(), version.to_owned()))
+}
+
+/// Whole-file `plutil -convert json` cannot represent `<data>` or `<date>`
+/// values, so a valid Info.plist containing either fails entirely. Read the
+/// four keys we actually need instead; each call shares the caller's remaining
+/// budget so the fallback cannot exceed the overall scan deadline.
+fn app_metadata_extracted(bytes: &[u8], timeout: Duration) -> Result<(String, String), ()> {
+    let started = Instant::now();
+    let remaining = |timeout: Duration| timeout.saturating_sub(started.elapsed());
+    let name = plutil_extract_string(bytes, "CFBundleDisplayName", remaining(timeout))
+        .or_else(|_| plutil_extract_string(bytes, "CFBundleName", remaining(timeout)))?;
+    let version = plutil_extract_string(bytes, "CFBundleShortVersionString", remaining(timeout))
+        .or_else(|_| plutil_extract_string(bytes, "CFBundleVersion", remaining(timeout)))
+        .unwrap_or_else(|_| localized("Unknown", "Ukjent").to_string());
+    Ok((name, version))
+}
+
+fn app_package(path: &Path, info: PathBuf, name: String, version: String) -> Package {
     let related_paths = [info];
-    Ok(Package {
-        name: name.to_owned(),
-        version: version.to_owned(),
+    let identity = capture_identity(
+        &name,
+        &version,
+        Source::App,
+        path,
+        None,
+        None,
+        None,
+        &related_paths,
+    );
+    Package {
+        name,
+        version,
+        installed_version: None,
         source: Source::App,
         path: path.to_path_buf(),
         latest: None,
@@ -675,17 +762,8 @@ fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
             "Vis programmet eller bruk sin egen oppdaterer.",
         )
         .to_string(),
-        identity: capture_identity(
-            name,
-            version,
-            Source::App,
-            path,
-            None,
-            None,
-            None,
-            &related_paths,
-        ),
-    })
+        identity,
+    }
 }
 
 fn discover_brew(
@@ -777,8 +855,8 @@ fn discover_brew_at(
     ) else {
         inventory.warnings.push(
             localized(
-                "Homebrew inventory could not be read.",
-                "Homebrew-inventaret kunne ikke leses.",
+                "Homebrew inventory could not be read. The scan is bounded; Refresh installed retries without changing installed packages.",
+                "Homebrew-inventaret kunne ikke leses. Skanningen er avgrenset; Oppdater installerte prøver på nytt uten å endre installerte pakker.",
             )
             .to_string(),
         );
@@ -873,7 +951,8 @@ fn discover_brew_at(
                 .get("installed")
                 .and_then(Value::as_array)
                 .is_some_and(|installed| installed.len() > 1);
-            let version = brew_version(item).or_else(|| {
+            let installed_version = brew_version(item);
+            let version = installed_version.clone().or_else(|| {
                 multiple_versions
                     .then(|| localized("Multiple versions", "Flere versjoner").to_string())
             });
@@ -888,10 +967,17 @@ fn discover_brew_at(
                 category_complete = false;
                 continue;
             };
-            let version_unambiguous = brew_version(item).is_some();
+            let version_unambiguous = installed_version.is_some();
             let (path, path_verified, _overlap_paths) =
-                brew_package_path(item, source, name, &version, &prefix);
-            let path_verified = path_verified && version_unambiguous;
+                brew_package_path(item, source, name, installed_version.as_deref(), &prefix);
+            let receipt = if source == Source::BrewFormula {
+                formula_receipt_fingerprint(&path)
+            } else {
+                None
+            };
+            let path_verified = path_verified
+                && version_unambiguous
+                && (source != Source::BrewFormula || receipt.is_some());
             let tap = item.get("tap").and_then(Value::as_str).unwrap_or_default();
             let official = official_tap(tap, source);
             let pinned = item.get("pinned").and_then(Value::as_bool);
@@ -918,7 +1004,17 @@ fn discover_brew_at(
             let related_paths = cask_metadata
                 .as_ref()
                 .map(|metadata| metadata.related_paths.clone())
-                .unwrap_or_else(|| cask_target_snapshot_paths(&overlap_paths));
+                .unwrap_or_else(|| {
+                    if source == Source::BrewFormula {
+                        vec![path.join("INSTALL_RECEIPT.json")]
+                    } else {
+                        cask_target_snapshot_paths(&overlap_paths)
+                    }
+                });
+            let expected_related = cask_metadata
+                .as_ref()
+                .map(|metadata| metadata.related_fingerprints.as_slice())
+                .or_else(|| receipt.as_ref().map(std::slice::from_ref));
             let identity = capture_identity_with_related_fingerprints(
                 name,
                 &version,
@@ -928,9 +1024,7 @@ fn discover_brew_at(
                 Some(prefix.clone()),
                 None,
                 &related_paths,
-                cask_metadata
-                    .as_ref()
-                    .map(|metadata| metadata.related_fingerprints.as_slice()),
+                expected_related,
             );
             let target_snapshots_complete =
                 identity.related_fingerprints.len() == related_paths.len();
@@ -960,6 +1054,12 @@ fn discover_brew_at(
                 localized(
                     "Package managers and runtimes cannot be removed here.",
                     "Pakkehåndterere og kjøremiljøer kan ikke fjernes her.",
+                )
+                .to_string()
+            } else if source == Source::BrewFormula && receipt.is_none() {
+                localized(
+                    "The installed formula receipt could not be verified; actions are disabled.",
+                    "Installasjonskvitteringen for formelen kunne ikke bekreftes; handlinger er deaktivert.",
                 )
                 .to_string()
             } else if !path_verified {
@@ -1003,6 +1103,7 @@ fn discover_brew_at(
                 package: Package {
                     name: name.to_owned(),
                     version: version.clone(),
+                    installed_version,
                     source,
                     path: path.clone(),
                     latest,
@@ -1195,11 +1296,11 @@ fn discover_npm(
                 break;
             }
             let valid_name = valid_npm_name(name);
-            let version = item
+            let installed_version = item
                 .get("version")
                 .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(localized("Unknown", "Ukjent"));
+                .filter(|value| !value.is_empty());
+            let version = installed_version.unwrap_or(localized("Unknown", "Ukjent"));
             if item.get("version").and_then(Value::as_str).is_none() {
                 inventory.warnings.push(
                     localized(
@@ -1281,6 +1382,7 @@ fn discover_npm(
                 package: Package {
                     name: name.clone(),
                     version: version.to_owned(),
+                    installed_version: installed_version.map(str::to_owned),
                     source: Source::Npm,
                     path: package_path,
                     latest,
@@ -1518,8 +1620,8 @@ fn brew_outdated(
     parse_brew_outdated(&output.stdout).unwrap_or_else(|| {
         inventory.warnings.push(
             localized(
-                "Homebrew update information was not valid JSON.",
-                "Homebrew-oppdateringsinformasjonen var ikke gyldig JSON.",
+                "Homebrew update information could not be interpreted.",
+                "Homebrew-oppdateringsinformasjonen kunne ikke tolkes.",
             )
             .to_string(),
         );
@@ -1591,7 +1693,8 @@ fn parse_brew_outdated(bytes: &[u8]) -> Option<HashMap<String, String>> {
                 .or_else(|| item.get("token"))?
                 .as_str()?;
             let latest = item
-                .get("latest_version")
+                .get("current_version")
+                .or_else(|| item.get("latest_version"))
                 .or_else(|| item.get("latest"))
                 .or_else(|| item.get("wanted"))?
                 .as_str()?;
@@ -1699,7 +1802,7 @@ fn brew_package_path(
     item: &Value,
     source: Source,
     name: &str,
-    version: &str,
+    version: Option<&str>,
     prefix: &Path,
 ) -> (PathBuf, bool, Vec<PathBuf>) {
     let token = name.rsplit('/').next().unwrap_or(name);
@@ -1709,6 +1812,9 @@ fn brew_package_path(
         "Cellar"
     };
     let managed_root = prefix.join(root_name);
+    let Some(version) = version else {
+        return (managed_root.join(token), false, Vec::new());
+    };
     let reported = if source == Source::BrewFormula {
         item.get("installed")
             .and_then(Value::as_array)
@@ -1951,6 +2057,11 @@ fn read_trusted_json(path: &Path) -> Option<(Value, FsFingerprint)> {
         return None;
     }
     Some((serde_json::from_slice(&bytes).ok()?, before))
+}
+
+fn formula_receipt_fingerprint(keg: &Path) -> Option<FsFingerprint> {
+    let (json, fingerprint) = read_trusted_json(&keg.join("INSTALL_RECEIPT.json"))?;
+    json.is_object().then_some(fingerprint)
 }
 
 fn cask_target_snapshot_paths(targets: &[PathBuf]) -> Vec<PathBuf> {
@@ -2305,6 +2416,46 @@ fn plutil_json(bytes: &[u8], timeout: Duration) -> Result<Value, ()> {
     serde_json::from_slice(&output.stdout).map_err(|_| ())
 }
 
+fn plutil_extract_string(bytes: &[u8], keypath: &str, timeout: Duration) -> Result<String, ()> {
+    if timeout.is_zero() {
+        return Err(());
+    }
+    let mut command = Command::new("/usr/bin/plutil");
+    command.args(["-extract", keypath, "raw", "-o", "-", "--", "-"]);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|_| ())?;
+    let mut child_stdin = child.stdin.take();
+    let input = bytes.to_vec();
+    let writer = thread::spawn(move || {
+        let Some(mut stdin) = child_stdin.take() else {
+            return false;
+        };
+        stdin.write_all(&input).is_ok()
+    });
+    let output_result = wait_bounded(&mut child, timeout.min(COMMAND_TIMEOUT));
+    let writer_result = writer.join().map_err(|_| ())?;
+    if !writer_result {
+        return Err(());
+    }
+    let output = output_result?;
+    if !output.status.success() {
+        return Err(());
+    }
+    if output.stdout.len() > MAX_EXTRACTED_VALUE_BYTES {
+        return Err(());
+    }
+    let value = String::from_utf8(output.stdout).map_err(|_| ())?;
+    let value = value.trim_end();
+    if value.is_empty() {
+        return Err(());
+    }
+    Ok(value.to_owned())
+}
+
 fn run_manager(
     program: &Path,
     args: &[&str],
@@ -2506,19 +2657,22 @@ mod tests {
         fs::create_dir_all(&prefix).unwrap();
         fs::write(&manager, b"manager").unwrap();
         fs::set_permissions(&manager, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(target.join("INSTALL_RECEIPT.json"), b"{}").unwrap();
         let path = fs::canonicalize(target).unwrap();
         let manager = fs::canonicalize(manager).unwrap();
         let prefix = fs::canonicalize(prefix).unwrap();
+        let receipt = formula_receipt_fingerprint(&path).unwrap();
         Package {
             name: "tool".to_owned(),
             version: "1".to_owned(),
+            installed_version: Some("1".to_owned()),
             source: Source::BrewFormula,
             path: path.clone(),
             latest: Some("2".to_owned()),
             can_update: true,
             can_remove: true,
             reason: String::new(),
-            identity: capture_identity(
+            identity: capture_identity_with_related_fingerprints(
                 "tool",
                 "1",
                 Source::BrewFormula,
@@ -2526,7 +2680,8 @@ mod tests {
                 Some(manager),
                 Some(prefix),
                 None,
-                &[],
+                &[path.join("INSTALL_RECEIPT.json")],
+                Some(std::slice::from_ref(&receipt)),
             ),
         }
     }
@@ -2554,6 +2709,7 @@ mod tests {
         Package {
             name: name.to_owned(),
             version: version.clone(),
+            installed_version: (source != Source::App).then(|| "1".to_owned()),
             source,
             path: path.to_path_buf(),
             latest: None,
@@ -2931,7 +3087,7 @@ mod tests {
 
     #[test]
     fn outdated_parsers_accept_partial_json() {
-        let brew = br#"{"formulae":[{"name":"tool","current_version":"1","latest_version":"2"}],"casks":[{"token":"app","current_version":"1","latest_version":"3"}]}"#;
+        let brew = br#"{"formulae":[{"name":"tool","installed_versions":["1"],"latest_version":"2"}],"casks":[{"token":"app","installed_versions":["1"],"latest_version":"3"}]}"#;
         let outdated = parse_brew_outdated(brew).unwrap();
         assert_eq!(outdated.get("tool"), Some(&"2".to_owned()));
         assert_eq!(outdated.get("app"), Some(&"3".to_owned()));
@@ -2940,6 +3096,58 @@ mod tests {
             parse_npm_outdated(npm).unwrap().get("tool"),
             Some(&"2".to_owned())
         );
+    }
+
+    #[test]
+    fn brew_outdated_prefers_current_version_and_rejects_wrong_types() {
+        let real_schema = br#"{"formulae":[{"name":"hello","installed_versions":["2.12.2"],"current_version":"2.12.3","pinned":false}],"casks":[{"name":"example","installed_versions":["1"],"current_version":"2"}]}"#;
+        let outdated = parse_brew_outdated(real_schema).unwrap();
+        assert_eq!(outdated.get("hello"), Some(&"2.12.3".to_owned()));
+        assert_eq!(outdated.get("example"), Some(&"2".to_owned()));
+
+        let both = br#"{"formulae":[{"name":"tool","current_version":"2","latest_version":"3"}],"casks":[]}"#;
+        assert_eq!(
+            parse_brew_outdated(both).unwrap().get("tool"),
+            Some(&"2".to_owned())
+        );
+        let wrong_type =
+            br#"{"formulae":[{"name":"tool","installed_versions":["1"],"current_version":2}],"casks":[]}"#;
+        assert!(parse_brew_outdated(wrong_type).is_none());
+        let missing =
+            br#"{"formulae":[{"name":"tool","installed_versions":["1"]}],"casks":[]}"#;
+        assert!(parse_brew_outdated(missing).is_none());
+    }
+
+    #[test]
+    fn brew_package_path_without_version_reports_rack_read_only() {
+        let prefix = Path::new("/opt/homebrew");
+        let formula = serde_json::json!({"installed":[]});
+        let (path, verified, overlap) = brew_package_path(
+            &formula,
+            Source::BrewFormula,
+            "homebrew/core/hello",
+            None,
+            prefix,
+        );
+        assert_eq!(path, prefix.join("Cellar/hello"));
+        assert!(!verified);
+        assert!(overlap.is_empty());
+
+        let cask = serde_json::json!({});
+        let (path, verified, overlap) =
+            brew_package_path(&cask, Source::BrewCask, "example", None, prefix);
+        assert_eq!(path, prefix.join("Caskroom/example"));
+        assert!(!verified);
+        assert!(overlap.is_empty());
+
+        let (path, _, _) = brew_package_path(
+            &cask,
+            Source::BrewFormula,
+            "homebrew/core/tool",
+            Some("1"),
+            prefix,
+        );
+        assert_eq!(path, prefix.join("Cellar/tool/1"));
     }
 
     #[test]
@@ -2991,6 +3199,7 @@ mod tests {
         let package = Package {
             name: "tool".into(),
             version: "1".into(),
+            installed_version: Some("1".into()),
             source: Source::Npm,
             path: PathBuf::from("/opt/homebrew/lib/node_modules/tool"),
             latest: Some("2".into()),
@@ -3134,6 +3343,154 @@ mod tests {
     }
 
     #[test]
+    fn formula_receipt_requires_a_valid_trusted_json_object() {
+        let root = temporary_root("receipt");
+        let keg = fs::canonicalize({
+            let keg = root.join("Cellar/tool/1");
+            fs::create_dir_all(&keg).unwrap();
+            keg
+        })
+        .unwrap();
+        let receipt_path = keg.join("INSTALL_RECEIPT.json");
+
+        fs::write(&receipt_path, b"{}").unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_some());
+        fs::write(&receipt_path, b"[1]").unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+        fs::write(&receipt_path, b"not json").unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+        fs::remove_file(&receipt_path).unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+        let outside = root.join("elsewhere.json");
+        fs::write(&outside, b"{}").unwrap();
+        std::os::unix::fs::symlink(&outside, &receipt_path).unwrap();
+        assert!(formula_receipt_fingerprint(&keg).is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_formula_receipt_rejects_preflight_before_any_action() {
+        let root = temporary_root("stale-receipt");
+        let package = fixture_formula(&root);
+        let complete = complete_snapshot(package.clone());
+        assert_eq!(package.identity.related_fingerprints.len(), 1);
+        assert!(preflight_action(&package, &complete, Action::Remove).is_ok());
+
+        fs::write(
+            package.path.join("INSTALL_RECEIPT.json"),
+            br#"{"changed":true}"#,
+        )
+        .unwrap();
+
+        assert!(preflight_action(&package, &complete, Action::Remove).is_err());
+        assert!(preflight_action(&package, &complete, Action::Update).is_err());
+        assert!(!fingerprints_are_current(&package.identity));
+        let fresh_receipt = formula_receipt_fingerprint(&package.path).unwrap();
+        assert_ne!(fresh_receipt, package.identity.related_fingerprints[0]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn post_action_matching_tolerates_prefix_content_changes() {
+        let root = temporary_root("post-source");
+        let package = fixture_formula(&root);
+        let old_key = package.identity.source_key().unwrap();
+        fs::create_dir(
+            package
+                .identity
+                .prefix
+                .as_ref()
+                .unwrap()
+                .join("new-content"),
+        )
+        .unwrap();
+
+        let mut fresh = package.clone();
+        fresh.identity.prefix_fingerprint =
+            FsFingerprint::capture(package.identity.prefix.as_ref().unwrap());
+        let fresh_key = fresh.identity.source_key().unwrap();
+        assert_ne!(old_key, fresh_key);
+        assert!(old_key.same_installation(&fresh_key));
+
+        let inventory = Inventory {
+            items: vec![fresh],
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            unique_source_package(&inventory, &old_key, "tool")
+                .unwrap()
+                .unwrap()
+                .path,
+            package.path
+        );
+
+        let complete_sources = HashSet::from([fresh_key]);
+        assert!(!complete_sources.contains(&old_key));
+        assert!(complete_sources
+            .iter()
+            .any(|candidate| candidate.same_installation(&old_key)));
+        assert_eq!(
+            verify_action_outcome(
+                Action::Remove,
+                "1",
+                true,
+                complete_sources
+                    .iter()
+                    .any(|candidate| candidate.same_installation(&old_key)),
+                None,
+            )
+            .unwrap(),
+            localized("The package was removed.", "Pakken ble fjernet.")
+        );
+
+        let fresh_snapshot = ScanSnapshot {
+            inventory: Inventory::default(),
+            complete_sources,
+        };
+        assert!(preflight_action(&package, &fresh_snapshot, Action::Remove).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_installation_rejects_identity_substitution() {
+        let root = temporary_root("installation");
+        let package = fixture_formula(&root);
+        let key = package.identity.source_key().unwrap();
+        assert!(key.same_installation(&key));
+
+        let mut drift = key.clone();
+        drift.prefix.size += 1;
+        drift.prefix.modified_seconds += 1;
+        drift.prefix.modified_nanoseconds += 1;
+        assert!(key.same_installation(&drift));
+
+        for mutate in [
+            |key: &mut SourceKey| key.prefix.canonical_path = PathBuf::from("/elsewhere"),
+            |key: &mut SourceKey| key.prefix.device += 1,
+            |key: &mut SourceKey| key.prefix.inode += 1,
+            |key: &mut SourceKey| key.prefix.owner += 1,
+            |key: &mut SourceKey| key.prefix.group += 1,
+            |key: &mut SourceKey| key.prefix.mode += 1,
+            |key: &mut SourceKey| key.manager.size += 1,
+            |key: &mut SourceKey| key.manager.inode += 1,
+            |key: &mut SourceKey| key.runtime = Some(key.manager.clone()),
+            |key: &mut SourceKey| key.source = Source::BrewCask,
+        ] {
+            let mut altered = key.clone();
+            mutate(&mut altered);
+            assert!(!key.same_installation(&altered));
+        }
+
+        let mut with_runtime = key.clone();
+        with_runtime.runtime = Some(key.manager.clone());
+        let mut changed_runtime = with_runtime.clone();
+        changed_runtime.runtime.as_mut().unwrap().size += 1;
+        assert!(!with_runtime.same_installation(&changed_runtime));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn action_outcomes_require_successful_action_and_complete_source() {
         let mut package = fixture_package(
             Source::BrewFormula,
@@ -3141,12 +3498,29 @@ mod tests {
             Path::new("/opt/homebrew/Cellar/tool/2"),
         );
         package.version = "2".to_owned();
+        package.installed_version = Some("2".to_owned());
         assert!(verify_action_outcome(Action::Remove, "1", true, false, None).is_err());
         assert!(verify_action_outcome(Action::Update, "1", false, true, Some(&package)).is_err());
         assert!(verify_action_outcome(Action::Remove, "1", true, true, Some(&package)).is_err());
         assert_eq!(
             verify_action_outcome(Action::Remove, "1", true, true, None).unwrap(),
             localized("The package was removed.", "Pakken ble fjernet.")
+        );
+        assert_eq!(
+            verify_action_outcome(Action::Update, "1", true, true, Some(&package)).unwrap(),
+            localized("The package was updated.", "Pakken ble oppdatert.")
+        );
+        let mut unchanged = package.clone();
+        unchanged.version = "1".to_owned();
+        unchanged.installed_version = Some("1".to_owned());
+        assert!(
+            verify_action_outcome(Action::Update, "1", true, true, Some(&unchanged)).is_err()
+        );
+        let mut ambiguous = package.clone();
+        ambiguous.version = localized("Multiple versions", "Flere versjoner").to_owned();
+        ambiguous.installed_version = None;
+        assert!(
+            verify_action_outcome(Action::Update, "1", true, true, Some(&ambiguous)).is_err()
         );
     }
 
@@ -3167,6 +3541,154 @@ mod tests {
         assert!(verify_action_outcome(Action::Update, "1", false, true, None).is_err());
         thread::sleep(Duration::from_millis(1_100));
         assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Mirrors the shape of a first-party system bundle whose Info.plist mixes
+    /// ordinary string keys with a `<data>` value.
+    const PLIST_WITH_DATA: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Fixture App</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.3</string>
+    <key>UIApplicationShortcutItems</key>
+    <array>
+        <dict>
+            <key>UIApplicationShortcutItemUserInfo</key>
+            <dict>
+                <key>data</key>
+                <data>eyJ0eXBlIjoiZml4dHVyZSJ9</data>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>"#;
+
+    const PLIST_WITH_DATE: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Fixture App</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.3</string>
+    <key>BuildDate</key>
+    <date>2026-01-01T00:00:00Z</date>
+</dict>
+</plist>"#;
+
+    const PLIST_STRINGS_ONLY: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Fixture App</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.3</string>
+</dict>
+</plist>"#;
+
+    #[test]
+    fn plist_extraction_recovers_metadata_when_json_conversion_fails() {
+        let timeout = Duration::from_secs(10);
+        for bytes in [PLIST_WITH_DATA, PLIST_WITH_DATE] {
+            assert!(plutil_json(bytes, timeout).is_err());
+            assert_eq!(
+                plutil_extract_string(bytes, "CFBundleDisplayName", timeout),
+                Ok("Fixture App".to_string())
+            );
+            assert_eq!(
+                plutil_extract_string(bytes, "CFBundleShortVersionString", timeout),
+                Ok("1.2.3".to_string())
+            );
+            assert_eq!(
+                app_metadata_extracted(bytes, timeout),
+                Ok(("Fixture App".to_string(), "1.2.3".to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn plist_json_fast_path_still_parses_convertible_plist() {
+        let timeout = Duration::from_secs(10);
+        let json = plutil_json(PLIST_STRINGS_ONLY, timeout).unwrap();
+        assert_eq!(
+            app_metadata(&json),
+            Ok(("Fixture App".to_string(), "1.2.3".to_string()))
+        );
+    }
+
+    #[test]
+    fn plist_extraction_rejects_absent_key_zero_timeout_and_garbage() {
+        let timeout = Duration::from_secs(10);
+        assert!(plutil_extract_string(PLIST_WITH_DATA, "MissingKey", timeout).is_err());
+        assert!(
+            plutil_extract_string(PLIST_WITH_DATA, "CFBundleDisplayName", Duration::ZERO).is_err()
+        );
+        assert!(plutil_extract_string(b"not a plist", "CFBundleDisplayName", timeout).is_err());
+    }
+
+    #[test]
+    fn app_metadata_fallback_receives_zero_budget_after_exhaustion() {
+        let result = app_metadata_with_budget(
+            b"plist",
+            Duration::from_millis(1),
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(20));
+                Err(())
+            },
+            |_, budget| {
+                assert_eq!(budget, Duration::ZERO);
+                Err(())
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn app_metadata_fallback_receives_only_the_remaining_budget() {
+        let result = app_metadata_with_budget(
+            b"plist",
+            Duration::from_secs(2),
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(10));
+                Err(())
+            },
+            |_, budget| {
+                assert!(budget < Duration::from_secs(2));
+                Ok(("Fixture App".to_string(), "1.2.3".to_string()))
+            },
+        );
+        assert_eq!(
+            result.unwrap(),
+            ("Fixture App".to_string(), "1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn app_metadata_json_success_never_calls_fallback() {
+        let result = app_metadata_with_budget(
+            b"plist",
+            Duration::from_secs(1),
+            |_, _| Ok(serde_json::json!({"CFBundleName": "App", "CFBundleVersion": "1"})),
+            |_, _| panic!("fallback must not run"),
+        );
+        assert_eq!(result.unwrap(), ("App".to_string(), "1".to_string()));
+    }
+
+    #[test]
+    fn parse_app_recovers_name_from_unrepresentable_plist() {
+        let root = temporary_root("parse-app");
+        let app = root.join("Fixture.app");
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        fs::write(app.join("Contents/Info.plist"), PLIST_WITH_DATA).unwrap();
+        let package = parse_app(&app, Duration::from_secs(10)).unwrap();
+        assert_eq!(package.name, "Fixture App");
+        assert_eq!(package.version, "1.2.3");
+        assert_eq!(package.source, Source::App);
         fs::remove_dir_all(root).unwrap();
     }
 

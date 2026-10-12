@@ -1,6 +1,6 @@
 //! App-scoped process inspection and explicit, confirmed termination requests.
 
-use crate::controls::button;
+use crate::controls::{button, segment, segment_group};
 use crate::engine::fmt_bytes;
 use crate::locale::text as l;
 use crate::process_activity::{self as activity, ProcessRow};
@@ -50,17 +50,19 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                 },
             )),
     );
-    let mut filters = div().flex().gap_2();
+    let mut filters =
+        segment_group("process-filters", l("Process filter", "Prosessfilter"), dark);
     for (remaining, label) in [
         (true, l("Remaining helpers", "Gjenværende hjelpeprosesser")),
         (false, l("All apps", "Alle apper")),
     ] {
         let target = this.clone();
-        filters = filters.child(button(
+        filters = filters.child(segment(
             format!("process-filter-{remaining}"),
             label,
             view.only_remaining == remaining,
             dark,
+            t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.only_remaining = remaining;

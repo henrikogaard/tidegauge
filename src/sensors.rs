@@ -172,6 +172,12 @@ extern "C" {
     ) -> i32;
 }
 
+/// Upper bound on cached temperature channels. Real hardware exposes far more
+/// than the previous 128-channel bound: a MacBook Pro (Mac17,7, M5 Max) reports
+/// 342 typed channels, and the old bound silently dropped whole families
+/// because the controller enumerates keys in ASCII order.
+const MAX_TEMPERATURE_KEYS: usize = 512;
+
 struct Smc {
     connection: u32,
     info: HashMap<u32, Option<KeyInfo>>,
@@ -330,12 +336,9 @@ impl Smc {
                 if matches!(
                     (info.data_type.to_be_bytes(), info.size),
                     ([b's', b'p', b'7', b'8'], 2) | ([b'f', b'l', b't', b' '], 4)
-                ) {
-                    if self.temperature_keys.len() < 128 {
-                        self.temperature_keys.push(out.key);
-                    } else {
-                        self.inventory_limited = true;
-                    }
+                ) && !accept_temperature_key(&mut self.temperature_keys, out.key)
+                {
+                    self.inventory_limited = true;
                 }
             }
         }
@@ -387,6 +390,15 @@ impl Smc {
                 .is_some_and(|count| self.next_key < count.min(8192)),
             inventory_limited: self.inventory_limited,
         }
+    }
+}
+
+fn accept_temperature_key(keys: &mut Vec<u32>, key: u32) -> bool {
+    if keys.len() < MAX_TEMPERATURE_KEYS {
+        keys.push(key);
+        true
+    } else {
+        false
     }
 }
 
@@ -534,16 +546,50 @@ mod tests {
     }
 
     #[test]
+    fn temperature_inventory_bound_marks_only_genuine_truncation() {
+        let mut keys = Vec::new();
+        let mut inventory_limited = false;
+        for key in 0..MAX_TEMPERATURE_KEYS as u32 + 3 {
+            if !accept_temperature_key(&mut keys, key) {
+                inventory_limited = true;
+            }
+        }
+        assert_eq!(keys.len(), MAX_TEMPERATURE_KEYS);
+        assert!(inventory_limited);
+
+        let mut keys = Vec::new();
+        let mut inventory_limited = false;
+        for key in 0..MAX_TEMPERATURE_KEYS as u32 {
+            if !accept_temperature_key(&mut keys, key) {
+                inventory_limited = true;
+            }
+        }
+        assert_eq!(keys.len(), MAX_TEMPERATURE_KEYS);
+        assert!(!inventory_limited);
+    }
+
+    #[test]
     #[ignore = "Reads this Mac's sensors; physical hardware comparison required"]
     fn native_sensor_probe() {
         match Smc::open() {
             Ok(mut smc) => {
-                let snapshot = smc.sample();
+                let started = Instant::now();
+                let mut snapshot = smc.sample();
+                while snapshot.discovering && started.elapsed() < Duration::from_secs(30) {
+                    snapshot = smc.sample();
+                }
                 println!("{snapshot:#?}");
+                println!(
+                    "temperature_channels={} inventory_limited={} fan_count={:?}",
+                    snapshot.temperatures.len(),
+                    snapshot.inventory_limited,
+                    snapshot.fan_count
+                );
                 assert!(snapshot
                     .temperatures
                     .iter()
                     .all(|r| r.value.is_none_or(valid_temperature)));
+                assert!(snapshot.temperatures.len() <= MAX_TEMPERATURE_KEYS);
             }
             Err(source) => println!("Sensor source: {source:?}"),
         }

@@ -28,12 +28,48 @@ unavailable; they must not be interpreted as safe temperatures or stopped fans.
 
 The dedicated worker owns the connection and metadata cache. Sampling occurs
 every two seconds without holding the UI or main-sampler lock. Discovery is
-incremental (up to 256 keys / 200 ms per pass), bounded to 8,192 keys and 128
+incremental (up to 256 keys / 200 ms per pass), bounded to 8,192 keys and 512
 temperature channels. Partial inventory is labeled. The connection is renewed
 every minute for wake/recovery; unavailable connections retry every 30 seconds.
 Known channel identifiers and unfinished discovery progress survive connection
 renewal; values are always re-read, never carried forward as current readings.
 Samples older than ten seconds are hidden as stale.
+
+Measured on a MacBook Pro (Mac17,7, M5 Max, macOS 27.0.1): the controller
+reports 3,864 keys, of which 359 are `T`-prefixed and 342 pass the temperature
+type filter. Reading all 342 channels in one pass costs 44–51 ms against the
+two-second sample interval. Keys enumerate in ASCII order, so a low channel
+bound does not sample uniformly — the earlier 128-channel bound filled with
+uppercase-second-character keys (`TB*`…`TV*`) and silently dropped every
+lowercase family (`Ta*` `Tf*` `Tg*` `Tm*` `Tp*` `Ts*` `Tz*`). The
+`inventory_limited` flag therefore means genuine truncation, not merely a large
+key count.
+
+Channel identifiers are reported exactly as the controller names them and are
+never mapped to hardware locations. The dashboard temperature card renders at
+most 24 channels, ordered by value descending with unavailable channels last,
+and adds an exact shown/total/unavailable caption when the list is bounded or
+any channel reports no value (e.g. `Showing 24 of 342 channels · 22
+unavailable`, `Viser 24 av 342 kanaler · 22 utilgjengelige`). Fan rows are not
+bounded.
+
+## Battery capacity reporting
+
+Pack capacities come from the `AppleSmartBattery` registry entry. On macOS 27 /
+Apple silicon (verified on Mac17,7, M5 Max) the top level carries only
+normalized `CurrentCapacity`/`MaxCapacity` percentages and `CycleCount`; the
+physical mAh values live in a nested `BatteryData` dictionary
+(`DesignCapacity`, `NominalChargeCapacity`, `FullChargeCapacity`). Both levels
+are read, top level first. Top-level and nested `CurrentCapacity`/`MaxCapacity`
+are percentages and are never accepted as mAh — a 101…200,000 guard rejects
+them on every candidate path.
+
+Maximum Capacity derives from `NominalChargeCapacity`/`DesignCapacity` (6262 /
+6249 ≈ 100.2%, matching the system's report), not `FullChargeCapacity`. Battery
+temperature has no `Temperature` key on this hardware and stays unavailable; no
+SMC channel is substituted for it. An absent `BatteryHealthCondition` means the
+system reports no adverse condition — the UI says "No condition reported" for
+a present battery, which is not a failed read and not a health verdict.
 
 ## Validation
 

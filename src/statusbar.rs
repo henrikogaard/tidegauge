@@ -129,7 +129,7 @@ impl StatusBar {
     }
 
     pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
-        let readouts = menu_readouts(settings, snap);
+        let readouts = menu_readouts(settings, snap, measure_label_width);
         let show_icon = settings.show_app_icon || readouts.is_empty();
         let menu_hint = l(
             "Click for Open Dashboard, Settings, and Quit.",
@@ -174,6 +174,7 @@ impl Drop for StatusBar {
 struct Readout {
     metric: &'static str,
     label: &'static str,
+    label_width: f64,
     style: String,
     value: String,
     history: Vec<f64>,
@@ -188,16 +189,45 @@ impl Readout {
         }
     }
     fn width(&self) -> f64 {
-        match self.style.as_str() {
-            "icon" => 14.,
-            "graph" => 22. + 4. + GRAPH_WIDTH,
-            "both" => 22. + 4. + self.value_width() + 6. + GRAPH_WIDTH,
-            _ => 22. + 4. + self.value_width(),
-        }
+        slot_width(&self.style, self.label_width, self.value_width())
     }
 }
 
-fn menu_readouts(settings: &Settings, s: &Snapshot) -> Vec<Readout> {
+fn slot_width(style: &str, label_width: f64, value_width: f64) -> f64 {
+    match style {
+        "icon" => 14.,
+        "graph" => label_width + 4. + GRAPH_WIDTH,
+        "both" => label_width + 4. + value_width + 6. + GRAPH_WIDTH,
+        _ => label_width + 4. + value_width,
+    }
+}
+
+thread_local! {
+    static LABEL_WIDTHS: std::cell::RefCell<std::collections::HashMap<String, f64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn measure_label_width(text: &str) -> f64 {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSDictionary;
+    if let Some(width) = LABEL_WIDTHS.with(|widths| widths.borrow().get(text).copied()) {
+        return width;
+    }
+    let weight = unsafe { NSFontWeightMedium };
+    let font = NSFont::systemFontOfSize_weight(9., weight);
+    let font_object: &AnyObject = &font;
+    let width = unsafe {
+        let attributes = NSDictionary::from_slices(&[NSFontAttributeName], &[font_object]);
+        NSString::from_str(text)
+            .sizeWithAttributes(Some(&attributes))
+            .width
+    };
+    let width = width.ceil().max(22.);
+    LABEL_WIDTHS.with(|widths| widths.borrow_mut().insert(text.to_string(), width));
+    width
+}
+
+fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f64) -> Vec<Readout> {
     // Canonical metric order also eliminates duplicate and unsupported entries.
     MENU_METRICS
         .iter()
@@ -209,7 +239,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot) -> Vec<Readout> {
             let (label, value, history) = match metric {
                 "cpu" => ("CPU", format!("{:.0}%", s.cpu_pct), s.cpu_hist.pts.clone()),
                 "memory" => (
-                    "MEM",
+                    l("MEM", "MINNE"),
                     format!(
                         "{:.0}%",
                         s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.
@@ -261,7 +291,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot) -> Vec<Readout> {
                     },
                 ),
                 "power" => (
-                    "PWR",
+                    l("PWR", "EFF"),
                     s.power_w.map(crate::engine::fmt_watts).unwrap_or_else(|| "—".into()),
                     s.power_hist.pts.clone(),
                 ),
@@ -270,6 +300,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot) -> Vec<Readout> {
             Some(Readout {
                 metric,
                 label,
+                label_width: measure(label),
                 style: preference.style.clone(),
                 value,
                 history,
@@ -426,7 +457,7 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
                 }
             } else {
                 draw_text(readout.label, x, 9., false);
-                let value_x = x + 26.;
+                let value_x = x + readout.label_width + 4.;
                 if readout.style != "graph" {
                     draw_text(&readout.value, value_x, 11., true);
                 }
@@ -482,9 +513,11 @@ mod tests {
             ],
             ..Settings::default()
         };
-        let mut snapshot = Snapshot::default();
-        snapshot.cpu_pct = 9.;
-        let first = menu_readouts(&settings, &snapshot);
+        let mut snapshot = Snapshot {
+            cpu_pct: 9.,
+            ..Snapshot::default()
+        };
+        let first = menu_readouts(&settings, &snapshot, |_| 22.);
         assert_eq!(
             first.iter().map(|r| r.label).collect::<Vec<_>>(),
             ["CPU", "NET"]
@@ -492,12 +525,31 @@ mod tests {
         assert_eq!(first[0].value, "9%");
         snapshot.cpu_pct = 100.;
         snapshot.net.rate_in = 1024. * 1024. * 999.;
-        let next = menu_readouts(&settings, &snapshot);
+        let next = menu_readouts(&settings, &snapshot, |_| 22.);
         assert_eq!(next[0].value, "100%");
         assert_eq!(next[1].value, "999 M/s");
         assert_eq!(
             first.iter().map(Readout::width).sum::<f64>(),
             next.iter().map(Readout::width).sum::<f64>()
         );
+    }
+
+    #[test]
+    fn slot_width_reserves_measured_labels_and_fixed_geometry() {
+        assert_eq!(slot_width("icon", 22., 31.), 14.);
+        assert_eq!(slot_width("icon", 34., 31.), 14.);
+        assert_eq!(slot_width("value", 22., 31.), 22. + 4. + 31.);
+        assert_eq!(slot_width("graph", 22., 31.), 22. + 4. + GRAPH_WIDTH);
+        assert_eq!(
+            slot_width("both", 22., 55.),
+            22. + 4. + 55. + 6. + GRAPH_WIDTH
+        );
+        assert_eq!(slot_width("value", 34., 31.), 34. + 4. + 31.);
+        assert_eq!(slot_width("graph", 34., 31.), 34. + 4. + GRAPH_WIDTH);
+        assert_eq!(
+            slot_width("both", 34., 55.),
+            34. + 4. + 55. + 6. + GRAPH_WIDTH
+        );
+        assert!(slot_width("value", 34., 31.) > slot_width("value", 22., 31.));
     }
 }

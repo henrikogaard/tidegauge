@@ -260,6 +260,33 @@ built bundles:
 5. Confirm an invalid signature and an unreachable feed fail visibly without
    replacing version N.
 
+The QA bundle shares the production bundle identifier because Sparkle replaces
+bundles in place, and that identifier selects the real user's preference and
+cache locations. Profile or `HOME` isolation alone is therefore not sufficient
+for Sparkle QA: `cfprefsd` and the Autoupdate XPC service resolve the real
+user's domain by bundle identifier regardless of the launching environment. A
+QA run writes `SUScheduledCheckInterval`, `SULastCheckTime`,
+`SUAutomaticallyUpdate`, `SUHasLaunchedBefore`, and `SUUpdateGroupIdentifier`
+into the real `~/Library/Preferences/no.ogard.tidegauge.plist`, and stages
+downloads under the real `~/Library/Caches/no.ogard.tidegauge/` Sparkle
+directory. A short `SUScheduledCheckInterval` left behind makes the production
+app poll its feed far more often than intended, so delete the `SU` keys the
+run introduced from the real domain afterwards:
+
+```sh
+for key in SUScheduledCheckInterval SULastCheckTime SUAutomaticallyUpdate \
+  SUHasLaunchedBefore SUUpdateGroupIdentifier; do
+  defaults delete no.ogard.tidegauge "$key" 2>/dev/null || true
+done
+```
+
+Sparkle's secondary Apple code-signing comparison between the installed and
+downloaded bundles logs `Code signature of the new version doesn't match the
+old version` for ad-hoc signed QA bundles, but it warns rather than blocks: a
+valid ad-hoc update still installs. Do not rely on it as a QA gate. A
+user-facing alert with that wording instead means EdDSA verification already
+passed, so it is not a signature rejection.
+
 Production notarization, feed hosting, key custody, and update delivery remain
 release-owner responsibilities and require real credentials and an isolated
 QA feed.
@@ -267,14 +294,20 @@ QA feed.
 ### Remaining acceptance and unblock steps
 
 - **Native invalid-signature rejection ([#32](https://github.com/henrikogaard/tidegauge/issues/32)):**
-  provide an isolated HTTPS endpoint whose certificate is trusted by the test
-  Mac. First verify a valid QA update there. Then alter that test archive after
-  signing, update its enclosure byte length if necessary, but retain the original
-  signature. Confirm the failure is signature rejection, not TLS, parsing, or
-  download failure, and that the installed app/version is unchanged. Use QA-only
-  bundle/feed/key/profile settings; do not repoint production clients, weaken TLS
-  trust, or reuse the production private key. The earlier local-certificate
-  attempt did not reach signature verification.
+  provide a disposable QA release endpoint whose certificate is trusted by the
+  test Mac. First observe a valid QA update installing end to end — without
+  that control, a rejection proves nothing. Then corrupt the signed archive
+  size-preservingly so the appcast's `url`, `length`, and `edSignature` all
+  stay consistent and the signature is the only false thing;
+  `packaging/validate_appcast.py` must still pass against the published asset.
+  Corrupt a field that keeps the archive structurally valid, such as a central
+  directory attribute byte, because a broken container can surface as an
+  extraction error instead of a signature rejection. Confirm the failure is
+  signature rejection, not TLS, parsing, or download failure, and that the
+  installed app/version is unchanged. Use QA-only bundle/feed/key/profile
+  settings; do not repoint production clients, weaken TLS trust, or reuse the
+  production private key. The earlier local-certificate attempt did not reach
+  signature verification.
 - **Physical validation ([#31](https://github.com/henrikogaard/tidegauge/issues/31),
   [#8](https://github.com/henrikogaard/tidegauge/issues/8)):** use the installed
   signed build on the target Mac, recording model/chip/macOS/build. Compare

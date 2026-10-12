@@ -567,12 +567,25 @@ fn read_disabled_services(uid: u32) -> Result<BTreeMap<String, bool>, ()> {
 }
 
 fn parse_disabled_output(bytes: &[u8]) -> Result<BTreeMap<String, bool>, &'static str> {
+    if bytes.len() as u64 > MAX_JSON_BYTES {
+        return Err("output too large");
+    }
     let output = std::str::from_utf8(bytes).map_err(|_| "invalid output")?;
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.first() != Some(&"disabled services = {") {
+        return Err("missing header");
+    }
+    if lines.last() != Some(&"}") {
+        return Err("missing closure");
+    }
     let mut states = BTreeMap::new();
-    for line in output.lines() {
-        let line = line.trim();
+    for line in &lines[1..lines.len() - 1] {
         if !line.starts_with('"') {
-            continue;
+            return Err("unexpected line");
         }
         let Some((label, state)) = line[1..].split_once("\" => ") else {
             return Err("invalid entry");
@@ -885,10 +898,65 @@ mod tests {
         assert_eq!(states.get("com.example.on"), Some(&false));
         assert_eq!(states.get("com.example.bool"), Some(&true));
         assert_eq!(states.get("com.example.text"), Some(&false));
-        assert!(parse_disabled_output(br#""bad label" => disabled"#).is_err());
-        assert!(parse_disabled_output(br#""com.example.off" => maybe"#).is_err());
-        assert!(parse_disabled_output(br#""com.example.off" => 1"#).is_err());
-        assert!(parse_disabled_output(br#""com.example.off" => TRUE"#).is_err());
+        assert!(parse_disabled_output(
+            br#"disabled services = {
+"bad label" => disabled
+}"#
+        )
+        .is_err());
+        assert!(parse_disabled_output(
+            br#"disabled services = {
+"com.example.off" => maybe
+}"#
+        )
+        .is_err());
+        assert!(parse_disabled_output(
+            br#"disabled services = {
+"com.example.off" => 1
+}"#
+        )
+        .is_err());
+        assert!(parse_disabled_output(
+            br#"disabled services = {
+"com.example.off" => TRUE
+}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn launchctl_disabled_output_requires_complete_braced_map() {
+        assert!(parse_disabled_output(b"").is_err());
+        assert!(parse_disabled_output(b"permission denied").is_err());
+        assert!(parse_disabled_output(b"disabled services = {\n").is_err());
+        assert!(parse_disabled_output(
+            b"disabled services = {\n\t\"com.example.off\" => disabled\n"
+        )
+        .is_err());
+        assert!(parse_disabled_output(
+            b"disabled services = {\n\tgarbage\n\t\"com.example.off\" => disabled\n}\n"
+        )
+        .is_err());
+        assert!(parse_disabled_output(b"disabled services = {\n}\ntrailing\n").is_err());
+        assert!(parse_disabled_output(
+            b"disabled services = {\n\t\"com.example.off\" => disabled\n\t\"com.example.off\" => disabled\n}\n"
+        )
+        .is_err());
+        let too_large = vec![b' '; (MAX_JSON_BYTES + 1) as usize];
+        assert!(parse_disabled_output(&too_large).is_err());
+        let empty = parse_disabled_output(b"disabled services = {\n}\n").unwrap();
+        assert!(empty.is_empty());
+        let observed = br#"disabled services = {
+	"com.apple.ManagedClientAgent.enrollagent" => disabled
+	"com.apple.Siri.agent" => disabled
+	"com.apple.FolderActionsDispatcher" => disabled
+	"com.apple.appleseed.seedusaged.postinstall" => disabled
+	"com.apple.ScriptMenuApp" => disabled
+}
+"#;
+        let states = parse_disabled_output(observed).unwrap();
+        assert_eq!(states.len(), 5);
+        assert!(states.values().all(|disabled| *disabled));
     }
 
     #[cfg(target_os = "macos")]
