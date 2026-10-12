@@ -100,6 +100,10 @@ hardware acceptance checks. A merge and a published release are separate events.
   with an ambiguous installed version also show their managed root path instead
   of a path containing the "Multiple versions" label, and remain read-only
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Startup override detection now validates the complete `launchctl
+  print-disabled` output shape instead of accepting any output containing
+  quoted lines, so diagnostic noise can no longer be misread as an empty
+  override set ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - A failed Homebrew inventory scan now explains that the scan is bounded and
   that Refresh installed retries it without changing installed packages
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
