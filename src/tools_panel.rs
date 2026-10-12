@@ -1,4 +1,4 @@
-use crate::controls::button;
+use crate::controls::{button, segment, segment_group};
 use crate::locale::text as l;
 use crate::theme as t;
 use crate::ui::{card, sub, TideGaugeView};
@@ -42,6 +42,7 @@ pub struct State {
     pub package_source: Option<crate::packages::Source>,
     pub package_sort_source: bool,
     pub package_page: usize,
+    pub startup_page: usize,
 }
 impl Default for State {
     fn default() -> Self {
@@ -62,6 +63,7 @@ impl Default for State {
             package_source: None,
             package_sort_source: false,
             package_page: 0,
+            startup_page: 0,
         }
     }
 }
@@ -84,6 +86,7 @@ pub fn refresh_startup(this: &Entity<TideGaugeView>, cx: &mut App) {
     }
     this.update(cx, |v, cx| {
         v.tools.startup_busy = true;
+        v.tools.startup_page = 0;
         cx.notify();
     });
     let this = this.clone();
@@ -99,7 +102,7 @@ pub fn refresh_startup(this: &Entity<TideGaugeView>, cx: &mut App) {
 }
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut tabs = div().flex().flex_wrap().gap_2();
+    let mut tabs = segment_group("tool-pages", l("Tools", "Verktøy"), dark).flex_wrap();
     for (i, page) in [
         Page::Startup,
         Page::Activity,
@@ -111,11 +114,12 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     .enumerate()
     {
         let target = this.clone();
-        tabs = tabs.child(button(
+        tabs = tabs.child(segment(
             format!("tool-page-{i}"),
             page.label(),
             view.tools.page == page,
             dark,
+            t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.tools.page = page;
@@ -147,6 +151,18 @@ fn title(text: &str) -> Div {
         .text_lg()
         .font_weight(FontWeight::SEMIBOLD)
         .child(text.to_owned())
+}
+
+const STARTUP_PAGE_SIZE: usize = 20;
+
+fn startup_page_range(page: usize, len: usize) -> std::ops::Range<usize> {
+    if len == 0 {
+        return 0..0;
+    }
+    let page = page.min(len.saturating_sub(1) / STARTUP_PAGE_SIZE);
+    let start = page * STARTUP_PAGE_SIZE;
+    let end = (start + STARTUP_PAGE_SIZE).min(len);
+    start..end
 }
 
 fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
@@ -207,49 +223,99 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 "No registrations found in the inspected locations.",
                 "Ingen registreringer funnet på de undersøkte stedene.",
             )));
-        }
-        for (i, entry) in inventory.entries.iter().enumerate() {
-            let state = match entry.disabled {
-                Some(true) => l("Disabled override", "Overstyring: deaktivert"),
-                Some(false) => l("Enabled override", "Overstyring: aktivert"),
-                None => l(
-                    "Effective configuration unknown",
-                    "Effektiv konfigurasjon ukjent",
+        } else {
+            let len = inventory.entries.len();
+            let range = startup_page_range(view.tools.startup_page, len);
+            body = body.child(crate::ui::section_header(
+                l("Startup registrations", "Oppstartsregistreringer"),
+                &format!(
+                    "{} {}–{} {} {}",
+                    l("Showing", "Viser"),
+                    range.start + 1,
+                    range.end,
+                    l("of", "av"),
+                    len
                 ),
-            };
-            let mut row = card(dark)
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(entry.label.clone()),
-                )
-                .child(sub(format!("{} · {}", entry.source, state)))
-                .child(sub(entry.path.display().to_string()))
-                .child(sub(entry.executable.clone().unwrap_or_else(|| {
-                    l("Executable unknown", "Ukjent kjørbar fil").into()
-                })))
-                .child(sub(entry.reason.clone()));
-            if entry.manageable && !view.tools.startup_busy {
-                if let Some(disabled) = entry.disabled {
-                    let target = this.clone();
-                    let entry = entry.clone();
-                    row = row.child(button(
-                        format!("startup-toggle-{i}"),
-                        if disabled {
-                            l("Enable…", "Aktiver…")
-                        } else {
-                            l("Disable…", "Deaktiver…")
-                        },
-                        false,
-                        dark,
-                        move |window, cx| {
-                            startup_change(&target, entry.clone(), !disabled, window, cx)
-                        },
-                    ));
+                dark,
+            ));
+            let pages = len.div_ceil(STARTUP_PAGE_SIZE);
+            let page = range.start / STARTUP_PAGE_SIZE;
+            if pages > 1 {
+                let mut paging = div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(sub(format!("{}/{}", page + 1, pages)));
+                for (offset, label) in [(-1i32, l("Previous", "Forrige")), (1, l("Next", "Neste"))] {
+                    let next = page as i32 + offset;
+                    if next >= 0 && (next as usize) < pages {
+                        let target = this.clone();
+                        paging = paging.child(button(
+                            format!("startup-page-{offset}"),
+                            label,
+                            false,
+                            dark,
+                            move |_, cx| {
+                                target.update(cx, |v, cx| {
+                                    v.tools.startup_page = next as usize;
+                                    v.scroll.set_offset(point(px(0.), px(0.)));
+                                    cx.notify();
+                                });
+                            },
+                        ));
+                    }
                 }
+                body = body.child(paging);
             }
-            body = body.child(row);
+            for (i, entry) in inventory
+                .entries
+                .iter()
+                .enumerate()
+                .skip(range.start)
+                .take(range.len())
+            {
+                let state = match entry.disabled {
+                    Some(true) => l("Disabled override", "Overstyring: deaktivert"),
+                    Some(false) => l("Enabled override", "Overstyring: aktivert"),
+                    None => l(
+                        "Effective configuration unknown",
+                        "Effektiv konfigurasjon ukjent",
+                    ),
+                };
+                let mut row = card(dark)
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(entry.label.clone()),
+                    )
+                    .child(sub(format!("{} · {}", entry.source, state)))
+                    .child(sub(entry.path.display().to_string()))
+                    .child(sub(entry.executable.clone().unwrap_or_else(|| {
+                        l("Executable unknown", "Ukjent kjørbar fil").into()
+                    })))
+                    .child(sub(entry.reason.clone()));
+                if entry.manageable && !view.tools.startup_busy {
+                    if let Some(disabled) = entry.disabled {
+                        let target = this.clone();
+                        let entry = entry.clone();
+                        row = row.child(button(
+                            format!("startup-toggle-{i}"),
+                            if disabled {
+                                l("Enable…", "Aktiver…")
+                            } else {
+                                l("Disable…", "Deaktiver…")
+                            },
+                            false,
+                            dark,
+                            move |window, cx| {
+                                startup_change(&target, entry.clone(), !disabled, window, cx)
+                            },
+                        ));
+                    }
+                }
+                body = body.child(row);
+            }
         }
     }
     body
@@ -309,14 +375,15 @@ fn startup_change(
 }
 
 fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut actions = div().flex().gap_2();
+    let mut actions = segment_group("activity-sort", l("Sort by", "Sorter etter"), dark);
     for (io, label) in [(false, "CPU"), (true, l("Disk I/O", "Diskaktivitet"))] {
         let target = this.clone();
-        actions = actions.child(button(
+        actions = actions.child(segment(
             format!("activity-sort-{io}"),
             label,
             view.tools.io_sort == io,
             dark,
+            t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.tools.io_sort = io;
@@ -450,14 +517,16 @@ fn capture_baseline(this: &Entity<TideGaugeView>, save: bool, cx: &mut App) {
 }
 
 fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut actions = div().flex().flex_wrap().gap_2();
+    let mut actions = div().flex().flex_wrap().items_center().gap_2();
+    let mut windows = segment_group("baseline-windows", l("Window", "Tidsvindu"), dark);
     for minutes in crate::baselines::WINDOWS {
         let target = this.clone();
-        actions = actions.child(button(
+        windows = windows.child(segment(
             format!("baseline-window-{minutes}"),
             format!("{minutes} min"),
             view.tools.minutes == minutes,
             dark,
+            t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     if !v.tools.baseline_busy {
@@ -468,6 +537,7 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             },
         ));
     }
+    actions = actions.child(windows);
     if !view.tools.baseline_busy && !view.tools.baseline_read_failed {
         let target = this.clone();
         actions = actions.child(button(
@@ -854,7 +924,9 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
     for warning in &inventory.warnings {
         body = body.child(sub(warning.clone()).text_color(t::warn(dark)));
     }
-    let mut filters = div().flex().flex_wrap().gap_2();
+    let mut filters = div().flex().flex_wrap().items_center().gap_2();
+    let mut sources =
+        segment_group("package-sources", l("Package source", "Pakkekilde"), dark).flex_wrap();
     for (i, source) in [
         None,
         Some(Source::App),
@@ -869,11 +941,12 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             .map(|s| s.label())
             .unwrap_or(l("All sources", "Alle kilder"));
         let target = this.clone();
-        filters = filters.child(button(
+        sources = sources.child(segment(
             format!("package-source-{i}"),
             label,
             view.tools.package_source == source,
             dark,
+            t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.tools.package_source = source;
@@ -883,16 +956,19 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             },
         ));
     }
+    filters = filters.child(sources);
+    let mut sorts = segment_group("package-sort", l("Sort", "Sortering"), dark);
     for (source, label) in [
         (false, l("Sort: name", "Sorter: navn")),
         (true, l("Sort: source", "Sorter: kilde")),
     ] {
         let target = this.clone();
-        filters = filters.child(button(
+        sorts = sorts.child(segment(
             format!("package-sort-{source}"),
             label,
             view.tools.package_sort_source == source,
             dark,
+            t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.tools.package_sort_source = source;
@@ -902,6 +978,7 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             },
         ));
     }
+    filters = filters.child(sorts);
     body = body.child(filters);
     let mut rows: Vec<_> = inventory
         .items
@@ -1009,4 +1086,46 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         );
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{startup_page_range, STARTUP_PAGE_SIZE};
+
+    #[test]
+    fn startup_page_range_empty() {
+        assert_eq!(startup_page_range(0, 0), 0..0);
+        assert_eq!(startup_page_range(usize::MAX, 0), 0..0);
+    }
+
+    #[test]
+    fn startup_page_range_boundaries() {
+        assert_eq!(startup_page_range(0, 1), 0..1);
+        assert_eq!(startup_page_range(0, 20), 0..20);
+        assert_eq!(startup_page_range(0, 21), 0..20);
+        assert_eq!(startup_page_range(1, 21), 20..21);
+        assert_eq!(startup_page_range(0, 40), 0..20);
+        assert_eq!(startup_page_range(1, 40), 20..40);
+        assert_eq!(startup_page_range(0, 41), 0..20);
+        assert_eq!(startup_page_range(1, 41), 20..40);
+        assert_eq!(startup_page_range(2, 41), 40..41);
+    }
+
+    #[test]
+    fn startup_page_range_clamps_to_last_page() {
+        assert_eq!(startup_page_range(usize::MAX, 41), 40..41);
+        assert_eq!(startup_page_range(usize::MAX, 20), 0..20);
+        assert_eq!(startup_page_range(usize::MAX, 1), 0..1);
+    }
+
+    #[test]
+    fn startup_pages_cover_every_entry_exactly_once() {
+        for len in [1usize, 19, 20, 21, 39, 40, 41, 100, 255] {
+            let mut covered = Vec::new();
+            for page in 0..len.div_ceil(STARTUP_PAGE_SIZE) {
+                covered.extend(startup_page_range(page, len));
+            }
+            assert_eq!(covered, (0..len).collect::<Vec<_>>(), "len {len}");
+        }
+    }
 }

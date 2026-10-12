@@ -98,6 +98,46 @@ pub struct ProjectGroup {
     pub servers: Vec<DevServer>,
     pub idle: bool,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerState {
+    Working,
+    Idle { seconds: u64 },
+    BarelyUsed { uptime_seconds: u64 },
+}
+
+impl Default for ServerState {
+    fn default() -> Self {
+        Self::Idle { seconds: 0 }
+    }
+}
+
+impl ServerState {
+    pub fn is_idle(&self) -> bool {
+        !matches!(self, Self::Working)
+    }
+    pub fn label(&self) -> String {
+        self.label_with(crate::locale::text, fmt_up)
+    }
+    pub fn label_with(
+        &self,
+        l: impl Fn(&'static str, &'static str) -> &'static str,
+        up: impl Fn(f64) -> String,
+    ) -> String {
+        match self {
+            Self::Working => l("working", "arbeider").into(),
+            Self::Idle { seconds } => {
+                format!("{} {}", l("idle", "inaktiv i"), up(*seconds as f64))
+            }
+            Self::BarelyUsed { uptime_seconds } => format!(
+                "{} {}, {}",
+                l("up", "oppe i"),
+                up(*uptime_seconds as f64),
+                l("barely used", "nesten ikke brukt")
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct DevServer {
     pub pid: i32,
@@ -106,7 +146,7 @@ pub struct DevServer {
     pub cwd: String,
     pub runtime: String,
     pub port: u16,
-    pub status: String,
+    pub state: ServerState,
     pub mem_bytes: u64,
     pub cpu_pct: f64,
     pub up_since: f64,
@@ -612,7 +652,7 @@ mod tests {
             process.cpu_pct
         );
         assert!(process.mem_bytes > 0, "server memory was not measured");
-        assert_eq!(process.status, "working");
+        assert_eq!(process.state, ServerState::Working);
         assert!(!project.idle);
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(std::path::Path::new(&project.dir), cwd.as_path());

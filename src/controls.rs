@@ -3,9 +3,113 @@
 use crate::locale::text as l;
 use crate::settings::Settings;
 use crate::theme as t;
-use crate::ui::{card, sub, update_preference, Tab, TideGaugeView};
+use crate::ui::{
+    caption, card, empty_state, section_header, sub, update_preference, Tab, TideGaugeView,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+
+pub(crate) struct ControlSpec {
+    pub id: String,
+    pub label: String,
+    pub aria: Option<String>,
+    pub role: Role,
+    pub tab_index: isize,
+    pub selected: bool,
+    pub accent: Hsla,
+    pub dark: bool,
+    pub framed: bool,
+}
+
+pub(crate) fn control(
+    spec: ControlSpec,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let action = std::rc::Rc::new(action);
+    let keyboard = action.clone();
+    let toggled = matches!(spec.role, Role::RadioButton | Role::Switch);
+    let mut base = div()
+        .id(SharedString::from(spec.id))
+        .role(spec.role)
+        .aria_label(SharedString::from(
+            spec.aria.unwrap_or_else(|| spec.label.clone()),
+        ))
+        .tab_index(spec.tab_index)
+        .h(px(28.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .whitespace_nowrap()
+        .text_size(px(12.))
+        .text_color(if spec.selected {
+            spec.accent
+        } else {
+            t::ink(spec.dark)
+        })
+        .cursor_pointer()
+        .hover(|d| d.bg(t::card_hi(spec.dark)));
+    if toggled {
+        base = base.aria_toggled(if spec.selected {
+            Toggled::True
+        } else {
+            Toggled::False
+        });
+    }
+    if spec.framed {
+        base = base
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if spec.selected {
+                spec.accent
+            } else {
+                t::line(spec.dark)
+            })
+            .focus_visible(|d| d.border_color(spec.accent));
+    } else {
+        base = base
+            .border_1()
+            .border_color(t::line(spec.dark).opacity(0.))
+            .focus_visible(|d| d.border_color(spec.accent));
+    }
+    if spec.selected {
+        base = base.bg(spec.accent.opacity(0.12));
+    }
+    base.child(spec.label)
+        .on_click(move |_, window, cx| action(window, cx))
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
+                keyboard(window, cx);
+                cx.stop_propagation();
+            }
+        })
+}
+
+pub(crate) fn is_activation_key(keystroke: &Keystroke) -> bool {
+    matches!(keystroke.key.as_str(), "enter" | "space") && !keystroke.modifiers.modified()
+}
+
+fn spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    accent: Hsla,
+) -> ControlSpec {
+    ControlSpec {
+        id: id.into(),
+        label: label.into(),
+        aria: None,
+        role: Role::Button,
+        tab_index: 0,
+        selected,
+        accent,
+        dark,
+        framed: true,
+    }
+}
 
 pub fn button(
     id: impl Into<String>,
@@ -14,37 +118,111 @@ pub fn button(
     dark: bool,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let action = std::rc::Rc::new(action);
-    let keyboard = action.clone();
-    let label = label.into();
+    control(spec(id, label, selected, dark, t::accent(dark)), action)
+}
+
+pub fn button_accent(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    accent: Hsla,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    control(spec(id, label, selected, dark, accent), action)
+}
+
+pub fn button_indexed(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    tab_index: isize,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let mut s = spec(id, label, selected, dark, t::accent(dark));
+    s.tab_index = tab_index;
+    control(s, action)
+}
+
+pub fn button_labeled(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    aria: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let mut s = spec(id, label, selected, dark, t::accent(dark));
+    s.aria = Some(aria.into());
+    control(s, action)
+}
+
+pub fn segment(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    accent: Hsla,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let mut s = spec(id, label, selected, dark, accent);
+    s.role = Role::RadioButton;
+    s.framed = false;
+    control(s, action)
+}
+
+pub fn segment_group(id: impl Into<String>, label: impl Into<String>, dark: bool) -> Stateful<Div> {
     div()
         .id(SharedString::from(id.into()))
-        .role(Role::Button)
-        .aria_label(SharedString::from(label.clone()))
-        .tab_index(0)
-        .px_3()
-        .py_2()
-        .rounded(px(7.))
+        .role(Role::RadioGroup)
+        .aria_label(SharedString::from(label.into()))
+        .tab_group()
+        .flex()
+        .items_center()
         .border_1()
         .border_color(t::line(dark))
-        .bg(if selected {
-            t::line(dark)
-        } else {
-            t::card_hi(dark)
-        })
-        .text_size(px(12.))
+        .rounded(px(8.))
+        .overflow_hidden()
+}
+
+pub fn stepper_group(id: impl Into<String>, label: impl Into<String>, dark: bool) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id.into()))
+        .role(Role::Group)
+        .aria_label(SharedString::from(label.into()))
+        .flex()
+        .items_center()
+        .border_1()
+        .border_color(t::line(dark))
+        .rounded(px(8.))
+        .overflow_hidden()
+}
+
+pub fn step_button(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    aria: impl Into<String>,
+    dark: bool,
+    accent: Hsla,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let mut s = spec(id, label, false, dark, accent);
+    s.aria = Some(aria.into());
+    s.framed = false;
+    control(s, action)
+}
+
+pub fn step_value(value: String, dark: bool) -> Div {
+    div()
+        .min_w(px(56.))
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_sm()
         .text_color(t::ink(dark))
-        .cursor_pointer()
-        .hover(|d| d.bg(t::line(dark)))
-        .focus_visible(|d| d.border_color(t::ink_dim(dark)))
-        .child(label)
-        .on_click(move |_, window, cx| action(window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                keyboard(window, cx);
-                cx.stop_propagation();
-            }
-        })
+        .child(value)
 }
 
 fn preference(
@@ -56,6 +234,33 @@ fn preference(
     change: impl Fn(&mut Settings) + 'static,
 ) -> impl IntoElement {
     button(id, label, selected, dark, move |window, cx| {
+        update_preference(&this, |s| change(s), window, cx)
+    })
+}
+
+fn preference_labeled(
+    id: String,
+    label: impl Into<String>,
+    aria: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    change: impl Fn(&mut Settings) + 'static,
+) -> impl IntoElement {
+    button_labeled(id, label, aria, selected, dark, move |window, cx| {
+        update_preference(&this, |s| change(s), window, cx)
+    })
+}
+
+fn step_preference(
+    id: String,
+    label: impl Into<String>,
+    aria: impl Into<String>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    change: impl Fn(&mut Settings) + 'static,
+) -> impl IntoElement {
+    step_button(id, label, aria, dark, t::accent(dark), move |window, cx| {
         update_preference(&this, |s| change(s), window, cx)
     })
 }
@@ -100,43 +305,44 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
             };
             row = row
                 .aria_label(SharedString::from(format!("{label} · {value:.0}%")))
-                .child(preference(
-                    format!("threshold-{key}-down"),
-                    l("− 5", "− 5"),
-                    false,
-                    dark,
-                    this.clone(),
-                    move |s| {
-                        let v = if key == "cpu" {
-                            &mut s.alert_cpu_pct
-                        } else {
-                            &mut s.alert_mem_pct
-                        };
-                        *v = (*v - 5.).max(1.);
-                    },
-                ))
                 .child(
-                    div()
-                        .w(px(64.))
-                        .text_center()
-                        .text_sm()
-                        .child(format!("{value:.0}%")),
-                )
-                .child(preference(
-                    format!("threshold-{key}-up"),
-                    "+ 5",
-                    false,
-                    dark,
-                    this.clone(),
-                    move |s| {
-                        let v = if key == "cpu" {
-                            &mut s.alert_cpu_pct
-                        } else {
-                            &mut s.alert_mem_pct
-                        };
-                        *v = (*v + 5.).min(100.);
-                    },
-                ));
+                    stepper_group(
+                        format!("threshold-{key}-group"),
+                        format!("{label} {}", l("threshold", "terskel")),
+                        dark,
+                    )
+                    .child(step_preference(
+                        format!("threshold-{key}-down"),
+                        l("− 5", "− 5"),
+                        format!("{label} · {}", l("Decrease", "Senk")),
+                        dark,
+                        this.clone(),
+                        move |s| {
+                            let v = if key == "cpu" {
+                                &mut s.alert_cpu_pct
+                            } else {
+                                &mut s.alert_mem_pct
+                            };
+                            *v = (*v - 5.).max(1.);
+                        },
+                    ))
+                    .child(step_value(format!("{value:.0}%"), dark))
+                    .child(step_preference(
+                        format!("threshold-{key}-up"),
+                        "+ 5",
+                        format!("{label} · {}", l("Increase", "Øk")),
+                        dark,
+                        this.clone(),
+                        move |s| {
+                            let v = if key == "cpu" {
+                                &mut s.alert_cpu_pct
+                            } else {
+                                &mut s.alert_mem_pct
+                            };
+                            *v = (*v + 5.).min(100.);
+                        },
+                    )),
+                );
         }
         row = row.child(preference(
             format!("alert-{key}"),
@@ -210,9 +416,10 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
             ));
         if enabled {
             row = row
-                .child(preference(
+                .child(preference_labeled(
                     format!("up-{key}"),
                     "↑",
+                    format!("{} {} {}", l("Move", "Flytt"), tab.label(), l("up", "opp")),
                     false,
                     dark,
                     this.clone(),
@@ -224,9 +431,15 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
                         }
                     },
                 ))
-                .child(preference(
+                .child(preference_labeled(
                     format!("down-{key}"),
                     "↓",
+                    format!(
+                        "{} {} {}",
+                        l("Move", "Flytt"),
+                        tab.label(),
+                        l("down", "ned")
+                    ),
                     false,
                     dark,
                     this.clone(),
@@ -438,37 +651,49 @@ pub fn history_panel(
 ) -> Div {
     use crate::history_browser::{Metric, RANGES};
     let app = view.history_request.app.is_some();
-    let mut ranges = div().flex().gap_2().flex_wrap();
+    let accent = match view.history_request.metric {
+        Metric::Cpu => t::Metric::Cpu,
+        Metric::Memory => t::Metric::Memory,
+        Metric::Gpu => t::Metric::Gpu,
+        Metric::Battery => t::Metric::Battery,
+        Metric::DiskRead | Metric::DiskWrite => t::Metric::Disk,
+        _ => t::Metric::Network,
+    }
+    .accent(dark);
+    let row_label = |text: &'static str| {
+        div()
+            .w(px(72.))
+            .flex_shrink_0()
+            .text_xs()
+            .text_color(t::ink_dim(dark))
+            .child(text)
+    };
+    let mut ranges = segment_group("history-ranges", l("Range", "Tidsrom"), dark);
     for (hours, (en, no)) in RANGES {
         let target = this.clone();
-        ranges = ranges.child(button(
+        ranges = ranges.child(segment(
             format!("history-{hours}"),
             l(en, no),
             view.history_request.hours == hours,
             dark,
+            t::accent(dark),
             move |_, cx| change_history(&target, cx, |r| r.hours = hours),
         ));
     }
     let refresh = this.clone();
-    ranges = ranges.child(button(
-        "refresh-history",
-        l("Refresh", "Oppdater"),
-        false,
-        dark,
-        move |_, cx| refresh_history(&refresh, cx),
-    ));
-    let mut metrics = div().flex().gap_2().flex_wrap();
+    let mut metrics = segment_group("history-metrics", l("Metric", "Måling"), dark);
     for &metric in if app {
         &Metric::APP[..]
     } else {
         &Metric::ALL[..]
     } {
         let target = this.clone();
-        metrics = metrics.child(button(
+        metrics = metrics.child(segment(
             format!("history-{metric:?}"),
             metric.label(app),
             view.history_request.metric == metric,
             dark,
+            accent,
             move |_, cx| change_history(&target, cx, |r| r.metric = metric),
         ));
     }
@@ -477,22 +702,37 @@ pub fn history_panel(
         .flex()
         .flex_col()
         .gap_4()
-        .child(
-            div()
-                .text_size(px(24.))
-                .font_weight(FontWeight::BOLD)
-                .child(l("History", "Historikk")),
-        )
+        .child(section_header(
+            l("History", "Historikk"),
+            l("Read-only", "Kun avlesning"),
+            dark,
+        ))
         .child(
             card(dark)
-                .child(ranges)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap_3()
-                        .child(sub(l("Source", "Kilde")))
-                        .child(button(
+                        .child(row_label(l("Range", "Tidsrom")))
+                        .child(ranges)
+                        .child(div().flex_1())
+                        .child(button_accent(
+                            "refresh-history",
+                            l("Refresh", "Oppdater"),
+                            false,
+                            dark,
+                            accent,
+                            move |_, cx| refresh_history(&refresh, cx),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(row_label(l("Source", "Kilde")))
+                        .child(button_accent(
                             "history-app-picker",
                             format!(
                                 "{} ▾",
@@ -503,6 +743,7 @@ pub fn history_panel(
                             ),
                             view.history_app_picker,
                             dark,
+                            accent,
                             move |_, cx| {
                                 picker.update(cx, |v, cx| {
                                     v.history_app_picker = !v.history_app_picker;
@@ -511,7 +752,14 @@ pub fn history_panel(
                             },
                         )),
                 )
-                .child(metrics),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(row_label(l("Metric", "Måling")))
+                        .child(metrics),
+                ),
         );
     if view.history_app_picker {
         let mut choices = vec![None];
@@ -529,11 +777,12 @@ pub fn history_panel(
                     .gap_1()
                     .children(choices.into_iter().enumerate().map(|(i, name)| {
                         let target = this.clone();
-                        button(
+                        button_accent(
                             format!("history-app-{i}"),
                             name.as_deref().unwrap_or(l("System", "System")).to_owned(),
                             view.history_request.app == name,
                             dark,
+                            accent,
                             move |_, cx| {
                                 change_history(&target, cx, |r| {
                                     r.app = name.clone();
@@ -548,83 +797,171 @@ pub fn history_panel(
         );
     }
     if view.history_loading {
-        panel = panel
-            .child(card(dark).child(sub(l("Loading local history…", "Laster lokal historikk…"))));
+        panel = panel.child(empty_state(
+            "icons/clock.svg",
+            accent,
+            l("Loading local history…", "Laster lokal historikk…").into(),
+            l(
+                "Reading only the local database on this Mac.",
+                "Leser kun den lokale databasen på denne Macen.",
+            )
+            .into(),
+            dark,
+        ));
     } else if let Some(Ok(data)) = &view.history_data {
         let metric = view.history_request.metric;
         let values: Vec<f64> = data.values.iter().flatten().copied().collect();
-        let max =
-            values
-                .iter()
-                .copied()
-                .fold(0., f64::max)
-                .max(if !app && metric.unit(app) == "%" {
-                    100.
-                } else {
-                    1.
-                });
-        let samples = data.counts.iter().sum::<u64>();
-        let format_value = |v| match metric.unit(app) {
-            "B" => crate::engine::fmt_bytes(v),
-            "B/s" => crate::engine::fmt_rate(v),
-            unit => format!("{v:.1} {unit}"),
-        };
-        let color = match metric {
-            Metric::Cpu => t::Metric::Cpu,
-            Metric::Memory => t::Metric::Memory,
-            Metric::Gpu => t::Metric::Gpu,
-            Metric::Battery => t::Metric::Battery,
-            Metric::DiskRead | Metric::DiskWrite => t::Metric::Disk,
-            _ => t::Metric::Network,
-        }
-        .accent(dark);
-        let mut plot = card(dark)
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("{} · {}", metric.label(app), metric.unit(app))),
-                    )
-                    .child(sub(format!("{} {}", samples, l("samples", "målinger")))),
-            )
-            .child(sub(format_value(max)))
-            .child(history_chart(&data.values, max, color))
-            .child(sub(format_value(0.)))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(t::ink_dim(dark))
-                    .child(crate::history_browser::local_time(data.start))
-                    .child(l("Local time", "Lokal tid"))
-                    .child(crate::history_browser::local_time(data.end)),
-            );
         if values.is_empty() {
-            plot = plot.child(sub(l(
-                "No recorded measurements in this range.",
-                "Ingen registrerte målinger i dette tidsrommet.",
-            )));
-        } else if values.len() * 5 < data.values.len() {
-            // Under ~20% of the buckets hold data; say so instead of leaving
-            // a mostly blank plot unexplained.
-            plot = plot.child(sub(l(
-                "Few recorded measurements in this range — most intervals have no data.",
-                "Få registrerte målinger i dette tidsrommet — de fleste intervallene mangler data.",
-            )));
+            panel = panel.child(empty_state(
+                "icons/clock.svg",
+                accent,
+                l(
+                    "No recorded measurements in this range.",
+                    "Ingen registrerte målinger i dette tidsrommet.",
+                )
+                .into(),
+                l(
+                    "Missing intervals are gaps, not zero values.",
+                    "Manglende intervaller er hull, ikke nullverdier.",
+                )
+                .into(),
+                dark,
+            ));
+        } else {
+            let max =
+                values
+                    .iter()
+                    .copied()
+                    .fold(0., f64::max)
+                    .max(if !app && metric.unit(app) == "%" {
+                        100.
+                    } else {
+                        1.
+                    });
+            let samples = data.counts.iter().sum::<u64>();
+            let format_value = |v| match metric.unit(app) {
+                "B" => crate::engine::fmt_bytes(v),
+                "B/s" => crate::engine::fmt_rate(v),
+                unit => format!("{v:.1} {unit}"),
+            };
+            let mut plot = card(dark)
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .gap_3()
+                        .child(sub(format!("{} {}", samples, l("samples", "målinger"))))
+                        .child(sub(format_value(max))),
+                )
+                .child(history_chart(&data.values, max, accent))
+                .child(sub(format_value(0.)))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(t::ink_dim(dark))
+                        .child(crate::history_browser::local_time(data.start))
+                        .child(l("Local time", "Lokal tid"))
+                        .child(crate::history_browser::local_time(data.end)),
+                );
+            if values.len() * 5 < data.values.len() {
+                // Under ~20% of the buckets hold data; say so instead of leaving
+                // a mostly blank plot unexplained.
+                plot = plot.child(sub(l(
+                    "Few recorded measurements in this range — most intervals have no data.",
+                    "Få registrerte målinger i dette tidsrommet — de fleste intervallene mangler data.",
+                )));
+            }
+            panel = panel
+                .child(section_header(metric.label(app), metric.unit(app), dark))
+                .child(plot);
         }
-        panel = panel.child(plot);
     } else if let Some(Err(error)) = &view.history_data {
-        panel = panel.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark))));
+        panel = panel.child(empty_state(
+            "icons/clock.svg",
+            t::warn(dark),
+            l("History unavailable", "Historikk utilgjengelig").into(),
+            error.clone(),
+            dark,
+        ));
     }
-    panel.child(sub(l("Local history · 30-day retention target, pruned hourly. Bars show means of recorded samples; blank intervals are missing, not zero. Refresh to include new samples.", "Lokal historikk · mål om 30 dagers lagring, ryddes hver time. Stolper viser gjennomsnitt av registrerte målinger; tomme intervaller er manglende data, ikke null. Oppdater for å inkludere nye målinger.")))
-        .child(sub(l("Only the top 60 app groups are stored per sample, by recorded name. Missing app rows do not prove inactivity. App CPU can exceed 100% across cores. Legacy GPU/battery zero placeholders are omitted; historical power estimates are not shown as measurements.", "Kun de 60 øverste appgruppene lagres per måling, etter registrert navn. Manglende apprader betyr ikke nødvendigvis inaktivitet. App-CPU kan overstige 100% på flere kjerner. Eldre nullverdier for GPU/batteri utelates; historiske effektestimater vises ikke som målinger.")))
+    panel.child(recording_details(dark))
+}
+
+fn recording_details(dark: bool) -> Div {
+    let row = |label: &'static str, text: &'static str| {
+        div()
+            .flex()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(112.))
+                    .flex_shrink_0()
+                    .child(caption(label, dark)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(sub(text).text_color(t::ink_dim(dark))),
+            )
+    };
+    card(dark)
+        .child(caption(
+            l("Recording details", "Registreringsdetaljer"),
+            dark,
+        ))
+        .child(row(
+            l("Retention", "Lagring"),
+            l(
+                "30-day target, pruned hourly",
+                "mål om 30 dager, ryddes hver time",
+            ),
+        ))
+        .child(row(
+            l("Values", "Verdier"),
+            l(
+                "bucket means, never peaks; missing is not zero",
+                "intervallgjennomsnitt, aldri topper; manglende er ikke null",
+            ),
+        ))
+        .child(row(
+            l("Refresh", "Oppdater"),
+            l(
+                "manual — include new samples with Refresh",
+                "manuell — inkluder nye målinger med Oppdater",
+            ),
+        ))
+        .child(row(
+            l("Apps", "Apper"),
+            l(
+                "top 60 recorded names; absence does not prove inactivity",
+                "topp 60 registrerte navn; fravær beviser ikke inaktivitet",
+            ),
+        ))
+        .child(row(
+            "CPU",
+            l(
+                "app CPU can exceed 100% across cores",
+                "app-CPU kan overstige 100 % på flere kjerner",
+            ),
+        ))
+        .child(row(
+            l("GPU · Battery", "GPU · Batteri"),
+            l(
+                "legacy zero placeholders are omitted",
+                "eldre nullverdier er utelatt",
+            ),
+        ))
+        .child(row(
+            l("Power", "Effekt"),
+            l(
+                "estimates are not shown as measurements",
+                "estimater vises ikke som målinger",
+            ),
+        ))
 }
 
 fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElement {
@@ -684,28 +1021,45 @@ pub fn audio_output(
     if pending {
         return controls.child(sub(l("Updating output…", "Oppdaterer lydutgang…")));
     }
-    let mut buttons = div().flex().gap_2();
+    let accent = t::Metric::Sound.accent(dark);
+    let mut buttons = div().flex().gap_3();
     if audio.can_volume {
-        if let Some(_volume) = audio.device_volume {
-            for (key, label, delta) in [("down", "− 10%", -0.1), ("up", "+ 10%", 0.1)] {
-                let target = this.clone();
-                buttons = buttons.child(button(
-                    format!("volume-{key}"),
-                    label,
-                    false,
-                    dark,
-                    move |_, cx| {
-                        audio_action(&target, cx, move || {
-                            crate::audio::adjust_output_volume(id, delta)
-                        });
-                    },
-                ));
-            }
+        if let Some(volume) = audio.device_volume {
+            let down = this.clone();
+            let up = this.clone();
+            buttons = buttons.child(
+                stepper_group("output-volume", l("Output volume", "Utgangsvolum"), dark)
+                    .child(step_button(
+                        "volume-down",
+                        l("− 10%", "− 10%"),
+                        format!("{} 10%", l("Decrease volume by", "Senk volumet med")),
+                        dark,
+                        accent,
+                        move |_, cx| {
+                            audio_action(&down, cx, move || {
+                                crate::audio::adjust_output_volume(id, -0.1)
+                            });
+                        },
+                    ))
+                    .child(step_value(format!("{:.0}%", volume * 100.), dark))
+                    .child(step_button(
+                        "volume-up",
+                        "+ 10%",
+                        format!("{} 10%", l("Increase volume by", "Øk volumet med")),
+                        dark,
+                        accent,
+                        move |_, cx| {
+                            audio_action(&up, cx, move || {
+                                crate::audio::adjust_output_volume(id, 0.1)
+                            });
+                        },
+                    )),
+            );
         }
     }
     if audio.can_mute {
         if let Some(muted) = audio.device_muted {
-            buttons = buttons.child(button(
+            buttons = buttons.child(button_accent(
                 "output-mute",
                 if muted {
                     l("Unmute", "Slå på lyden")
@@ -714,6 +1068,7 @@ pub fn audio_output(
                 },
                 muted,
                 dark,
+                accent,
                 move |_, cx| {
                     audio_action(&this, cx, move || crate::audio::toggle_output_mute(id));
                 },
@@ -756,4 +1111,35 @@ fn audio_action(
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_activation_key;
+    use gpui_kit::Keystroke;
+
+    #[test]
+    fn activation_key_matches_unmodified_enter_and_space() {
+        for key in ["enter", "space"] {
+            let stroke = Keystroke::parse(key).unwrap();
+            assert!(is_activation_key(&stroke), "{key} must activate");
+        }
+    }
+
+    #[test]
+    fn activation_key_rejects_modified_and_other_keys() {
+        for key in [
+            "shift-enter",
+            "shift-space",
+            "cmd-enter",
+            "ctrl-space",
+            "alt-space",
+            "tab",
+            "a",
+            "escape",
+        ] {
+            let stroke = Keystroke::parse(key).unwrap();
+            assert!(!is_activation_key(&stroke), "{key} must not activate");
+        }
+    }
 }

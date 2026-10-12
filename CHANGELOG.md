@@ -79,6 +79,33 @@ hardware acceptance checks. A merge and a published release are separate events.
   leaving an unexplained gap, and a largely empty selected range says so in a
   localized line
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Controls now share one anatomy across the app: bordered 28 px buttons with
+  transparent rest state, segmented radio groups for mutually exclusive
+  choices (appearance, launcher visibility, menu readout styles, History
+  range and metric, the Tools page row, baseline windows, package source and
+  sort filters, and process filters), and grouped steppers for alert
+  thresholds and output volume. Arrow-only reorder buttons carry
+  context-rich localized labels. The Disk hero reports system-wide disk
+  activity instead of free capacity, physical capacity moves into the device
+  identity card, and APFS volumes share one container header only when the
+  reported metadata is consistent — shared space is never summed per volume.
+  Projects gains a count summary and a sectioned list with a shared empty
+  state; History uses section headers, shared empty states, and a labeled
+  Recording details card that keeps every truthfulness note
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Development-server state is now a typed value (working / idle / barely
+  used) instead of a parsed localized string, and project and summary counts
+  count distinct server processes rather than listening ports. Menu-bar
+  label slots are font-measured once per label instead of assuming a fixed
+  width, so localized labels such as MINNE and EFF size correctly
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- Keyboard activation now prevents the framework-generated second click, so
+  Enter/Space invokes actions once and modified activation keys are ignored
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
+- The Tools Startup page bounds the rendered list to 20 registrations per
+  page with Previous/Next navigation so every entry stays reachable; the
+  collected inventory itself is never truncated
+  ([#35](https://github.com/henrikogaard/tidegauge/pull/35), in review).
 - Audio mute actions read fresh device state before applying a change.
 - App-instance attribution preserves multiple main processes and requires
   observed ancestry before offering remaining-helper Stop.

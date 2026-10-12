@@ -56,9 +56,11 @@ Overview sparklines share the detail-tab area chart and show the same recent sam
 
 Every metric tab composes the same ordered parts with 16 px between sections:
 
-1. **Hero card** — uppercase 10 px caption in the metric accent; 42 px bold value with the unit as separate smaller text; one sub-caption line for hardware/context; filled area chart (130 px) with its scale label top-right and older/now labels at the ends; a footer row of 3–4 stat triplets.
+1. **Hero card** — uppercase 10 px caption in the metric accent; 42 px bold value with the unit as separate smaller text; one sub-caption line for hardware/context; filled area chart (130 px) with its scale label top-right and older/now labels at the ends; a footer row of stat triplets.
 2. **Attribution section** — a standard section header (uppercase 10 px `ink-dim` label left, optional qualifier right) followed by app rows in the anatomy above. Present only where genuine per-app data exists.
 3. **Supplementary sections** — same section-header pattern, each in a 12 px-radius card: CPU → temperatures and fans; Disk → devices and volumes; Battery → battery health and electrical details; GPU → Neural Engine; Sound → output control; Bluetooth → devices.
+
+Page expectations beyond the template: History opens with a controls card that clearly separates Range, Source, and Metric; loading, empty, and error outcomes use the shared empty state rather than an empty plot; a Recording details card holds labeled rows stating the 30-day hourly-pruned retention, means-not-peaks, missing-not-zero, manual refresh, the top-60 recorded app-name bound, multi-core CPU, omitted legacy placeholders, and estimate scope. Disk's hero reports system-wide read+write activity, not capacity; physical device capacity lives inside the device identity card, and volumes share one APFS container header only when the container's total/free/stores metadata is consistent — shared space is shown once and never summed per volume. Projects shows a count summary card that counts distinct server processes rather than listening ports, a CPU-activity idle note, a sectioned list with guarded Stop actions, and a shared empty state when no development servers are detected. The Tools Startup page renders the registration inventory paginated 20 entries per page for responsiveness, with every entry reachable through Previous/Next controls and a shown-of-total caption; the underlying inventory is never truncated.
 
 ## Empty states
 
@@ -66,7 +68,11 @@ An empty or unavailable surface is a card of the standard radius containing: the
 
 ## Controls
 
-Mutually exclusive choices use one segmented control (appearance, history ranges, package sources, baseline windows). Increment/decrement pairs form a single bordered group with the value between them. Actions are bordered buttons with 8 px radius. Every control is at least 24 px tall, keyboard focusable, and shows a metric-coloured focus border.
+All controls share one anatomy: 28 px tall (at least 24 px), a readable 12 px `ink` label, 8 px radius on framed surfaces, transparent fill at rest, `card_hi` on hover, and an accent-coloured focus border. Enter or Space activates the control and stops propagation.
+
+- **Action buttons** — framed controls: 1 px `line` border, `Button` role; a selected action shows the 12% accent tint. The neutral `accent` applies in Settings and Tools; History, Sound, and Projects actions use the metric accent.
+- **Segmented controls** — mutually exclusive choices inside one bordered 8 px surface (`RadioGroup` with an `aria-label` and tab-group semantics) holding `RadioButton` segments with `aria_toggled`, zero gap, and no separate segment outlines or internal separators; the selected segment shows the 12% accent tint, and a reserved transparent border turns full accent on keyboard focus without layout shift. Used for appearance, launcher visibility, menu readout styles, History range and metric, the Tools page row, activity sort, baseline windows, package source and package sort (two separate groups), and process filters. Refresh, save, and other actions stay as separate buttons outside any radio group.
+- **Steppers** — a decrement control, a noninteractive current value, and an increment control inside one bordered 8 px group with the same no-internal-separator anatomy (alert thresholds, output volume). Arrow-only or icon-only controls carry context-rich localized ARIA labels such as "Move CPU up".
 
 The footer uses one control style for all three actions (Settings, Processes, Tools): a 14 px icon and 12 px label on a 28 px-tall button with 8 px radius, a 1 px `line` border, transparent fill at rest, `card_hi` on hover, and the metric accent on keyboard focus. Settings sits left-aligned; the live app/process counts stay centred as quiet `ink_dim` metadata (not a control); Processes and Tools form a tight right-aligned group with an 8 px gap, flush to the content inset. Keyboard focus order follows visual order after the tabs.
 
@@ -74,8 +80,8 @@ The footer uses one control style for all three actions (Settings, Processes, To
 
 - Exactly one native `NSStatusItem` stays registered. Its default content is a 16 px Tidegauge wave icon. Clicking anywhere opens Open Dashboard, Check for Updates, Settings, and Quit. The update item is disabled in preview builds and live in production.
 - Readings are opt-in through Settings, with `icon`, `value`, `graph`, and `both` styles. Existing preferences are preserved; Reset to icon only clears optional readings.
-- Enabled metrics share one transparent template image. Labels use 9 px system medium, values use 11 px system medium with monospaced digits, and slots have fixed widths. Spacing between readings is 10 px. Native template tint follows the menu bar and selected state.
-- Value and graph readings include CPU, MEM, GPU, DSK, NET, BAT, or PWR labels. Sparklines are 24×10 px with a 1 px stroke and at most 60 real samples. Missing samples show a dash.
+- Enabled metrics share one transparent template image. Labels use 9 px system medium and are font-measured once per label (22 px minimum, rounded up) so longer localized labels widen the slot once instead of resizing per sample; values use 11 px system medium with monospaced digits inside fixed-width slots. Spacing between readings is 10 px. Native template tint follows the menu bar and selected state.
+- Value and graph readings include CPU, MEM (MINNE in Bokmål), GPU, DSK, NET, BAT, or PWR/EFF labels. Sparklines are 24×10 px with a 1 px stroke and at most 60 real samples. Missing samples show a dash.
 - The icon remains visible when all readings are off, even if its preference is Hidden. The native item is removed when the monitor exits.
 - Every dashboard tab has a labeled, keyboard-accessible Settings button in the footer. Command-comma also opens Settings; global Command-Q quits from the dashboard. A per-user file lock prevents duplicate monitors. Settings provides keyboard-accessible choices and reports persistence errors.
 

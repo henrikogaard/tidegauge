@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use crate::controls::is_activation_key;
 use crate::engine::*;
 use crate::locale::text as l;
 use crate::processes::AppGroup;
@@ -213,7 +214,7 @@ impl TideGaugeView {
 
 /// Section/field caption: uppercase 10 px semibold in `ink_dim`. Sentences
 /// and disclaimers use `sub()` at 12 px instead.
-fn caption(text: &str, dark: bool) -> Div {
+pub(crate) fn caption(text: &str, dark: bool) -> Div {
     div()
         .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
@@ -543,7 +544,7 @@ fn stat_card(label: &str, value: String, color: Option<Hsla>, dark: bool) -> Div
         )
 }
 
-fn section_header(left: &str, right: &str, dark: bool) -> Div {
+pub(crate) fn section_header(left: &str, right: &str, dark: bool) -> Div {
     div()
         .flex()
         .justify_between()
@@ -598,15 +599,16 @@ fn footer_button(
         .child(icon_img(action_def.icon, 14., t::ink_dim(dark)))
         .child(action_def.label)
         .on_click(move |_, window, cx| action(window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
                 keyboard(window, cx);
                 cx.stop_propagation();
             }
         })
 }
 
-fn list_card(rows: Vec<Div>, dark: bool) -> Div {
+pub(crate) fn list_card(rows: Vec<Div>, dark: bool) -> Div {
     card(dark).p_0().py_2().gap_0().children(rows)
 }
 
@@ -674,9 +676,9 @@ impl Render for TideGaugeView {
                                     .focus_visible(|d| {
                                         d.border_color(accent).bg(accent.opacity(0.12))
                                     })
-                                    .on_key_down(move |event, _, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
+                                    .capture_key_down(move |event, window, cx| {
+                                        if is_activation_key(&event.keystroke) {
+                                            window.prevent_default();
                                             select_tab(&keyboard_target, tb, cx);
                                             cx.stop_propagation();
                                         }
@@ -741,8 +743,9 @@ impl Render for TideGaugeView {
                         .hover(|d| d.bg(t::card_hi(dark)))
                         .focus_visible(|d| d.bg(t::card_hi(dark)))
                         .child(icon_img("icons/arrow-left.svg", 16., t::ink(dark)))
-                        .on_key_down(move |event, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        .capture_key_down(move |event, window, cx| {
+                            if is_activation_key(&event.keystroke) {
+                                window.prevent_default();
                                 select_tab(&keyboard_back, tab, cx);
                                 cx.stop_propagation();
                             }
@@ -984,50 +987,20 @@ fn settings_choice(
     this: Entity<TideGaugeView>,
     change: impl Fn(&mut crate::settings::Settings) + 'static,
 ) -> impl IntoElement {
-    let change = std::rc::Rc::new(change);
-    let keyboard_change = change.clone();
-    let keyboard_target = this.clone();
-    let accent = t::accent(dark);
-    div()
-        .id(SharedString::from(id))
-        .role(Role::RadioButton)
-        .aria_label(SharedString::from(description))
-        .aria_toggled(if active {
-            Toggled::True
-        } else {
-            Toggled::False
-        })
-        .tab_index(index)
-        .rounded(px(8.))
-        .px_3()
-        .py_2()
-        .border_1()
-        .border_color(if active { accent } else { t::line(dark) })
-        .bg(if active {
-            accent.opacity(0.12)
-        } else {
-            t::card_hi(dark)
-        })
-        .text_color(if active { accent } else { t::ink_dim(dark) })
-        .text_size(px(12.))
-        .cursor_pointer()
-        .hover(|d| d.text_color(t::ink(dark)))
-        .focus_visible(|d| d.border_color(accent))
-        .child(label.to_string())
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                update_preference(
-                    &keyboard_target,
-                    |settings| keyboard_change(settings),
-                    window,
-                    cx,
-                );
-                cx.stop_propagation();
-            }
-        })
-        .on_click(move |_, window, cx| {
-            update_preference(&this, |settings| change(settings), window, cx)
-        })
+    crate::controls::control(
+        crate::controls::ControlSpec {
+            id,
+            label: label.to_string(),
+            aria: Some(description),
+            role: Role::RadioButton,
+            tab_index: index,
+            selected: active,
+            accent: t::accent(dark),
+            dark,
+            framed: false,
+        },
+        move |window, cx| update_preference(&this, |settings| change(settings), window, cx),
+    )
 }
 
 fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
@@ -1051,28 +1024,34 @@ fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App
     });
 }
 
-fn login_control(status: crate::login::LoginStatus, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+fn login_control(
+    status: crate::login::LoginStatus,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> AnyElement {
     if !status.can_change() {
-        return div().text_sm().text_color(t::ink_dim(dark))
-            .child(l("Unavailable", "Utilgjengelig")).into_any_element();
+        return div()
+            .text_sm()
+            .text_color(t::ink_dim(dark))
+            .child(l("Unavailable", "Utilgjengelig"))
+            .into_any_element();
     }
     let active = status.is_registered();
-    let keyboard_target = this.clone();
-    div().id("launch-at-login").role(Role::Switch)
-        .aria_label(l("Launch at login", "Start ved pålogging"))
-        .aria_toggled(if active { Toggled::True } else { Toggled::False })
-        .tab_index(3).px_4().py_2().rounded(px(8.))
-        .bg(t::card_hi(dark)).border_1().border_color(t::line(dark))
-        .text_sm().text_color(t::ink(dark)).cursor_pointer()
-        .child(status.control_label())
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                set_launch_at_login(!active, &keyboard_target, cx);
-                cx.stop_propagation();
-            }
-        })
-        .on_click(move |_, _, cx| set_launch_at_login(!active, &this, cx))
-        .into_any_element()
+    crate::controls::control(
+        crate::controls::ControlSpec {
+            id: "launch-at-login".into(),
+            label: status.control_label().into(),
+            aria: Some(l("Launch at login", "Start ved pålogging").into()),
+            role: Role::Switch,
+            tab_index: 3,
+            selected: active,
+            accent: t::accent(dark),
+            dark,
+            framed: true,
+        },
+        move |_, cx| set_launch_at_login(!active, &this, cx),
+    )
+    .into_any_element()
 }
 
 fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) -> Div {
@@ -1080,12 +1059,11 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
         localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
     };
     let settings = Settings::load();
-    let mut panel = div().flex().flex_col().gap_4().child(
-        div()
-            .text_size(px(24.))
-            .font_weight(FontWeight::BOLD)
-            .child(l("Settings", "Innstillinger")),
-    );
+    let mut panel = div().flex().flex_col().gap_3().child(section_header(
+        l("Settings", "Innstillinger"),
+        l("Saved locally", "Lagres lokalt"),
+        dark,
+    ));
     if let Some(error) = error {
         panel = panel.child(
             div()
@@ -1102,8 +1080,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
                     "Choose a theme, or follow your Mac.", "Velg et tema, eller følg Macens utseende.",
                 ))))
-            .child(div().id("appearance-options").role(Role::RadioGroup)
-                .aria_label(l("Appearance", "Utseende")).tab_group().flex().gap_2()
+            .child(crate::controls::segment_group("appearance-options", l("Appearance", "Utseende"), dark)
                 .children([(None, l("System", "System")), (Some(false), l("Light", "Lyst")), (Some(true), l("Dark", "Mørkt"))]
                     .into_iter().enumerate().map(|(i, (value, label))| {
                         settings_choice(format!("appearance-{i}"), label, format!("{}: {label}", l("Appearance", "Utseende")),
@@ -1141,30 +1118,28 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                     ))),
             )
             .child(
-                div()
-                    .id("launcher-options")
-                    .role(Role::RadioGroup)
-                    .aria_label(l("Tidegauge icon", "Tidegauge-ikon"))
-                    .tab_group()
-                    .flex()
-                    .gap_2()
-                    .children(
-                        [(true, l("Shown", "Vises")), (false, l("Hidden", "Skjult"))]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, (shown, label))| {
-                                settings_choice(
-                                    format!("launcher-{shown}"),
-                                    label,
-                                    format!("{icon_name}: {label}"),
-                                    settings.show_app_icon == shown,
-                                    i as isize,
-                                    dark,
-                                    this.clone(),
-                                    move |settings| settings.show_app_icon = shown,
-                                )
-                            }),
-                    ),
+                crate::controls::segment_group(
+                    "launcher-options",
+                    l("Tidegauge icon", "Tidegauge-ikon"),
+                    dark,
+                )
+                .children(
+                    [(true, l("Shown", "Vises")), (false, l("Hidden", "Skjult"))]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (shown, label))| {
+                            settings_choice(
+                                format!("launcher-{shown}"),
+                                label,
+                                format!("{icon_name}: {label}"),
+                                settings.show_app_icon == shown,
+                                i as isize,
+                                dark,
+                                this.clone(),
+                                move |settings| settings.show_app_icon = shown,
+                            )
+                        }),
+                ),
             ),
     );
     let rows = MENU_METRICS
@@ -1187,10 +1162,6 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                 },
             ));
             div()
-                .id(SharedString::from(format!("settings-{key}")))
-                .role(Role::RadioGroup)
-                .aria_label(name)
-                .tab_group()
                 .flex()
                 .items_center()
                 .justify_between()
@@ -1204,25 +1175,27 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                         .font_weight(FontWeight::MEDIUM)
                         .child(name),
                 )
-                .child(div().flex().gap_2().children(choices.enumerate().map(
-                    |(i, (style, label))| {
-                        settings_choice(
-                            format!("{key}-{style}"),
-                            label,
-                            format!("{name}: {label}"),
-                            selected == style,
-                            i as isize,
-                            dark,
-                            this.clone(),
-                            move |settings| {
-                                settings.set_menu_style(
-                                    key,
-                                    if style == "off" { None } else { Some(style) },
-                                )
-                            },
-                        )
-                    },
-                )))
+                .child(
+                    crate::controls::segment_group(format!("settings-{key}"), name, dark).children(
+                        choices.enumerate().map(|(i, (style, label))| {
+                            settings_choice(
+                                format!("{key}-{style}"),
+                                label,
+                                format!("{name}: {label}"),
+                                selected == style,
+                                i as isize,
+                                dark,
+                                this.clone(),
+                                move |settings| {
+                                    settings.set_menu_style(
+                                        key,
+                                        if style == "off" { None } else { Some(style) },
+                                    )
+                                },
+                            )
+                        }),
+                    ),
+                )
         })
         .collect::<Vec<_>>();
     panel.child(card(dark).gap_0().py_1().children(rows))
@@ -1233,39 +1206,40 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
             )))
         .child(div().flex().justify_end().gap_3()
             .child({
-                let click_target = this.clone();
-                let key_target = this.clone();
-                div().id("settings-icon-only").role(Role::Button).aria_label(l("Reset to icon only", "Tilbakestill til bare ikon"))
-                    .tab_index(29).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
-                    .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                    .child(l("Reset to icon only", "Tilbakestill til bare ikon"))
-                    .on_key_down(move |event, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            update_preference(&key_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, window, cx);
-                            cx.stop_propagation();
-                        }
-                    })
-                    .on_click(move |_, window, cx| update_preference(&click_target, |settings| { settings.show_app_icon = true; settings.menu_items.clear(); }, window, cx))
+                let target = this.clone();
+                crate::controls::button_indexed(
+                    "settings-icon-only",
+                    l("Reset to icon only", "Tilbakestill til bare ikon"),
+                    false,
+                    dark,
+                    29,
+                    move |window, cx| {
+                        update_preference(&target, |settings| {
+                            settings.show_app_icon = true;
+                            settings.menu_items.clear();
+                        }, window, cx)
+                    },
+                )
             })
-            .child(div().id("settings-app-menu").role(Role::Button).aria_label(l("App menu", "Appmeny"))
-                .tab_index(30).rounded_md().px_4().py_2().border_1().border_color(t::line(dark))
-                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                .child(l("App menu", "Appmeny"))
-                .on_key_down(|event, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
-                        cx.stop_propagation();
-                    }
-                })
-                .on_click(|_, _, _| crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst)))
-            .child(div().id("settings-quit").role(Role::Button).aria_label(l("Quit Tidegauge", "Avslutt Tidegauge"))
-                .tab_index(31).rounded_md().px_4().py_2().bg(t::card_hi(dark))
-                .text_sm().cursor_pointer().focus_visible(|d| d.border_color(t::accent(dark)))
-                .child(l("Quit Tidegauge", "Avslutt Tidegauge"))
-                .on_key_down(|event, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.quit(); }
-                })
-                .on_click(|_, _, cx| cx.quit())))
+            .child(crate::controls::button_indexed(
+                "settings-app-menu",
+                l("App menu", "Appmeny"),
+                false,
+                dark,
+                30,
+                |_, _| {
+                    crate::statusbar::SHOW_CONTEXT_MENU
+                        .store(true, std::sync::atomic::Ordering::SeqCst)
+                },
+            ))
+            .child(crate::controls::button_indexed(
+                "settings-quit",
+                l("Quit Tidegauge", "Avslutt Tidegauge"),
+                false,
+                dark,
+                31,
+                |_, cx| cx.quit(),
+            )))
 }
 
 fn metric_heading(tab: Tab, dark: bool) -> Div {
@@ -1304,8 +1278,9 @@ fn overview_card(
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .focus_visible(|d| d.border_color(color))
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
                 select_tab(&keyboard_target, tab, cx);
                 cx.stop_propagation();
             }
@@ -2064,20 +2039,15 @@ fn disk_tab(
         .flex_col()
         .gap_3()
         .child(hero(
-            l("Disk", "Disk"),
-            fmt_bytes(s.disk.free as f64),
-            format!(
-                "{} {}",
-                l("Free of", "Ledig av"),
-                fmt_bytes(s.disk.total as f64)
-            ),
+            l("Disk activity · all devices", "Diskaktivitet · alle enheter"),
+            fmt_rate(s.disk.read_rate + s.disk.write_rate),
+            l("System-wide read + write", "Lesing + skriving i hele systemet").into(),
             &io_hist,
             m.accent(dark),
             dark,
             vec![
                 (l("Reading", "Leser").into(), fmt_rate(s.disk.read_rate)),
                 (l("Writing", "Skriver").into(), fmt_rate(s.disk.write_rate)),
-                (l("Used", "Brukt").into(), fmt_bytes(s.disk.used as f64)),
             ],
             None,
         ))
@@ -2095,9 +2065,9 @@ fn disk_tab(
                 .cursor_pointer().max_w(px(320.))
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(device.id.clone()))
                 .child(sub(device.name.clone()).text_color(t::ink_dim(dark)))
-                .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        view.selected_disk = Some(key_id.clone()); cx.notify(); cx.stop_propagation();
+                .capture_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                    if is_activation_key(&event.keystroke) {
+                        window.prevent_default(); view.selected_disk = Some(key_id.clone()); cx.notify(); cx.stop_propagation();
                     }
                 }))
                 .on_click(cx.listener(move |view, _, _, cx| { view.selected_disk = Some(id.clone()); cx.notify(); }))
@@ -2166,24 +2136,159 @@ fn disk_detail(
     };
     div().flex().flex_col().gap_3()
         .child(card(dark)
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(device.name.clone()))
-            .child(sub(format!("{} · {} · {} · {}", device.id, location, media, device.protocol.as_deref().unwrap_or(l("Protocol unavailable", "Protokoll utilgjengelig")))).text_color(t::ink_dim(dark))))
-        .child(stat_card(l("Device capacity", "Enhetskapasitet"), bytes(device.size), None, dark))
+            .child(div().flex().items_center().gap_3()
+                .child(div().flex_1().min_w_0()
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(device.name.clone()))
+                    .child(sub(format!("{} · {} · {} · {}", device.id, location, media, device.protocol.as_deref().unwrap_or(l("Protocol unavailable", "Protokoll utilgjengelig")))).text_color(t::ink_dim(dark))))
+                .child(div().flex_shrink_0().flex().flex_col().items_end().gap_1()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(bytes(device.size)))
+                    .child(caption(l("Physical capacity", "Fysisk kapasitet"), dark)))))
         .when(device.smart.health == Health::Failed, |d| d.child(card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("SMART reports a failure. Back up important data and inspect this drive.", "SMART rapporterer en feil. Sikkerhetskopier viktige data og undersøk disken.")))))
         .child(section_header(l("Volumes and containers", "Volumer og beholdere"), "diskutil", dark))
         .when(device.volumes.is_empty(), |d| d.child(sub(l("No readable volume information.", "Ingen lesbar voluminformasjon.")).text_color(t::ink_dim(dark))))
-        .children(device.volumes.iter().map(|volume| {
-            card(dark)
-                .child(div().flex().justify_between().gap_3().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(volume.name.clone())).child(sub(volume.id.clone()).text_color(t::ink_dim(dark))))
-                .child(sub(volume.mount.clone().unwrap_or_else(|| l("Not mounted", "Ikke montert").into())).text_color(t::ink_dim(dark)))
-                .when_some(volume.container.as_ref(), |d, container| d.child(sub(format!("APFS {} · {}", container, volume.stores.join(", "))).text_color(t::ink_dim(dark))))
-                .child(div().grid().grid_cols(3).gap_3().children([
-                    (if volume.container.is_some() { l("Container capacity", "Beholderkapasitet") } else { l("Volume capacity", "Volumkapasitet") }, bytes(volume.total)),
-                    (if volume.container.is_some() { l("Volume footprint", "Volumets plassbruk") } else { l("Used", "Brukt") }, bytes(volume.used)),
-                    (if volume.container.is_some() { l("Shared free", "Delt ledig plass") } else { l("Free", "Ledig") }, bytes(volume.free)),
-                ].into_iter().map(|(label, value)| div().flex().flex_col().gap_1().child(caption(label, dark)).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(value)))))
+        .children(crate::disks::volume_groups(&device.volumes).iter().map(|group| {
+            let mut volume_card = card(dark);
+            match &group.container {
+                Some(container) => {
+                    volume_card = volume_card
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!("APFS {container}")),
+                                        )
+                                        .when(!group.stores.is_empty(), |d| {
+                                            d.child(
+                                                sub(group.stores.join(", "))
+                                                    .text_color(t::ink_dim(dark)),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .gap_4()
+                                        .children(
+                                            [
+                                                (
+                                                    l("Shared capacity", "Delt kapasitet"),
+                                                    bytes(group.total),
+                                                ),
+                                                (l("Shared free", "Delt ledig"), bytes(group.free)),
+                                            ]
+                                            .into_iter()
+                                            .map(|(label, value)| {
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_end()
+                                                    .gap_1()
+                                                    .child(caption(label, dark))
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(value),
+                                                    )
+                                            }),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .pt(px(4.))
+                                .child(
+                                    div()
+                                        .w(px(150.))
+                                        .flex_shrink_0()
+                                        .child(caption(l("Volume", "Volum"), dark)),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .w(px(90.))
+                                        .flex_shrink_0()
+                                        .text_right()
+                                        .child(caption(
+                                            l("Volume footprint", "Volumets plassbruk"),
+                                            dark,
+                                        )),
+                                ),
+                        )
+                        .children(group.volumes.iter().map(|volume| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .py(px(4.))
+                                .child(
+                                    div()
+                                        .w(px(150.))
+                                        .flex_shrink_0()
+                                        .min_w_0()
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(volume.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .text_xs()
+                                        .text_color(t::ink_dim(dark))
+                                        .child(format!(
+                                            "{} · {}",
+                                            volume.id,
+                                            volume.mount.clone().unwrap_or_else(|| {
+                                                l("Not mounted", "Ikke montert").into()
+                                            })
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(90.))
+                                        .flex_shrink_0()
+                                        .text_right()
+                                        .text_xs()
+                                        .text_color(t::ink_dim(dark))
+                                        .child(bytes(volume.used)),
+                                )
+                        }));
+                }
+                None => {
+                    for volume in &group.volumes {
+                        volume_card = volume_card
+                            .child(div().flex().justify_between().gap_3().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(volume.name.clone())).child(sub(volume.id.clone()).text_color(t::ink_dim(dark))))
+                            .child(sub(volume.mount.clone().unwrap_or_else(|| l("Not mounted", "Ikke montert").into())).text_color(t::ink_dim(dark)))
+                            .child(div().grid().grid_cols(3).gap_3().children([
+                                (l("Volume capacity", "Volumkapasitet"), bytes(volume.total)),
+                                (l("Used", "Brukt"), bytes(volume.used)),
+                                (l("Free", "Ledig"), bytes(volume.free)),
+                            ].into_iter().map(|(label, value)| div().flex().flex_col().gap_1().child(caption(label, dark)).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(value)))));
+                    }
+                }
+            }
+            volume_card
         }))
-        .child(sub(l("APFS volumes share container space. Container capacity and shared free space are repeated for context, never summed as separate disks or per-volume free space.", "APFS-volumer deler beholderplass. Beholderkapasitet og delt ledig plass gjentas som kontekst, og summeres aldri som separate disker eller ledig plass per volum.")).text_color(t::ink_dim(dark)))
+        .child(sub(l("APFS volumes share container space. Shared capacity and free space are shown per container, never summed per volume.", "APFS-volumer deler beholderplass. Delt kapasitet og ledig plass vises per beholder og summeres aldri per volum.")).text_color(t::ink_dim(dark)))
         .child(section_header(l("Device activity", "Enhetsaktivitet"), l("Read + write", "Lesing + skriving"), dark))
         .child(div().grid().grid_cols(2).gap_3()
             .child(flow(l("Device read", "Enhetens lesing"), io.and_then(|v| v.read_rate), io.map(|v| v.read_history.as_slice()).unwrap_or(&[])))
@@ -2282,7 +2387,7 @@ fn network_tab(s: &Snapshot, dark: bool) -> Div {
 /// Empty-state card per the detail-page template: a metric-tinted icon tile,
 /// a 13 px headline, and at most two lines of `ink_dim` explanation. States
 /// what is unavailable and why; never implies a measurement exists.
-fn empty_state(icon: &'static str, color: Hsla, headline: String, explanation: String, dark: bool) -> Div {
+pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, explanation: String, dark: bool) -> Div {
     div()
         .bg(t::card(dark))
         .rounded(px(12.))
@@ -2865,67 +2970,88 @@ fn stop_button(
     dark: bool,
     this: Entity<TideGaugeView>,
 ) -> impl IntoElement {
-    let key_targets = targets.clone();
-    let key_this = this.clone();
-    div()
-        .id(SharedString::from(id))
-        .role(Role::Button)
-        .aria_label(label)
-        .tab_index(0)
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(t::line(dark))
-        .text_xs()
-        .cursor_pointer()
-        .hover(|d| d.bg(t::card_hi(dark)))
-        .focus_visible(|d| d.bg(t::card_hi(dark)))
-        .child(label)
-        .on_click(move |_, window, cx| request_stop(targets.clone(), this.clone(), window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                request_stop(key_targets.clone(), key_this.clone(), window, cx);
-                cx.stop_propagation();
-            }
-        })
+    crate::controls::button_accent(
+        id,
+        label,
+        false,
+        dark,
+        Metric::Projects.accent(dark),
+        move |window, cx| request_stop(targets.clone(), this.clone(), window, cx),
+    )
 }
 
 fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Projects;
     let accent = m.accent(dark);
-    let total: usize = s.projects.iter().map(|g| g.servers.len()).sum();
+    let total = s
+        .projects
+        .iter()
+        .flat_map(|g| g.servers.iter().map(|server| server.pid))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let projects = s.projects.len();
     let all_idle = s.projects.iter().all(|g| g.idle) && total > 0;
-    let mut c = div().flex().flex_col().gap_3();
-    if total > 0 {
-        c = c.child(
+    let mut c = div().flex().flex_col().gap_4();
+    if total == 0 {
+        return c.child(empty_state(
+            "icons/folder-code.svg",
+            accent,
+            l("No development servers detected", "Ingen utviklingsservere funnet").into(),
+            l(
+                "Local TCP listeners owned by you appear here when their working directory sits near a supported project marker.",
+                "Lokale TCP-lyttere som du eier vises her når arbeidsmappen ligger nær en støttet prosjektmarkør.",
+            )
+            .into(),
+            dark,
+        ));
+    }
+    c = c
+        .child(
             card(dark).child(
                 div()
                     .flex()
                     .items_center()
                     .gap_3()
                     .child(icon_img("icons/folder-code.svg", 20.0, accent))
-                    .child(div().flex_1().text_sm().child(if all_idle {
-                        format!(
-                            "{} {}",
-                            total,
-                            if total == 1 {
-                                l("dev server is running but idle", "utviklingsserver kjører, men er inaktiv")
-                            } else {
-                                l("dev servers are running but idle", "utviklingsservere kjører, men er inaktive")
-                            }
-                        )
-                    } else {
-                        format!(
-                            "{} {}",
-                            total,
-                            if total == 1 {
-                                l("dev server running", "utviklingsserver kjører")
-                            } else {
-                                l("dev servers running", "utviklingsservere kjører")
-                            }
-                        )
-                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!(
+                                        "{} {} · {} {}",
+                                        projects,
+                                        if projects == 1 {
+                                            l("project", "prosjekt")
+                                        } else {
+                                            l("projects", "prosjekter")
+                                        },
+                                        total,
+                                        if total == 1 {
+                                            l("server", "server")
+                                        } else {
+                                            l("servers", "servere")
+                                        },
+                                    )),
+                            )
+                            .child(
+                                sub(if all_idle {
+                                    l(
+                                        "All detected servers have low CPU activity.",
+                                        "Alle oppdagede servere har lav CPU-aktivitet.",
+                                    )
+                                } else {
+                                    l(
+                                        "Stop asks for confirmation before sending SIGTERM to the project's own processes.",
+                                        "Stopp ber om bekreftelse før SIGTERM sendes til prosjektets egne prosesser.",
+                                    )
+                                })
+                                .text_color(t::ink_dim(dark)),
+                            ),
+                    )
                     .child(stop_button(
                         "stop-all".into(),
                         l("Stop all…", "Stopp alle…"),
@@ -2934,101 +3060,136 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         this.clone(),
                     )),
             ),
-        );
-        for g in &s.projects {
-            c = c.child(
-                card(dark)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(icon_img("icons/folder.svg", 16.0, accent))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(g.name.clone()),
-                            )
-                            .child(sub(g.dir.clone()).text_color(t::ink_dim(dark))),
-                    )
-                    .children(g.servers.iter().map(|srv| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .py(px(4.))
-                            .px_1()
-                            .child(
-                                div()
-                                    .w(px(120.))
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_sm()
-                                    .whitespace_nowrap()
-                                    .child(srv.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .py(px(1.))
-                                    .rounded_sm()
-                                    .bg(t::card_hi(dark))
-                                    .text_xs()
-                                    .child(srv.runtime.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .py(px(1.))
-                                    .rounded_sm()
-                                    .bg(accent.opacity(0.15))
-                                    .text_xs()
-                                    .text_color(accent)
-                                    .child(format!(":{}", srv.port)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_xs()
-                                    .text_color(
-                                        if srv.status.starts_with(l("idle", "inaktiv"))
-                                            || srv.status.contains(l("barely", "nesten ikke"))
-                                        {
-                                            t::ink_dim(dark)
-                                        } else {
-                                            t::ok(dark)
-                                        },
-                                    )
-                                    .child(srv.status.clone()),
-                            )
-                            .child(
-                                div()
-                                    .w(px(70.))
-                                    .text_right()
-                                    .text_xs()
-                                    .child(fmt_bytes(srv.mem_bytes as f64)),
-                            )
-                            .child(stop_button(
-                                format!("stop-{}-{}", srv.pid, srv.port),
-                                l("Stop…", "Stopp…"),
-                                project_targets(g)
-                                    .into_iter()
-                                    .filter(|target| target.server.pid == srv.pid)
-                                    .collect(),
-                                dark,
-                                this.clone(),
-                            ))
-                    })),
-            );
-        }
-    } else {
-        c = c.child(card(dark).child(
-            div()
-                .text_sm()
-                .text_color(t::ink_dim(dark))
-                .child(l("No development servers detected. Local TCP listeners owned by you appear when their working directory is near a Git root or supported project manifest.", "Ingen utviklingsservere funnet. Lokale TCP-lyttere som du eier vises når arbeidsmappen ligger nær en Git-rot eller en støttet prosjektfil.")),
+        )
+        .child(section_header(
+            l("Projects", "Prosjekter"),
+            &format!(
+                "{} {}",
+                total,
+                if total == 1 {
+                    l("server", "server")
+                } else {
+                    l("servers", "servere")
+                }
+            ),
+            dark,
         ));
+    for g in &s.projects {
+        let server_count = g
+            .servers
+            .iter()
+            .map(|server| server.pid)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        c = c.child(
+            card(dark)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon_img("icons/folder.svg", 16.0, accent))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .whitespace_nowrap()
+                                        .child(g.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(t::ink_dim(dark))
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .child(g.dir.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(t::ink_dim(dark))
+                                .child(format!(
+                                    "{} {}",
+                                    server_count,
+                                    if server_count == 1 {
+                                        l("server", "server")
+                                    } else {
+                                        l("servers", "servere")
+                                    }
+                                )),
+                        ),
+                )
+                .children(g.servers.iter().map(|srv| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .py(px(4.))
+                        .px_1()
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_sm()
+                                .whitespace_nowrap()
+                                .child(srv.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded_sm()
+                                .bg(t::card_hi(dark))
+                                .text_xs()
+                                .child(srv.runtime.clone()),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded_sm()
+                                .bg(accent.opacity(0.15))
+                                .text_xs()
+                                .text_color(accent)
+                                .child(format!(":{}", srv.port)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(if srv.state.is_idle() {
+                                    t::ink_dim(dark)
+                                } else {
+                                    t::ok(dark)
+                                })
+                                .child(srv.state.label()),
+                        )
+                        .child(
+                            div()
+                                .w(px(70.))
+                                .text_right()
+                                .text_xs()
+                                .child(fmt_bytes(srv.mem_bytes as f64)),
+                        )
+                        .child(stop_button(
+                            format!("stop-{}-{}", srv.pid, srv.port),
+                            l("Stop…", "Stopp…"),
+                            project_targets(g)
+                                .into_iter()
+                                .filter(|target| target.server.pid == srv.pid)
+                                .collect(),
+                            dark,
+                            this.clone(),
+                        ))
+                })),
+        );
     }
     c
 }

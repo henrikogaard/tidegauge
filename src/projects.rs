@@ -4,8 +4,7 @@
 
 #![allow(dead_code)]
 
-use crate::engine::{DevServer, ProjectGroup};
-use crate::locale::text as l;
+use crate::engine::{DevServer, ProjectGroup, ServerState};
 use crate::processes::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -154,6 +153,22 @@ struct IdleTrack {
 }
 static IDLE: OnceLock<Mutex<HashMap<i32, IdleTrack>>> = OnceLock::new();
 
+pub fn select_server_state(cpu_pct: f64, idle_secs: u64, up_for: f64) -> ServerState {
+    if cpu_pct > 15.0 {
+        ServerState::Working
+    } else if idle_secs > 3600 {
+        ServerState::Idle { seconds: idle_secs }
+    } else if up_for > 86400.0 && cpu_pct < 2.0 {
+        ServerState::BarelyUsed {
+            uptime_seconds: up_for.max(0.) as u64,
+        }
+    } else {
+        ServerState::Idle {
+            seconds: idle_secs.max(60),
+        }
+    }
+}
+
 pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
     let listeners = listening_ports();
     let idle_map = IDLE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -188,16 +203,7 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
         let idle_secs = e.since.elapsed().as_secs();
         drop(im);
         let up_for = crate::metrics::now_unix() - p.start_unix;
-        let status = if p.cpu_pct > 15.0 {
-            l("working", "arbeider").into()
-        } else if idle_secs > 3600 {
-            format!("{} {}", l("idle", "inaktiv i"), crate::engine::fmt_up(idle_secs as f64))
-        } else if up_for > 86400.0 && p.cpu_pct < 2.0 {
-            let up = format!("{} {}", l("up", "oppe i"), crate::engine::fmt_up(up_for));
-            format!("{}, {}", up, l("barely used", "nesten ikke brukt"))
-        } else {
-            format!("{} {}", l("idle", "inaktiv i"), crate::engine::fmt_up(idle_secs.max(60) as f64))
-        };
+        let state = select_server_state(p.cpu_pct, idle_secs, up_for);
         for port in ports {
             let mut s = DevServer {
                 pid: *pid,
@@ -209,7 +215,7 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
                 cwd: recorded_cwd.clone(),
                 runtime: runtime_of(&p.comm, &p.exe_path),
                 port: *port,
-                status: status.clone(),
+                state: state.clone(),
                 mem_bytes: p.mem_bytes,
                 cpu_pct: p.cpu_pct,
                 up_since: p.start_unix,
@@ -235,9 +241,7 @@ pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
                 .file_name()
                 .map(|x| x.to_string_lossy().to_string())
                 .unwrap_or_else(|| dir.clone());
-            let idle = servers
-                .iter()
-                .all(|s| s.status.starts_with(l("idle", "inaktiv")) || s.status.contains(l("barely", "nesten ikke")));
+            let idle = servers.iter().all(|s| s.state.is_idle());
             ProjectGroup {
                 name,
                 dir,
@@ -1044,6 +1048,82 @@ mod tests {
         process.exe_path = format!("{}-other/server", root.display());
         assert_eq!(development_project(&process, &cwd, 501), None);
         std::fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn server_state_preserves_priority_and_thresholds() {
+        assert_eq!(
+            select_server_state(15.1, 10_000, 200_000.),
+            ServerState::Working
+        );
+        assert_eq!(select_server_state(16., 0, 0.), ServerState::Working);
+        assert_eq!(
+            select_server_state(15., 0, 0.),
+            ServerState::Idle { seconds: 60 }
+        );
+        assert_eq!(
+            select_server_state(1., 3601, 200_000.),
+            ServerState::Idle { seconds: 3601 }
+        );
+        assert_eq!(
+            select_server_state(1., 3600, 200_000.),
+            ServerState::BarelyUsed {
+                uptime_seconds: 200_000
+            }
+        );
+        assert_eq!(
+            select_server_state(1.9, 10, 86401.),
+            ServerState::BarelyUsed {
+                uptime_seconds: 86401
+            }
+        );
+        assert_eq!(
+            select_server_state(2.0, 10, 86401.),
+            ServerState::Idle { seconds: 60 }
+        );
+        assert_eq!(
+            select_server_state(1.9, 10, 86400.),
+            ServerState::Idle { seconds: 60 }
+        );
+        assert_eq!(
+            select_server_state(0., 12, 60.),
+            ServerState::Idle { seconds: 60 }
+        );
+    }
+
+    #[test]
+    fn server_state_labels_and_idleness() {
+        let english = |e: &'static str, _: &'static str| e;
+        let norwegian = |_: &'static str, n: &'static str| n;
+        let up = |secs: f64| format!("{secs}s");
+        assert_eq!(ServerState::Working.label_with(english, up), "working");
+        assert_eq!(
+            ServerState::Idle { seconds: 120 }.label_with(english, up),
+            "idle 120s"
+        );
+        assert_eq!(
+            ServerState::BarelyUsed {
+                uptime_seconds: 90_000
+            }
+            .label_with(english, up),
+            "up 90000s, barely used"
+        );
+        assert_eq!(ServerState::Working.label_with(norwegian, up), "arbeider");
+        assert_eq!(
+            ServerState::Idle { seconds: 120 }.label_with(norwegian, up),
+            "inaktiv i 120s"
+        );
+        assert_eq!(
+            ServerState::BarelyUsed {
+                uptime_seconds: 90_000
+            }
+            .label_with(norwegian, up),
+            "oppe i 90000s, nesten ikke brukt"
+        );
+        assert!(!ServerState::Working.is_idle());
+        assert!(ServerState::Idle { seconds: 0 }.is_idle());
+        assert!(ServerState::BarelyUsed { uptime_seconds: 0 }.is_idle());
+        assert_eq!(ServerState::default(), ServerState::Idle { seconds: 0 });
     }
 
     #[test]
