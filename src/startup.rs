@@ -214,17 +214,13 @@ pub fn scan() -> Inventory {
                 source: root.source.clone(),
                 disabled: disabled_state,
                 manageable: false,
-                reason: if root.kind.is_user() && safe_ancestors {
-                    direct_control_limitation()
-                } else if !safe_ancestors {
-                    localized(
-                        "This registration has an untrusted or writable ancestor and cannot be changed.",
-                        "Denne registreringen har en upålitelig eller skrivbar overordnet katalog og kan ikke endres.",
-                    ).to_string()
+                // Read-only for every entry; only an unsafe location is worth a note.
+                reason: if safe_ancestors {
+                    String::new()
                 } else {
                     localized(
-                        "Only verified user LaunchAgents are eligible for direct controls.",
-                        "Bare verifiserte LaunchAgents for brukeren kan ha direkte kontroller.",
+                        "Its folder can be changed by others, so treat this entry with care.",
+                        "Mappen kan endres av andre, så vær varsom med denne oppføringen.",
                     ).to_string()
                 },
                 identity: snapshot.identity,

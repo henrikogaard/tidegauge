@@ -215,8 +215,29 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         )));
     }
     if let Some(inventory) = &view.tools.startup {
-        for warning in &inventory.warnings {
-            body = body.child(sub(warning.clone()).text_color(t::warn(dark)));
+        if !inventory.warnings.is_empty() {
+            let mut notice = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_3()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(t::caution(dark).opacity(0.4))
+                .bg(t::caution(dark).opacity(0.08))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(l(
+                            "Partial list: some registrations were skipped",
+                            "Delvis liste: noen registreringer ble hoppet over",
+                        )),
+                );
+            for warning in &inventory.warnings {
+                notice = notice.child(sub(warning.clone()).text_color(t::ink_dim(dark)));
+            }
+            body = body.child(notice);
         }
         if inventory.entries.is_empty() {
             body = body.child(sub(l(
@@ -297,7 +318,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                     .child(sub(entry.executable.clone().unwrap_or_else(|| {
                         l("Executable unknown", "Ukjent kjørbar fil").into()
                     })))
-                    .child(sub(entry.reason.clone()));
+                    .when(!entry.reason.is_empty(), |d| d.child(sub(entry.reason.clone())));
                 if entry.manageable && !view.tools.startup_busy {
                     if let Some(disabled) = entry.disabled {
                         let target = this.clone();

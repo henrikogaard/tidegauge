@@ -122,6 +122,10 @@ impl Metric {
 pub fn warn(dark: bool) -> Hsla {
     hex(if dark { 0xff453a } else { 0xd70015 })
 }
+/// Caution (amber): something is incomplete or worth a look, not broken.
+pub fn caution(dark: bool) -> Hsla {
+    hex(if dark { 0xe8ad39 } else { 0x9b6900 })
+}
 pub fn ok(dark: bool) -> Hsla {
     hex(if dark { 0x30d158 } else { 0x248a3d })
 }
