@@ -304,7 +304,7 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
                 s.alert_mem_pct
             };
             row = row
-                .aria_label(SharedString::from(format!("{label} · {value:.0}%")))
+                .aria_label(SharedString::from(format!("{label} · {}", crate::engine::fmt_pct(value))))
                 .child(
                     stepper_group(
                         format!("threshold-{key}-group"),
@@ -326,7 +326,7 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
                             *v = (*v - 5.).max(1.);
                         },
                     ))
-                    .child(step_value(format!("{value:.0}%"), dark))
+                    .child(step_value(crate::engine::fmt_pct(value), dark))
                     .child(step_preference(
                         format!("threshold-{key}-up"),
                         "+ 5",
@@ -842,7 +842,8 @@ pub fn history_panel(
             let format_value = |v| match metric.unit(app) {
                 "B" => crate::engine::fmt_bytes(v),
                 "B/s" => crate::engine::fmt_rate(v),
-                unit => format!("{v:.1} {unit}"),
+                "%" => crate::locale::percent(v, 1),
+                unit => format!("{} {unit}", crate::locale::number(v, 1)),
             };
             let mut plot = card(dark)
                 .child(
@@ -850,7 +851,7 @@ pub fn history_panel(
                         .flex()
                         .justify_between()
                         .gap_3()
-                        .child(sub(format!("{} {}", samples, l("samples", "målinger"))))
+                        .child(sub(crate::locale::count(samples, "sample", "samples", "måling", "målinger")))
                         .child(sub(format_value(max))),
                 )
                 .child(history_chart(&data.values, max, accent))
@@ -1031,8 +1032,8 @@ pub fn audio_output(
                 stepper_group("output-volume", l("Output volume", "Utgangsvolum"), dark)
                     .child(step_button(
                         "volume-down",
-                        l("− 10%", "− 10%"),
-                        format!("{} 10%", l("Decrease volume by", "Senk volumet med")),
+                        l("− 10%", "− 10 %"),
+                        format!("{} {}", l("Decrease volume by", "Senk volumet med"), crate::engine::fmt_pct(10.)),
                         dark,
                         accent,
                         move |_, cx| {
@@ -1041,11 +1042,11 @@ pub fn audio_output(
                             });
                         },
                     ))
-                    .child(step_value(format!("{:.0}%", volume * 100.), dark))
+                    .child(step_value(crate::engine::fmt_pct(volume as f64 * 100.), dark))
                     .child(step_button(
                         "volume-up",
-                        "+ 10%",
-                        format!("{} 10%", l("Increase volume by", "Øk volumet med")),
+                        l("+ 10%", "+ 10 %"),
+                        format!("{} {}", l("Increase volume by", "Øk volumet med"), crate::engine::fmt_pct(10.)),
                         dark,
                         accent,
                         move |_, cx| {

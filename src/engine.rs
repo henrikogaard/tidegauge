@@ -510,11 +510,11 @@ pub fn fmt_bytes(n: f64) -> String {
     if i == 0 {
         format!("{} B", v as u64)
     } else if v >= 100.0 {
-        format!("{:.0} {}", v, U[i])
+        format!("{} {}", crate::locale::number(v, 0), U[i])
     } else if v >= 10.0 {
-        format!("{:.1} {}", v, U[i])
+        format!("{} {}", crate::locale::number(v, 1), U[i])
     } else {
-        format!("{:.2} {}", v, U[i])
+        format!("{} {}", crate::locale::number(v, 2), U[i])
     }
 }
 pub fn fmt_rate(n: f64) -> String {
@@ -522,30 +522,40 @@ pub fn fmt_rate(n: f64) -> String {
 }
 pub fn fmt_watts(w: f64) -> String {
     if w < 0.05 {
-        "0.00 W".into()
+        format!("{} W", crate::locale::number(0.0, 2))
     } else if w < 10.0 {
-        format!("{:.2} W", w)
+        format!("{} W", crate::locale::number(w, 2))
     } else {
-        format!("{:.1} W", w)
+        format!("{} W", crate::locale::number(w, 1))
     }
 }
+/// Signed power with one decimal, for flows that can reverse ("+1.5 W").
+pub fn fmt_signed_watts(w: f64) -> String {
+    crate::locale::decimal(format!("{w:+.1} W"))
+}
+pub fn fmt_volts(v: f64) -> String {
+    format!("{} V", crate::locale::number(v, 2))
+}
+pub fn fmt_celsius(c: f64) -> String {
+    format!("{} °C", crate::locale::number(c, 1))
+}
+/// "2 h 5 min" / "2 t 5 min" (Norwegian hours are "timer", abbreviated "t").
+pub fn fmt_hours_minutes(minutes: i64) -> String {
+    format!("{} {} {} min", minutes / 60, l("h", "t"), minutes % 60)
+}
 pub fn fmt_pct(v: f64) -> String {
-    format!("{:.0}%", v)
+    crate::locale::percent(v, 0)
 }
 pub fn fmt_up(secs: f64) -> String {
     let s = secs as u64;
     if s < 90 {
-        let n = s.max(1);
-        format!("{} {}", n, if n == 1 { l("second", "sekund") } else { l("seconds", "sekunder") })
+        crate::locale::count(s.max(1), "second", "seconds", "sekund", "sekunder")
     } else if s < 5400 {
-        let n = s / 60;
-        format!("{} {}", n, if n == 1 { l("minute", "minutt") } else { l("minutes", "minutter") })
+        crate::locale::count(s / 60, "minute", "minutes", "minutt", "minutter")
     } else if s < 129600 {
-        let n = s / 3600;
-        format!("{} {}", n, if n == 1 { l("hour", "time") } else { l("hours", "timer") })
+        crate::locale::count(s / 3600, "hour", "hours", "time", "timer")
     } else {
-        let n = s / 86400;
-        format!("{} {}", n, if n == 1 { l("day", "døgn") } else { l("days", "dager") })
+        crate::locale::count(s / 86400, "day", "days", "døgn", "dager")
     }
 }
 
@@ -600,6 +610,21 @@ mod tests {
             };
             assert_eq!(fmt_up(secs), format!("{} {}", value, l(en, no)), "secs={secs}");
         }
+    }
+
+    #[test]
+    fn displayed_numbers_follow_the_language() {
+        let nb = crate::locale::is_norwegian();
+        let (point, pct, hours) = if nb { (',', " %", "t") } else { ('.', "%", "h") };
+        assert_eq!(fmt_bytes(6.74 * 1024. * 1024. * 1024.), format!("6{point}74 GB"));
+        assert_eq!(fmt_bytes(512.0 * 1024.), "512 KB");
+        assert_eq!(fmt_rate(1.5 * 1024. * 1024.), format!("1{point}50 MB/s"));
+        assert_eq!(fmt_watts(12.34), format!("12{point}3 W"));
+        assert_eq!(fmt_signed_watts(-1.25), format!("-1{point}2 W"));
+        assert_eq!(fmt_celsius(32.5), format!("32{point}5 °C"));
+        assert_eq!(fmt_volts(12.6), format!("12{point}60 V"));
+        assert_eq!(fmt_pct(50.0), format!("50{pct}"));
+        assert_eq!(fmt_hours_minutes(125), format!("2 {hours} 5 min"));
     }
 
     #[test]

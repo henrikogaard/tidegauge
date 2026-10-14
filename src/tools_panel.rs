@@ -172,7 +172,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         "startup-settings",
         l(
             "Open Login Items Settings",
-            "Åpne innstillinger for påloggingselementer",
+            "Åpne innstillinger for påloggingsobjekter",
         ),
         false,
         dark,
@@ -229,10 +229,13 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
             body = body.child(crate::ui::section_header(
                 l("Startup registrations", "Oppstartsregistreringer"),
                 &format!(
-                    "{} {}–{} {} {}",
+                    "{} {} {} {}",
                     l("Showing", "Viser"),
-                    range.start + 1,
-                    range.end,
+                    if range.end - range.start == 1 {
+                        range.end.to_string()
+                    } else {
+                        format!("{}–{}", range.start + 1, range.end)
+                    },
                     l("of", "av"),
                     len
                 ),
@@ -424,13 +427,13 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                 "Tidegauges overvåkingsprosess"
             ),
             own.cpu
-                .map(|v| format!("{v:.1}%"))
+                .map(|v| crate::locale::percent(v, 1))
                 .unwrap_or_else(|| "—".into()),
             own.io
                 .map(crate::engine::fmt_rate)
                 .unwrap_or_else(|| "—".into()),
             own.interrupt_wakeups
-                .map(|v| format!("{v:.1}"))
+                .map(|v| crate::locale::number(v, 1))
                 .unwrap_or_else(|| "—".into()),
             wakeups_label,
             own.wakeups_covered,
@@ -452,12 +455,12 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                     r.name,
                     r.pid,
                     r.cpu
-                        .map(|v| format!("{v:.1}%"))
+                        .map(|v| crate::locale::percent(v, 1))
                         .unwrap_or_else(|| "—".into()),
                     r.io.map(crate::engine::fmt_rate)
                         .unwrap_or_else(|| "—".into()),
                     r.interrupt_wakeups
-                        .map(|v| format!("{v:.1}"))
+                        .map(|v| crate::locale::number(v, 1))
                         .unwrap_or_else(|| "—".into()),
                     wakeups_label,
                     r.covered,
@@ -613,7 +616,7 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let Some(before) = &view.tools.baseline else {
         return body.child(sub(l(
             "No saved baseline yet.",
-            "Ingen lagret referansemåling ennå.",
+            "Ikke noe lagret utgangspunkt ennå.",
         )));
     };
     body = body.child(sub(format!(
@@ -634,25 +637,25 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let mut list = card(dark);
     for (i, m) in before.metrics.iter().enumerate() {
         let mut text = format!(
-            "{} · {} · {:.0}% {}",
+            "{} · {} · {} {}",
             crate::baselines::label(&m.key),
             m.mean
                 .map(|v| crate::baselines::format(&m.key, v))
                 .unwrap_or_else(|| "—".into()),
-            m.covered / (before.minutes as f64 * 60.) * 100.,
+            crate::locale::percent(m.covered / (before.minutes as f64 * 60.) * 100., 0),
             l("coverage", "dekning")
         );
         if let Some(after) = &view.tools.comparison {
             let a = &after.metrics[i];
             text.push_str(&format!(
-                " → {} · {:.0}% {} · {}",
+                " → {} · {} {} · {}",
                 a.mean
                     .map(|v| crate::baselines::format(&a.key, v))
                     .unwrap_or_else(|| "—".into()),
-                a.covered / (after.minutes as f64 * 60.) * 100.,
+                crate::locale::percent(a.covered / (after.minutes as f64 * 60.) * 100., 0),
                 l("coverage", "dekning"),
                 crate::baselines::difference(m, a, before.minutes as f64 * 60.)
-                    .map(|v| format!("{v:+.1}%"))
+                    .map(|v| crate::locale::signed_percent(v, 1))
                     .unwrap_or_else(|| l(
                         "Change unavailable (gaps or zero baseline)",
                         "Endring utilgjengelig (hull eller nullverdi)"
@@ -742,11 +745,10 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         };
         let totals = match crate::storage::observed_totals(&d) {
             Some((files, allocated, logical)) => format!(
-                "{} · {}: {} {} · {} {} · {} {}",
+                "{} · {}: {} · {} {} · {} {}",
                 status,
                 l("Observed totals", "Observerte summer"),
-                files,
-                l("files", "filer"),
+                crate::locale::count(files, "file", "files", "fil", "filer"),
                 crate::engine::fmt_bytes(allocated as f64),
                 l("allocated", "tildelt"),
                 crate::engine::fmt_bytes(logical as f64),
@@ -766,11 +768,15 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 .child(sub(d.root.display().to_string()))
                 .child(sub(totals))
                 .child(sub(format!(
-                    "{} {} · {} {}",
-                    d.errors,
-                    l("read errors", "lesefeil"),
-                    d.skipped,
-                    l("skipped entries", "oppføringer hoppet over")
+                    "{} · {}",
+                    crate::locale::count(d.errors, "read error", "read errors", "lesefeil", "lesefeil"),
+                    crate::locale::count(
+                        d.skipped,
+                        "skipped entry",
+                        "skipped entries",
+                        "oppføring hoppet over",
+                        "oppføringer hoppet over"
+                    )
                 ))),
         );
         if let Some(error) = d.error {
@@ -1034,9 +1040,8 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
     let pages = rows.len().div_ceil(50).max(1);
     let page = view.tools.package_page.min(pages - 1);
     let mut paging = div().flex().items_center().gap_2().child(sub(format!(
-        "{} {} · {} {}/{}",
-        rows.len(),
-        l("items", "elementer"),
+        "{} · {} {}/{}",
+        crate::locale::count(rows.len() as u64, "item", "items", "element", "elementer"),
         l("Page", "Side"),
         page + 1,
         pages
