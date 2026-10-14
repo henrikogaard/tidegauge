@@ -54,6 +54,10 @@ pub fn card_hi(dark: bool) -> Hsla {
 pub fn bg(dark: bool) -> Hsla {
     hex(if dark { DARK.bg } else { LIGHT.bg })
 }
+/// Sidebar ground: one step off `bg` so the navigation reads as chrome.
+pub fn sidebar(dark: bool) -> Hsla {
+    hex(if dark { 0x1b1b1e } else { 0xececef })
+}
 pub fn line(dark: bool) -> Hsla {
     hex(if dark { DARK.line } else { LIGHT.line })
 }

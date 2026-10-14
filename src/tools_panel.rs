@@ -23,13 +23,31 @@ pub enum Page {
     Packages,
 }
 impl Page {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Startup => l("Startup", "Oppstart"),
-            Self::Activity => l("Resource activity", "Ressursaktivitet"),
-            Self::Baselines => l("Compare", "Sammenlign"),
-            Self::Storage => l("Storage", "Lagring"),
-            Self::Packages => l("Apps & Packages", "Apper og pakker"),
+            Self::Activity => l("Recent activity", "Nylig aktivitet"),
+            Self::Baselines => l("Before & after", "Før og etter"),
+            Self::Storage => l("Folder sizes", "Mappestørrelser"),
+            Self::Packages => l("Apps & packages", "Apper og pakker"),
+        }
+    }
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::Activity => "activity",
+            Self::Baselines => "baselines",
+            Self::Storage => "storage",
+            Self::Packages => "packages",
+        }
+    }
+    pub(crate) fn icon(self) -> &'static str {
+        match self {
+            Self::Startup => "icons/power.svg",
+            Self::Activity => "icons/activity.svg",
+            Self::Baselines => "icons/git-compare-arrows.svg",
+            Self::Storage => "icons/folder-tree.svg",
+            Self::Packages => "icons/package.svg",
         }
     }
 }
@@ -76,15 +94,20 @@ impl Default for State {
     }
 }
 
-pub fn open(this: &Entity<TideGaugeView>, cx: &mut App) {
+pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
     this.update(cx, |v, cx| {
         v.show_tools = true;
         v.show_processes = false;
         v.show_settings = false;
+        v.tools.page = page;
+        v.tools.message = None;
+        v.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     });
-    if this.read(cx).tools.startup.is_none() {
-        refresh_startup(this, cx);
+    match page {
+        Page::Startup if this.read(cx).tools.startup.is_none() => refresh_startup(this, cx),
+        Page::Baselines => load_baseline(this, cx),
+        _ => {}
     }
 }
 
@@ -110,38 +133,7 @@ pub fn refresh_startup(this: &Entity<TideGaugeView>, cx: &mut App) {
 }
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut tabs = segment_group("tool-pages", l("Tools", "Verktøy"), dark).flex_wrap();
-    for (i, page) in [
-        Page::Startup,
-        Page::Activity,
-        Page::Baselines,
-        Page::Storage,
-        Page::Packages,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let target = this.clone();
-        tabs = tabs.child(segment(
-            format!("tool-page-{i}"),
-            page.label(),
-            view.tools.page == page,
-            dark,
-            t::accent(dark),
-            move |_, cx| {
-                target.update(cx, |v, cx| {
-                    v.tools.page = page;
-                    v.tools.message = None;
-                    v.scroll.set_offset(point(px(0.), px(0.)));
-                    cx.notify();
-                });
-                if page == Page::Baselines {
-                    load_baseline(&target, cx);
-                }
-            },
-        ));
-    }
-    let mut body = div().flex().flex_col().gap_3().child(tabs);
+    let mut body = div().flex().flex_col().gap_3();
     if let Some(msg) = &view.tools.message {
         body = body.child(card(dark).child(sub(msg.clone())));
     }
@@ -212,7 +204,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
             login_target.update(cx,|v,cx|{v.tools.message=result.err();cx.notify();});
         }));
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark).child(title(l("Startup items","Oppstartselementer")))
+    let mut body=div().flex().flex_col().gap_3().child(card(dark)
         .child(sub(l("Partial inventory of legacy launch registrations. A file is not proof of approval or a running process. Modern app background items and managed items belong in System Settings.","Delvis oversikt over eldre oppstartsregistreringer. En fil beviser ikke godkjenning eller at prosessen kjører. Moderne bakgrunnselementer og administrerte elementer håndteres i Systeminnstillinger.")))
         .child(sub(format!("Tidegauge: {}",login.message())))
         .child(actions));
@@ -411,7 +403,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         ));
     }
     let wakeups_label = l("reported interrupt wakeups/s", "rapporterte avbruddsoppvåkninger/s");
-    let mut body=div().flex().flex_col().gap_3().child(card(dark).child(title(l("Recent resource activity","Nylig ressursaktivitet")))
+    let mut body=div().flex().flex_col().gap_3().child(card(dark)
         .child(sub(l("Time-weighted activity over up to 60 observed seconds per process. CPU: 100% is one core. No energy score or battery-drain estimate. New, missing or reset counters remain unavailable.","Tidsvektet aktivitet over inntil 60 observerte sekunder per prosess. CPU: 100 % er én kjerne. Ingen energipoeng eller anslag for batteriforbruk. Nye, manglende eller nullstilte tellere vises som utilgjengelige.")))
         .child(sub(l("Interrupt wakeups are reported kernel counts, not energy use. Package-idle wakeups remain unvalidated and unavailable. Denied or new counters show a dash.","Avbruddsoppvåkninger er rapporterte kjernetellere, ikke energibruk. Oppvåkninger fra pakkehvile er fortsatt uvaliderte og utilgjengelige. Nye tellere eller tellere uten tilgang vises med en strek.")))
         .child(sub(l("System processes may deny access. The list is limited to 8,192 sampled processes; the top 80 are shown.","Systemprosesser kan nekte tilgang. Listen er begrenset til 8 192 målte prosesser; de 80 øverste vises."))).child(actions));
@@ -615,7 +607,7 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             ));
         }
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark).child(title(l("Before and after","Før og etter")))
+    let mut body=div().flex().flex_col().gap_3().child(card(dark)
         .child(sub(l("Save a fixed system baseline, make your change, then compare an equal-length later window. Differences are observations, not proof of a speed boost or causation.","Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu. Forskjeller er observasjoner, ikke bevis på høyere hastighet eller årsakssammenheng.")))
         .child(sub(l("Samples are held until the next sample only when the gap is at most 30 seconds. No extrapolation through sleep or missing data. A comparison needs 80% coverage on each side. Power-source and thermal context were not recorded; app-level comparisons are not supported.","Hver måling gjelder frem til neste måling bare når avstanden er høyst 30 sekunder. Ingen fremskriving gjennom dvale eller manglende data. Sammenligning krever 80 % dekning på hver side. Strømkilde og termisk tilstand ble ikke lagret; sammenligning per app støttes ikke."))).child(actions));
     if view.tools.baseline_busy {
@@ -736,7 +728,7 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
             move |_, _| cancel.store(true, std::sync::atomic::Ordering::Relaxed),
         ));
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark).child(title(l("Folder storage","Mappelagring")))
+    let mut body=div().flex().flex_col().gap_3().child(card(dark)
         .child(sub(l("Read-only metadata scan, no deletion or file downloads. Allocated bytes are not reclaimable space: APFS sharing, snapshots and compression affect totals. Links and other volumes are skipped; hard links are counted once. Access failures and cloud placeholders leave incomplete results.","Skrivebeskyttet metadataskanning, ingen sletting eller filnedlasting. Tildelte byte er ikke frigjørbar plass: APFS-deling, øyeblikksbilder og komprimering påvirker summene. Lenker og andre volumer hoppes over; harde lenker telles én gang. Tilgangsfeil og skyplassholdere gir ufullstendige resultater.")))
         .child(sub(l("Bounded to 100,000 entries, depth 64 and 128 queued folders. Large scans may be partial. Folder totals attribute shared hard links to the first path encountered.","Begrenset til 100 000 oppføringer, dybde 64 og 128 mapper i kø. Store skanninger kan være delvise. Mapper tilordnes delte harde lenker etter første sti som blir funnet."))).child(actions));
     if let Some(d) = data {
@@ -956,7 +948,7 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             ));
         }
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark).child(title(l("Apps & Packages","Apper og pakker")))
+    let mut body=div().flex().flex_col().gap_3().child(card(dark)
         .child(sub(l("Local app bundles, Homebrew formulae/casks and global npm packages. Refresh is explicit; checking updates may contact package registries. Only detected installations are covered, not every runtime manager or project.","Lokale app-pakker, Homebrew-formler/-casks og globale npm-pakker. Oppdatering av listen er manuell; søk etter oppdateringer kan kontakte pakkeregistre. Bare oppdagede installasjoner dekkes, ikke alle kjøremiljøbehandlere eller prosjekter.")))
         .child(sub(l("Standalone and protected apps use their own updater or system management. Reveal never uninstalls an app. Managed removals do not search for or delete leftover user data.","Frittstående og beskyttede apper bruker sin egen oppdateringsfunksjon eller systemadministrasjon. Vis i Finder avinstallerer aldri en app. Pakkefjerning søker ikke etter eller sletter gjenværende brukerdata."))).child(actions));
     if view.tools.packages_busy {
