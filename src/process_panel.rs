@@ -21,6 +21,7 @@ const FIRST_PAGE: usize = 60;
 pub fn open(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
         view.process_order.clear();
+        view.show_agents = false;
         view.show_processes = true;
         view.show_tools = false;
         view.show_settings = false;
@@ -657,12 +658,12 @@ fn signing_details(
 }
 
 #[derive(Clone)]
-enum Action {
+pub(crate) enum Action {
     App { main: ProcInfo, name: String, helpers: usize, memory: u64, force: Force },
     Processes { name: String, targets: Vec<ProcInfo>, force: Force },
 }
 
-fn request(action: Action, this: Entity<TideGaugeView>, window: &mut Window, cx: &mut App) {
+pub(crate) fn request(action: Action, this: Entity<TideGaugeView>, window: &mut Window, cx: &mut App) {
     if this.read(cx).process_pending {
         return;
     }

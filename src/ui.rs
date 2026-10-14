@@ -123,6 +123,8 @@ pub struct TideGaugeView {
     pub show_settings: bool,
     pub show_processes: bool,
     pub show_tools: bool,
+    pub show_agents: bool,
+    agents_scroll: ScrollHandle,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
     process_scroll: ScrollHandle,
@@ -186,6 +188,8 @@ impl TideGaugeView {
             show_settings: false,
             show_processes: false,
             show_tools: false,
+            show_agents: false,
+            agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
             process_scroll: ScrollHandle::new(),
@@ -685,6 +689,7 @@ pub(crate) fn section_header(left: &str, right: &str, dark: bool) -> Div {
 pub(crate) enum Destination {
     Tab(Tab),
     Apps,
+    Agents,
     Tool(crate::tools_panel::Page),
     Settings,
 }
@@ -694,6 +699,7 @@ impl Destination {
         match self {
             Self::Tab(tab) => tab.label(),
             Self::Apps => l("Apps & processes", "Apper og prosesser"),
+            Self::Agents => l("Agents", "Agenter"),
             Self::Tool(page) => page.label(),
             Self::Settings => l("Settings", "Innstillinger"),
         }
@@ -702,6 +708,7 @@ impl Destination {
         match self {
             Self::Tab(tab) => tab.icon(),
             Self::Apps => "icons/layout-grid.svg",
+            Self::Agents => "icons/bot.svg",
             Self::Tool(page) => page.icon(),
             Self::Settings => "icons/settings.svg",
         }
@@ -724,6 +731,7 @@ impl Destination {
         match self {
             Self::Tab(tab) => format!("nav-{}", tab.key()).into(),
             Self::Apps => "nav-apps".into(),
+            Self::Agents => "nav-agents".into(),
             Self::Tool(page) => format!("nav-tool-{}", page.key()).into(),
             Self::Settings => "nav-settings".into(),
         }
@@ -738,6 +746,8 @@ impl TideGaugeView {
             Destination::Apps
         } else if self.show_tools {
             Destination::Tool(self.tools.page)
+        } else if self.show_agents {
+            Destination::Agents
         } else {
             Destination::Tab(self.tab)
         }
@@ -748,6 +758,7 @@ pub(crate) fn navigate(this: &Entity<TideGaugeView>, to: Destination, cx: &mut A
     match to {
         Destination::Tab(tab) => select_tab(this, tab, cx),
         Destination::Apps => crate::process_panel::open(this, cx),
+        Destination::Agents => crate::agents_panel::open(this, cx),
         Destination::Tool(page) => crate::tools_panel::open_page(this, page, cx),
         Destination::Settings => open_settings(this, cx),
     }
@@ -889,6 +900,7 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
 
     items.push(sidebar_group(l("Work", "Arbeid"), dark).into_any_element());
     add(&mut items, Destination::Apps, Some(s.app_count.to_string()), true);
+    add(&mut items, Destination::Agents, Some(s.agents.len().to_string()), true);
     if visible.contains(&Tab::Projects) {
         add(&mut items, Destination::Tab(Tab::Projects), sidebar_reading(Tab::Projects, s), true);
     }
@@ -971,6 +983,8 @@ impl Render for TideGaugeView {
             self.settings_scroll.clone()
         } else if self.show_tools {
             self.tools_scroll.clone()
+        } else if self.show_agents {
+            self.agents_scroll.clone()
         } else if self.show_processes {
             self.process_scroll.clone()
         } else {
@@ -1072,6 +1086,7 @@ fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
         view.show_tools = false;
         view.show_processes = false;
+        view.show_agents = false;
         view.show_settings = true;
         view.scroll = ScrollHandle::new();
         view.settings_error = None;
@@ -1082,6 +1097,7 @@ fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
 fn select_tab(this: &Entity<TideGaugeView>, tab: Tab, cx: &mut App) {
     this.update(cx, |v, cx| {
         v.show_tools = false;
+        v.show_agents = false;
         v.tab = tab;
         v.show_processes = false;
         v.show_settings = false;
@@ -1109,6 +1125,9 @@ impl TideGaugeView {
         }
         if self.show_tools {
             return crate::tools_panel::panel(self, dark, this).into_any_element();
+        }
+        if self.show_agents {
+            return crate::agents_panel::panel(self, dark, this).into_any_element();
         }
         let s = &self.snap;
         match self.tab {
@@ -1779,7 +1798,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
 
 /// Draw a ring from convex quadrilaterals. GPUI triangulates filled paths
 /// as a fan, so a concave wedge would incorrectly paint across the center.
-fn donut(slices: &[(f64, Hsla)], size: f32, empty: Hsla) -> Canvas<()> {
+pub(crate) fn donut(slices: &[(f64, Hsla)], size: f32, empty: Hsla) -> Canvas<()> {
     let slices = slices.to_vec();
     canvas(
         |_, _, _| (),

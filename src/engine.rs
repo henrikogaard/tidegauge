@@ -184,6 +184,8 @@ pub struct Snapshot {
     pub apps: Vec<AppGroup>,
     /// Every sampled process, for per-process rows and quit actions.
     pub procs: Vec<crate::processes::ProcInfo>,
+    pub agents: Vec<crate::agents::Session>,
+    pub plans: crate::agents::Plans,
     pub process_groups: Vec<crate::process_activity::ProcessGroup>,
     pub resource_activity: Vec<crate::resource_activity::Activity>,
     pub proc_count: usize,
@@ -227,6 +229,8 @@ impl Default for Snapshot {
             projects: Vec::new(),
             apps: Vec::new(),
             procs: Vec::new(),
+            agents: Vec::new(),
+            plans: crate::agents::Plans::Missing,
             process_groups: Vec::new(),
             resource_activity: Vec::new(),
             proc_count: 0,
@@ -478,6 +482,8 @@ impl Engine {
         }
         s.bt = bt;
         s.projects = crate::projects::detect_projects(&procs);
+        s.agents = crate::agents::sessions(&procs, &s.projects);
+        s.plans = crate::agents::plans();
         s.uptime = self.started.elapsed();
 
         s.neural = None; // No public ANE counter; leave the history empty.

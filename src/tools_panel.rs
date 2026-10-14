@@ -97,6 +97,7 @@ impl Default for State {
 pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
     this.update(cx, |v, cx| {
         v.show_tools = true;
+        v.show_agents = false;
         v.show_processes = false;
         v.show_settings = false;
         v.tools.page = page;

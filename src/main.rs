@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "macos", allow(non_snake_case))]
 
+mod agents;
+mod agents_panel;
 mod alerts;
 mod app;
 mod appearance;
