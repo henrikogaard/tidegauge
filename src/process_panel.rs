@@ -74,7 +74,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     }
     panel = panel.child(card(dark).child(filters).child(sub(l(
         "Remaining means a process survived an app exit observed during this session—not that it is unwanted. Login items and services may run intentionally or restart. Detached processes seen before monitoring began cannot be attributed reliably.",
-        "Gjenværende betyr at en prosess overlevde en appavslutning observert i denne økten—ikke at den er uønsket. Påloggingselementer og tjenester kan kjøre med hensikt eller starte på nytt. Prosesser frakoblet før overvåkingen startet, kan ikke tilordnes sikkert."
+        "Gjenværende betyr at en prosess overlevde en appavslutning observert i denne økten—ikke at den er uønsket. Påloggingsobjekter og tjenester kan kjøre med hensikt eller starte på nytt. Prosesser frakoblet før overvåkingen startet, kan ikke tilordnes sikkert."
     ))));
     if let Some(message) = &view.process_message {
         panel = panel.child(card(dark).child(sub(message.clone()).text_color(
@@ -101,17 +101,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         let cpu: f64 = group.rows.iter().map(|r| r.process.cpu_pct).sum();
         let memory: f64 = group.rows.iter().map(|r| r.process.mem_bytes as f64).sum();
         let process_count = group.rows.len();
-        let process_label = if process_count == 1 {
-            l("process", "prosess")
-        } else {
-            l("processes", "prosesser")
-        };
         let summary = format!(
-            "{} · {} {} · {:.1}% CPU · {}",
+            "{} · {} · {} CPU · {}",
             group.name,
-            process_count,
-            process_label,
-            cpu,
+            crate::locale::count(process_count as u64, "process", "processes", "prosess", "prosesser"),
+            crate::locale::percent(cpu, 1),
             fmt_bytes(memory)
         );
         let mut row = div()
@@ -195,10 +189,10 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(format!(
-                                    "{} · PID {} · {:.1}% CPU · {}",
+                                    "{} · PID {} · {} CPU · {}",
                                     p.comm,
                                     p.pid,
-                                    p.cpu_pct,
+                                    crate::locale::percent(p.cpu_pct, 1),
                                     fmt_bytes(p.mem_bytes as f64)
                                 )),
                         )

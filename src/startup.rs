@@ -254,7 +254,7 @@ pub fn set_disabled(entry: &Entry, _disabled: bool) -> Result<(), String> {
     let Some(home) = actual_home() else {
         return Err(localized(
             "Startup controls are unavailable because the current user's home directory could not be determined. Open System Settings > General > Login Items.",
-            "Oppstartskontroller er utilgjengelige fordi hjemmekatalogen til gjeldende bruker ikke kunne finnes. Åpne Systeminnstillinger > Generelt > Påloggingselementer.",
+            "Oppstartskontroller er utilgjengelige fordi hjemmekatalogen til gjeldende bruker ikke kunne finnes. Åpne Systeminnstillinger > Generelt > Påloggingsobjekter.",
         ).to_string());
     };
     let uid = unsafe { libc::getuid() };
@@ -270,7 +270,7 @@ pub fn set_disabled(entry: &Entry, _disabled: bool) -> Result<(), String> {
     {
         return Err(localized(
             "This startup registration changed and cannot be safely revalidated. Open System Settings > General > Login Items.",
-            "Denne oppstartsregistreringen er endret og kan ikke valideres trygt på nytt. Åpne Systeminnstillinger > Generelt > Påloggingselementer.",
+            "Denne oppstartsregistreringen er endret og kan ikke valideres trygt på nytt. Åpne Systeminnstillinger > Generelt > Påloggingsobjekter.",
         ).to_string());
     }
     if !entry.manageable || !DIRECT_CONTROLS_SUPPORTED {
@@ -295,7 +295,7 @@ pub fn open_settings() -> Result<(), String> {
         if !class.responds_to(selector) {
             return Err(localized(
                 "This macOS version does not provide the Login Items settings handoff.",
-                "Denne macOS-versjonen tilbyr ikke overføringen til Påloggingselementer.",
+                "Denne macOS-versjonen tilbyr ikke overføringen til Påloggingsobjekter.",
             )
             .to_string());
         }
@@ -526,7 +526,7 @@ fn mark_duplicate_labels(entries: &mut [Entry], warnings: &mut Vec<String>) {
             entry.manageable = false;
             entry.reason = localized(
                 "This label is shared by multiple registration paths and cannot be safely controlled. Open System Settings > General > Login Items.",
-                "Denne etiketten deles av flere registreringsstier og kan ikke kontrolleres trygt. Åpne Systeminnstillinger > Generelt > Påloggingselementer.",
+                "Denne etiketten deles av flere registreringsstier og kan ikke kontrolleres trygt. Åpne Systeminnstillinger > Generelt > Påloggingsobjekter.",
             )
             .to_string();
             warned = true;
@@ -724,7 +724,7 @@ fn rejection_message(rejection: Rejection) -> &'static str {
 fn direct_control_limitation() -> String {
     localized(
         "Direct startup changes are unavailable: documented launchctl interfaces do not expose whether a registration is managed or protected. Archive, remove, and restore are also unavailable because a safe prior-override record cannot be proven. Open System Settings > General > Login Items.",
-        "Direkte oppstartsendringer er utilgjengelige: dokumenterte launchctl-grensesnitt viser ikke om en registrering er administrert eller beskyttet. Arkivering, fjerning og gjenoppretting er også utilgjengelig fordi en trygg oversikt over tidligere overstyring ikke kan bevises. Åpne Systeminnstillinger > Generelt > Påloggingselementer.",
+        "Direkte oppstartsendringer er utilgjengelige: dokumenterte launchctl-grensesnitt viser ikke om en registrering er administrert eller beskyttet. Arkivering, fjerning og gjenoppretting er også utilgjengelig fordi en trygg oversikt over tidligere overstyring ikke kan bevises. Åpne Systeminnstillinger > Generelt > Påloggingsobjekter.",
     )
     .to_string()
 }
