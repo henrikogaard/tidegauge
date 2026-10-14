@@ -153,28 +153,28 @@ pub const MENU_STYLES: [(&str, &str); 4] = [
 ];
 
 pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
-    let (english, norwegian) = match metric {
-        "cpu" => ("CPU", "CPU"),
-        "memory" => ("Memory", "Minne"),
-        "gpu" => ("GPU", "GPU"),
-        "disk" => ("Disk", "Disk"),
-        "network" => ("Network", "Nettverk"),
-        "battery" => ("Battery", "Batteri"),
-        "power" => ("Power", "Effekt"),
+    use crate::locale::text as l;
+    Some(match metric {
+        "cpu" => l("CPU", "CPU"),
+        "memory" => l("Memory", "Minne"),
+        "gpu" => l("GPU", "GPU"),
+        "disk" => l("Disk", "Disk"),
+        "network" => l("Network", "Nettverk"),
+        "battery" => l("Battery", "Batteri"),
+        "power" => l("Power", "Effekt"),
         _ => return None,
-    };
-    Some(crate::locale::text(english, norwegian))
+    })
 }
 
 pub fn localized_style_label(style: &str) -> Option<&'static str> {
-    let (english, norwegian) = match style {
-        "icon" => ("Icon", "Ikon"),
-        "value" => ("Value", "Verdi"),
-        "graph" => ("Graph", "Graf"),
-        "both" => ("Value + graph", "Verdi + graf"),
+    use crate::locale::text as l;
+    Some(match style {
+        "icon" => l("Icon", "Ikon"),
+        "value" => l("Value", "Verdi"),
+        "graph" => l("Graph", "Graf"),
+        "both" => l("Value + graph", "Verdi + graf"),
         _ => return None,
-    };
-    Some(crate::locale::text(english, norwegian))
+    })
 }
 
 /// Read the latest file before changing one setting, preserving other preferences.

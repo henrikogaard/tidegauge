@@ -41,8 +41,9 @@ impl SourceState {
             )
             .into(),
             Self::Failed(code) => format!(
-                "{} (0x{:08x})",
+                "{} ({} 0x{:08x})",
                 l("Sensor access unavailable", "Sensortilgang utilgjengelig"),
+                l("error code", "feilkode"),
                 code as u32
             ),
         }

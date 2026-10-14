@@ -218,7 +218,7 @@ fn os_status_error(control: &str, status: OSStatus) -> String {
             "Kunne ikke åpne dempekontrollen.",
         ),
     };
-    format!("{message} (OSStatus {status})")
+    format!("{message} ({} {status})", crate::locale::text("error code", "feilkode"))
 }
 
 pub fn adjust_output_volume(expected_id: u32, delta: f32) -> Result<(), String> {
