@@ -349,7 +349,8 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn regular_files(root: &Path) -> Vec<(PathBuf, bool, u64, u64)> {
+    /// Files and placeholder folders, without listing a placeholder folder.
+    fn provider_entries(root: &Path) -> Vec<(PathBuf, bool, u64, u64)> {
         use std::os::macos::fs::MetadataExt;
         let mut found = Vec::new();
         let mut pending = vec![root.to_path_buf()];
@@ -357,10 +358,10 @@ mod tests {
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let path = entry.unwrap().path();
                 let meta = std::fs::symlink_metadata(&path).unwrap();
-                if meta.is_dir() {
+                let dataless = meta.st_flags() & 0x40000000 != 0;
+                if meta.is_dir() && !dataless {
                     pending.push(path);
-                } else if meta.is_file() {
-                    let dataless = meta.st_flags() & 0x40000000 != 0;
+                } else if meta.is_file() || meta.is_dir() {
                     found.push((path, dataless, meta.st_blocks(), meta.st_size()));
                 }
             }
@@ -377,10 +378,10 @@ mod tests {
             std::env::var_os("TIDEGAUGE_PROVIDER_FIXTURE")
                 .expect("set TIDEGAUGE_PROVIDER_FIXTURE to an owned provider-backed folder"),
         );
-        let before = regular_files(&root);
+        let before = provider_entries(&root);
         let offloaded: Vec<_> = before.iter().filter(|f| f.1).collect();
         let local: Vec<_> = before.iter().filter(|f| !f.1).collect();
-        assert!(!offloaded.is_empty(), "fixture has no offloaded files");
+        assert!(!offloaded.is_empty(), "fixture has no offloaded entries");
         assert!(offloaded.iter().all(|f| f.2 == 0));
 
         let p = Mutex::new(Progress::default());
@@ -390,7 +391,7 @@ mod tests {
         assert!(d.finished);
         assert!(d.error.is_none());
         assert_eq!(d.errors, 0);
-        assert_eq!(regular_files(&root), before);
+        assert_eq!(provider_entries(&root), before);
         assert_eq!(d.files, local.len() as u64);
         assert_eq!(d.skipped, offloaded.len() as u64);
         assert_eq!(d.logical, local.iter().map(|f| f.3).sum::<u64>());

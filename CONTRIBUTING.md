@@ -45,8 +45,9 @@ TIDEGAUGE_PROVIDER_FIXTURE=/path/to/that/folder \
   cargo test --locked native_provider_placeholders_stay_offloaded -- --ignored --nocapture
 ```
 
-The check fails if the folder has no offloaded file or if any file's dataless
-flag, block count or size changes during the scan. A synthetic flag or a virtual
+The check fails if the folder has no offloaded entry or if any file's dataless
+flag, block count or size changes during the scan. It never lists a folder that
+is itself a placeholder. A synthetic flag or a virtual
 Mac without a provider domain does not satisfy it.
 
 Output volume and mute need a person listening at a physical Mac. This check
@@ -59,6 +60,16 @@ cargo test --locked native_output_controls_are_audible_and_restored -- --ignored
 
 Line four must be silent. Record what was heard; the assertions only prove the
 reported state, not the sound.
+
+To check that a device switch makes the old target stale and that an output
+without volume or mute support refuses changes, name a second output. The
+check switches the default output to it and restores the original, without
+changing any volume:
+
+```sh
+TIDEGAUGE_SWITCH_OUTPUT="Device name" \
+  cargo test --locked native_output_switch_rejects_stale_target -- --ignored --nocapture
+```
 
 Reported interrupt wakeups are a reported kernel counter, not energy use. The rusage layout was validated with a native C probe on Mac17,7 only; package-idle wakeups remain unvalidated and unavailable.
 
