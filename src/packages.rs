@@ -44,7 +44,7 @@ pub enum Source {
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
-            Self::App => localized("App", "Program"),
+            Self::App => localized("App", "App"),
             Self::BrewFormula => localized("Homebrew formula", "Homebrew-formel"),
             Self::BrewCask => localized("Homebrew cask", "Homebrew-cask"),
             Self::Npm => localized("Global npm package", "Global npm-pakke"),
@@ -430,7 +430,7 @@ pub fn act(package: &Package, action: Action) -> Result<String, String> {
     if package.source == Source::App {
         return Err(localized(
             "Applications can only be revealed or managed by their own updater.",
-            "Programmer kan bare vises eller håndteres av sin egen oppdaterer.",
+            "Apper kan bare vises eller håndteres av sin egen oppdaterer.",
         )
         .to_string());
     }
@@ -600,7 +600,7 @@ fn discover_apps(
             inventory.warnings.push(
                 localized(
                     "An application directory could not be read.",
-                    "En programkatalog kunne ikke leses.",
+                    "En appkatalog kunne ikke leses.",
                 )
                 .to_string(),
             );
@@ -615,7 +615,7 @@ fn discover_apps(
             inventory.warnings.push(
                 localized(
                     "An application directory exceeded the bounded scan.",
-                    "En programkatalog overskred den begrensede skanningen.",
+                    "En appkatalog overskred den begrensede skanningen.",
                 )
                 .to_string(),
             );
@@ -625,7 +625,7 @@ fn discover_apps(
             inventory.warnings.push(
                 localized(
                     "An application entry could not be inspected.",
-                    "En programoppføring kunne ikke undersøkes.",
+                    "En appoppføring kunne ikke undersøkes.",
                 )
                 .to_string(),
             );
@@ -663,7 +663,7 @@ fn parse_app(path: &Path, timeout: Duration) -> Result<Package, &'static str> {
     let bytes = read_bounded_file(&info).map_err(|_| {
         localized(
             "An application Info.plist could not be read safely.",
-            "Info.plist for et program kunne ikke leses trygt.",
+            "Info.plist for en app kunne ikke leses trygt.",
         )
     })?;
     let remaining = timeout.saturating_sub(started.elapsed());
@@ -689,7 +689,7 @@ fn app_metadata_with_budget(
         Err(()) => extract(bytes, remaining()).map_err(|_| {
             localized(
                 "An application Info.plist could not be parsed.",
-                "Info.plist for et program kunne ikke tolkes.",
+                "Info.plist for en app kunne ikke tolkes.",
             )
         }),
     }
@@ -699,7 +699,7 @@ fn app_metadata(json: &Value) -> Result<(String, String), &'static str> {
     let dictionary = json.as_object().ok_or_else(|| {
         localized(
             "An application has invalid metadata.",
-            "Et program har ugyldige metadata.",
+            "En app har ugyldige metadata.",
         )
     })?;
     let name = dictionary
@@ -710,7 +710,7 @@ fn app_metadata(json: &Value) -> Result<(String, String), &'static str> {
         .ok_or_else(|| {
             localized(
                 "An application has no usable name.",
-                "Et program har ikke et brukbart navn.",
+                "En app har ikke et brukbart navn.",
             )
         })?;
     let version = dictionary
@@ -759,7 +759,7 @@ fn app_package(path: &Path, info: PathBuf, name: String, version: String) -> Pac
         can_remove: false,
         reason: localized(
             "Reveal the application or use its own updater.",
-            "Vis programmet eller bruk sin egen oppdaterer.",
+            "Vis appen eller bruk sin egen oppdaterer.",
         )
         .to_string(),
         identity,
@@ -1089,7 +1089,7 @@ fn discover_brew_at(
             } else if !simple_cask {
                 localized(
                     "This cask has installer or non-app artifacts; actions are disabled.",
-                    "Denne casken har installasjons- eller andre artefakter enn programmer; handlinger er deaktivert.",
+                    "Denne casken har installasjons- eller andre artefakter enn apper; handlinger er deaktivert.",
                 )
                 .to_string()
             } else {
@@ -1458,7 +1458,7 @@ fn mark_overlapping_paths(apps: &mut Vec<Package>, managers: &mut [ManagerRecord
 fn ambiguous_ownership_reason() -> String {
     localized(
         "This application and cask target have ambiguous ownership; package actions are disabled.",
-        "Eierskapet til dette programmet og cask-målet er tvetydig; pakkehandlinger er deaktivert.",
+        "Eierskapet til denne appen og cask-målet er tvetydig; pakkehandlinger er deaktivert.",
     )
     .to_string()
 }
@@ -1471,7 +1471,7 @@ fn action_plan(package: &Package, action: Action) -> Result<ActionPlan, String> 
         Source::App => {
             return Err(localized(
                 "Applications do not support package-manager actions.",
-                "Programmer støtter ikke handlinger via pakkehåndterer.",
+                "Apper støtter ikke handlinger via pakkehåndterer.",
             )
             .to_string())
         }

@@ -237,20 +237,17 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                 .iter()
                 .find(|item| item.metric == metric)?;
             let (label, value, history) = match metric {
-                "cpu" => ("CPU", format!("{:.0}%", s.cpu_pct), s.cpu_hist.pts.clone()),
+                "cpu" => ("CPU", crate::engine::fmt_pct(s.cpu_pct), s.cpu_hist.pts.clone()),
                 "memory" => (
                     l("MEM", "MINNE"),
-                    format!(
-                        "{:.0}%",
-                        s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.
-                    ),
+                    crate::engine::fmt_pct(s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.),
                     s.mem_hist.pts.clone(),
                 ),
                 "gpu" => (
                     "GPU",
                     s.gpu
                         .utilization
-                        .map(|p| format!("{:.0}%", p))
+                        .map(crate::engine::fmt_pct)
                         .unwrap_or_else(|| "—".into()),
                     if s.gpu.utilization.is_some() {
                         s.gpu_hist.pts.clone()
@@ -259,7 +256,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                     },
                 ),
                 "disk" => (
-                    "DSK",
+                    l("DSK", "DISK"),
                     menu_rate(s.disk.read_rate + s.disk.write_rate),
                     s.disk_r_hist
                         .pts
@@ -269,7 +266,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                         .collect(),
                 ),
                 "network" => (
-                    "NET",
+                    l("NET", "NETT"),
                     menu_rate(s.net.rate_in + s.net.rate_out),
                     s.net_in_hist
                         .pts
@@ -279,10 +276,10 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                         .collect(),
                 ),
                 "battery" => (
-                    "BAT",
+                    l("BAT", "BATT"),
                     s.battery
                         .percent
-                        .map(|p| format!("{:.0}%", p))
+                        .map(crate::engine::fmt_pct)
                         .unwrap_or_else(|| "—".into()),
                     if s.battery.percent.is_some() {
                         s.batt_hist.pts.clone()
@@ -319,9 +316,9 @@ fn menu_rate(rate: f64) -> String {
         unit += 1;
     }
     if unit > 0 && value < 10. {
-        format!("{value:.1} {}", units[unit])
+        format!("{} {}", crate::locale::number(value, 1), units[unit])
     } else {
-        format!("{value:.0} {}", units[unit])
+        format!("{} {}", crate::locale::number(value, 0), units[unit])
     }
 }
 
@@ -520,13 +517,13 @@ mod tests {
         let first = menu_readouts(&settings, &snapshot, |_| 22.);
         assert_eq!(
             first.iter().map(|r| r.label).collect::<Vec<_>>(),
-            ["CPU", "NET"]
+            ["CPU", l("NET", "NETT")]
         );
-        assert_eq!(first[0].value, "9%");
+        assert_eq!(first[0].value, crate::engine::fmt_pct(9.));
         snapshot.cpu_pct = 100.;
         snapshot.net.rate_in = 1024. * 1024. * 999.;
         let next = menu_readouts(&settings, &snapshot, |_| 22.);
-        assert_eq!(next[0].value, "100%");
+        assert_eq!(next[0].value, crate::engine::fmt_pct(100.));
         assert_eq!(next[1].value, "999 M/s");
         assert_eq!(
             first.iter().map(Readout::width).sum::<f64>(),
