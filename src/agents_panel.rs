@@ -196,9 +196,9 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
 
 fn role_label(role: Role) -> &'static str {
     match role {
-        Role::Server => l("server", "tjener"),
+        Role::Server => l("server", "server"),
         Role::Browser => l("browser", "nettleser"),
-        Role::ToolServer => l("tool server", "verktøytjener"),
+        Role::ToolServer => l("tool server", "verktøyserver"),
         Role::Command => l("command", "kommando"),
     }
 }
@@ -217,10 +217,10 @@ fn session_card(session: &Session, now: f64, pending: bool, dark: bool, this: En
     let (chip, chip_color) = match session.activity {
         Activity::Working => (l("Working", "Jobber").to_string(), t::ok(dark)),
         Activity::Idle { since: Some(since) } if since < now => (
-            format!("{} {}", l("idle", "inaktiv"), duration(now - since)),
+            format!("{} {}", l("idle", "inaktiv i"), duration(now - since)),
             t::ink_dim(dark),
         ),
-        Activity::Idle { .. } => (l("idle", "inaktiv").to_string(), t::ink_dim(dark)),
+        Activity::Idle { .. } => (l("Idle", "Inaktiv").to_string(), t::ink_dim(dark)),
     };
     let mut meta = vec![session.agent.name().to_string()];
     meta.extend(folder_name.filter(|name| Some(name) != session.title.as_ref()));

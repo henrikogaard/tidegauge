@@ -30,6 +30,8 @@ const LOCALE_FNS: &[&str] = &["l", "localized", "t", "text"];
 /// is one of these words that Norwegian keeps as is.
 const SAME_IN_BOTH: &[&str] = &[
     "App", "app", "Bluetooth", "Disk", "Server", "server", "System",
+    // A network port number: "port 8765" in both languages.
+    "port",
 ];
 
 /// One English string may map to several Norwegian strings only here, each
