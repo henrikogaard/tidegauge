@@ -128,6 +128,14 @@ pub struct TideGaugeView {
     process_scroll: ScrollHandle,
     pub only_remaining: bool,
     pub expanded_process_group: Option<String>,
+    pub process_sort_cpu: bool,
+    pub process_show_all: bool,
+    pub process_detail: Option<crate::process_activity::Identity>,
+    pub process_order: Vec<String>,
+    pub process_order_at: Option<std::time::Instant>,
+    pub process_table_hovered: bool,
+    pub process_filter: Entity<gpui_kit::base::input::InputState>,
+    pub process_query: String,
     pub process_pending: bool,
     pub process_message: Option<String>,
     pub process_failed: bool,
@@ -153,6 +161,18 @@ impl TideGaugeView {
         crate::appearance::apply(window, crate::settings::Settings::load().dark);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let process_filter = cx.new(|cx| {
+            gpui_kit::base::input::InputState::new(window, cx)
+                .placeholder(l("Filter by name or PID", "Filtrer på navn eller PID"))
+        });
+        cx.subscribe(&process_filter, |view: &mut TideGaugeView, input, event: &gpui_kit::base::input::InputEvent, cx| {
+            if matches!(event, gpui_kit::base::input::InputEvent::Change) {
+                view.process_query = input.read(cx).value().trim().to_lowercase();
+                view.process_show_all = false;
+                cx.notify();
+            }
+        })
+        .detach();
         let v = TideGaugeView {
             tab: Tab::Overview,
             dark: matches!(
@@ -171,6 +191,14 @@ impl TideGaugeView {
             process_scroll: ScrollHandle::new(),
             only_remaining: false,
             expanded_process_group: None,
+            process_sort_cpu: true,
+            process_show_all: false,
+            process_detail: None,
+            process_order: Vec::new(),
+            process_order_at: None,
+            process_table_hovered: false,
+            process_filter,
+            process_query: String::new(),
             process_pending: false,
             process_message: None,
             process_failed: false,
@@ -199,6 +227,7 @@ impl TideGaugeView {
                         cx,
                         |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
                             v.snap = latest();
+                            crate::process_panel::refresh_order(v);
                             cx.notify();
                         },
                     );
@@ -230,7 +259,7 @@ fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
     svg().path(path).size(px(size)).text_color(color)
 }
 
-fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
+pub(crate) fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
     if let Some(path) = &app.icon_path {
         if let Some(file) = crate::icons::cached_icon_for_bundle(path) {
             return div()

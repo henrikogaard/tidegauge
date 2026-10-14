@@ -1,18 +1,26 @@
-//! App-scoped process inspection and explicit, confirmed termination requests.
+//! Apps & processes: every app with its helpers, sortable by CPU or memory,
+//! with confirmed Quit and Force Quit for anything you own.
 
 use crate::controls::{button, segment, segment_group};
-use crate::engine::fmt_bytes;
+use crate::engine::{fmt_bytes, Snapshot};
 use crate::locale::text as l;
-use crate::process_activity::{self as activity, ProcessRow};
-use crate::processes::ProcInfo;
+use crate::process_activity::Identity;
+use crate::process_control::{self as control, Force};
 use crate::process_signing::{Failure, Key};
-use crate::theme as t;
-use crate::ui::{card, sub, TideGaugeView};
+use crate::processes::{AppGroup, ProcInfo};
+use crate::theme::{self as t, Metric};
+use crate::ui::{app_icon, card, sub, TideGaugeView};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+/// Apps shown before "Show all"; the busiest ones are always included.
+const FIRST_PAGE: usize = 60;
 
 pub fn open(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
+        view.process_order.clear();
         view.show_processes = true;
         view.show_tools = false;
         view.show_settings = false;
@@ -24,219 +32,554 @@ pub fn open(this: &Entity<TideGaugeView>, cx: &mut App) {
     }
 }
 
+fn sorted_keys(s: &Snapshot, sort_cpu: bool) -> Vec<String> {
+    let mut apps: Vec<&AppGroup> = s.apps.iter().collect();
+    if sort_cpu {
+        apps.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct).then(b.mem_bytes.cmp(&a.mem_bytes)));
+    } else {
+        apps.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    }
+    apps.into_iter().map(|app| app.key.clone()).collect()
+}
+
+/// Rows re-sort only when it is safe: never while the pointer is over the
+/// list or an app is open, and at most every few seconds. A click then
+/// always lands on the row that was under it, which matters next to Quit.
+pub fn refresh_order(view: &mut TideGaugeView) {
+    if !view.show_processes {
+        return;
+    }
+    let stale = view
+        .process_order_at
+        .is_none_or(|at| at.elapsed() >= Duration::from_secs(4));
+    let held = view.process_table_hovered || view.expanded_process_group.is_some();
+    if view.process_order.is_empty() || (stale && !held) {
+        view.process_order = sorted_keys(&view.snap, view.process_sort_cpu);
+        view.process_order_at = Some(Instant::now());
+    }
+}
+
+fn remaining_pids(s: &Snapshot) -> HashSet<i32> {
+    s.process_groups
+        .iter()
+        .flat_map(|g| g.rows.iter().filter(|r| r.remaining).map(|r| r.process.pid))
+        .collect()
+}
+
+fn count_label(n: usize) -> String {
+    format!(
+        "{n} {}",
+        if n == 1 { l("process", "prosess") } else { l("processes", "prosesser") }
+    )
+}
+
+fn mono(text: impl Into<String>, dark: bool) -> Div {
+    div()
+        .font_family("Menlo")
+        .text_size(px(10.5))
+        .text_color(t::ink_dim(dark))
+        .truncate()
+        .child(text.into())
+}
+
+const COL_PROCS: f32 = 92.;
+const COL_CPU: f32 = 72.;
+const COL_MEM: f32 = 88.;
+
+fn header_row(sort_cpu: bool, dark: bool) -> Div {
+    let cell = |text: &str, width: f32, active: bool| {
+        div()
+            .w(px(width))
+            .flex_shrink_0()
+            .flex()
+            .justify_end()
+            .text_color(if active { t::ink(dark) } else { t::ink_dim(dark) })
+            .child(if active { format!("{text} ▾") } else { text.to_string() })
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px(px(10.))
+        .pb_2()
+        .border_b_1()
+        .border_color(t::line(dark))
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(div().flex_1().text_color(t::ink_dim(dark)).child(l("APP", "APP")))
+        .child(cell(l("PROCESSES", "PROSESSER"), COL_PROCS, false))
+        .child(cell("CPU", COL_CPU, sort_cpu))
+        .child(cell(l("MEMORY", "MINNE"), COL_MEM, !sort_cpu))
+        .child(div().w(px(16.)).flex_shrink_0())
+}
+
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut panel = div().flex().flex_col().gap_3();
-    let mut filters =
-        segment_group("process-filters", l("Process filter", "Prosessfilter"), dark);
-    for (remaining, label) in [
-        (true, l("Remaining helpers", "Gjenværende hjelpeprosesser")),
-        (false, l("All apps", "Alle apper")),
+    let s = &view.snap;
+    let remaining = remaining_pids(s);
+    let sort_cpu = view.process_sort_cpu;
+
+    let mut mode = segment_group("process-mode", l("Show", "Vis"), dark);
+    for (only_remaining, label) in [
+        (false, l("All apps", "Alle apper").to_string()),
+        (
+            true,
+            format!("{} · {}", l("Left running", "Fortsatt i gang"), remaining.len()),
+        ),
     ] {
         let target = this.clone();
-        filters = filters.child(segment(
-            format!("process-filter-{remaining}"),
+        mode = mode.child(segment(
+            format!("process-mode-{only_remaining}"),
             label,
-            view.only_remaining == remaining,
+            view.only_remaining == only_remaining,
             dark,
             t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
-                    v.only_remaining = remaining;
+                    v.only_remaining = only_remaining;
                     v.expanded_process_group = None;
                     cx.notify();
                 });
             },
         ));
     }
-    panel = panel.child(card(dark).child(filters).child(sub(l(
-        "Remaining means a process survived an app exit observed during this session—not that it is unwanted. Login items and services may run intentionally or restart. Detached processes seen before monitoring began cannot be attributed reliably.",
-        "Gjenværende betyr at en prosess overlevde en appavslutning observert i denne økten—ikke at den er uønsket. Påloggingselementer og tjenester kan kjøre med hensikt eller starte på nytt. Prosesser frakoblet før overvåkingen startet, kan ikke tilordnes sikkert."
-    ))));
-    if let Some(message) = &view.process_message {
-        panel = panel.child(card(dark).child(sub(message.clone()).text_color(
-            if view.process_failed {
-                t::warn(dark)
-            } else {
-                t::ink(dark)
-            },
-        )));
-    }
-    let groups: Vec<_> = view
-        .snap
-        .process_groups
-        .iter()
-        .filter(|g| !view.only_remaining || g.remaining_count() > 0)
-        .collect();
-    if groups.is_empty() {
-        return panel.child(card(dark).child(sub(l("No matching app processes observed. This is not proof that no background services exist.", "Ingen samsvarende approsesser observert. Dette beviser ikke at bakgrunnstjenester ikke finnes."))));
-    }
-    for group in groups {
-        let expanded = view.expanded_process_group.as_ref() == Some(&group.bundle);
+    let mut sort = segment_group("process-sort", l("Sort by", "Sorter etter"), dark);
+    for (cpu, label) in [(true, "CPU"), (false, l("Memory", "Minne"))] {
         let target = this.clone();
-        let key = group.bundle.clone();
-        let cpu: f64 = group.rows.iter().map(|r| r.process.cpu_pct).sum();
-        let memory: f64 = group.rows.iter().map(|r| r.process.mem_bytes as f64).sum();
-        let process_count = group.rows.len();
-        let process_label = if process_count == 1 {
-            l("process", "prosess")
-        } else {
-            l("processes", "prosesser")
-        };
-        let summary = format!(
-            "{} · {} {} · {:.1}% CPU · {}",
-            group.name,
-            process_count,
-            process_label,
-            cpu,
-            fmt_bytes(memory)
-        );
-        let mut row = div()
+        sort = sort.child(segment(
+            format!("process-sort-{cpu}"),
+            label,
+            sort_cpu == cpu,
+            dark,
+            t::accent(dark),
+            move |_, cx| {
+                target.update(cx, |v, cx| {
+                    v.process_sort_cpu = cpu;
+                    v.process_order = sorted_keys(&v.snap, cpu);
+                    v.process_order_at = Some(Instant::now());
+                    cx.notify();
+                });
+            },
+        ));
+    }
+    let mut page = div().flex().flex_col().gap_3().child(
+        div()
             .flex()
             .items_center()
-            .gap_2()
-            .child(div().flex_1().min_w_0().child(button(
-                format!("process-group-{}", group.bundle),
-                format!("{} {}", if expanded { "▾" } else { "▸" }, summary),
-                expanded,
-                dark,
-                move |_, cx| {
+            .gap_3()
+            .child(mode)
+            .child(
+                div()
+                    .w(px(220.))
+                    .h(px(28.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(t::line(dark))
+                    .text_size(px(12.))
+                    .child(gpui_kit::base::input::Input::new(&view.process_filter)),
+            )
+            .child(div().flex_1())
+            .child(sub(l("Sort by", "Sorter etter")).text_color(t::ink_dim(dark)))
+            .child(sort),
+    );
+
+    if let Some(message) = &view.process_message {
+        page = page.child(card(dark).child(sub(message.clone()).text_color(if view.process_failed {
+            t::warn(dark)
+        } else {
+            t::ink(dark)
+        })));
+    }
+
+    let query = view.process_query.as_str();
+    let by_pid: HashMap<i32, &ProcInfo> = s.procs.iter().map(|p| (p.pid, p)).collect();
+    let matches = |app: &AppGroup| {
+        query.is_empty()
+            || app.name.to_lowercase().contains(query)
+            || app.pids.iter().any(|pid| {
+                pid.to_string() == query
+                    || by_pid.get(pid).is_some_and(|p| {
+                        p.comm.to_lowercase().contains(query) || p.exe_path.to_lowercase().contains(query)
+                    })
+            })
+    };
+    let mut apps: Vec<&AppGroup> = s
+        .apps
+        .iter()
+        .filter(|app| !view.only_remaining || app.pids.iter().any(|pid| remaining.contains(pid)))
+        .filter(|app| matches(app))
+        .collect();
+    let position: HashMap<&str, usize> = view
+        .process_order
+        .iter()
+        .enumerate()
+        .map(|(i, key)| (key.as_str(), i))
+        .collect();
+    // New apps join below the held order until the next safe re-sort.
+    apps.sort_by(|a, b| {
+        let rank = |app: &AppGroup| position.get(app.key.as_str()).copied().unwrap_or(usize::MAX);
+        rank(a).cmp(&rank(b)).then_with(|| {
+            if sort_cpu {
+                b.cpu_pct.total_cmp(&a.cpu_pct)
+            } else {
+                b.mem_bytes.cmp(&a.mem_bytes)
+            }
+        })
+    });
+    if apps.is_empty() {
+        return page.child(crate::ui::empty_state(
+            "icons/layout-grid.svg",
+            t::accent(dark),
+            if !query.is_empty() {
+                l("No matches", "Ingen treff")
+            } else if view.only_remaining {
+                l("Nothing left running", "Ingenting er fortsatt i gang")
+            } else {
+                l("No processes sampled yet", "Ingen prosesser målt ennå")
+            }
+            .into(),
+            if !query.is_empty() {
+                l("No app or process name, path or PID contains that text.", "Ingen app- eller prosessnavn, sti eller PID inneholder den teksten.")
+            } else if view.only_remaining {
+                l(
+                    "Helpers that outlive an app you quit during this session appear here.",
+                    "Hjelpeprosesser som lever videre etter at du avsluttet en app i denne økten, vises her.",
+                )
+            } else {
+                l("The first sample arrives within a few seconds.", "Den første målingen kommer om noen sekunder.")
+            }
+            .into(),
+            dark,
+        ));
+    }
+    let total = apps.len();
+    let shown = if view.process_show_all || !query.is_empty() { total } else { total.min(FIRST_PAGE) };
+    let max_value = apps
+        .iter()
+        .map(|a| if sort_cpu { a.cpu_pct } else { a.mem_bytes as f64 })
+        .fold(0., f64::max)
+        .max(f64::MIN_POSITIVE);
+
+    let hover_target = this.clone();
+    let mut table = card(dark)
+        .id("process-table")
+        .on_hover(move |hovered, _, cx| {
+            let hovered = *hovered;
+            hover_target.update(cx, |v, _| v.process_table_hovered = hovered);
+        })
+        .p_0()
+        .pt_3()
+        .pb_2()
+        .px_2()
+        .gap_0()
+        .child(header_row(sort_cpu, dark));
+    for app in apps.into_iter().take(shown) {
+        let expanded = view.expanded_process_group.as_deref() == Some(app.key.as_str());
+        let value = if sort_cpu { app.cpu_pct } else { app.mem_bytes as f64 };
+        table = table.child(app_row(app, expanded, (value / max_value).clamp(0., 1.), sort_cpu, dark, this.clone()));
+        if expanded {
+            table = table.child(app_detail(view, app, &remaining, dark, this.clone()));
+        }
+    }
+    if shown < total {
+        let target = this.clone();
+        table = table.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(10.))
+                .pt_2()
+                .child(sub(format!("{} {}", total - shown, l("more apps", "flere apper"))).text_color(t::ink_dim(dark)))
+                .child(button("process-show-all", l("Show all", "Vis alle"), false, dark, move |_, cx| {
                     target.update(cx, |v, cx| {
-                        v.expanded_process_group = if expanded { None } else { Some(key.clone()) };
+                        v.process_show_all = true;
                         cx.notify();
                     });
-                },
-            )));
-        if let [main] = group.mains.as_slice() {
-            if activity::controllable(main, &group.bundle) && !view.process_pending {
-                let action = Action::Quit(main.clone(), group.bundle.clone());
+                })),
+        );
+    }
+    page.child(table)
+}
+
+fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+    let key = app.key.clone();
+    let keyboard_key = key.clone();
+    let keyboard = this.clone();
+    let tide = if sort_cpu { Metric::Cpu.accent(dark) } else { Metric::Memory.accent(dark) };
+    let toggle = move |this: &Entity<TideGaugeView>, key: &String, cx: &mut App| {
+        this.update(cx, |v, cx| {
+            v.expanded_process_group = if expanded { None } else { Some(key.clone()) };
+            v.process_detail = None;
+            cx.notify();
+        });
+    };
+    div()
+        .id(SharedString::from(format!("app-row-{}", app.key)))
+        .role(Role::Button)
+        .aria_label(SharedString::from(app.name.clone()))
+        .aria_expanded(expanded)
+        .tab_index(0)
+        .relative()
+        .h(px(36.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .px(px(10.))
+        .rounded(px(7.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .cursor_pointer()
+        .when(expanded, |d| d.bg(t::card_hi(dark)))
+        .when(!expanded, |d| d.hover(|h| h.bg(t::card_hi(dark))))
+        .focus_visible(move |d| d.border_color(t::accent(dark)))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(4.))
+                .bottom(px(4.))
+                .rounded(px(6.))
+                .w(relative(frac as f32))
+                .bg(tide.opacity(0.12)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(app_icon(app, dark))
+                .child(div().min_w_0().truncate().text_size(px(13.)).when(expanded, |d| d.font_weight(FontWeight::SEMIBOLD)).child(app.name.clone())),
+        )
+        .child(div().w(px(COL_PROCS)).flex_shrink_0().flex().justify_end().text_size(px(12.)).text_color(t::ink_dim(dark)).child(app.pids.len().to_string()))
+        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(format!("{:.1}%", app.cpu_pct)))
+        .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(!sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
+        .child(div().w(px(16.)).flex_shrink_0().text_size(px(10.)).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }))
+        .on_click(move |_, _, cx| toggle(&this, &key, cx))
+        .capture_key_down(move |event, window, cx| {
+            if crate::controls::is_activation_key(&event.keystroke) {
+                window.prevent_default();
+                toggle(&keyboard, &keyboard_key, cx);
+                cx.stop_propagation();
+            }
+        })
+}
+
+fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
+    let group = s.process_groups.iter().find(|g| g.bundle == app.key)?;
+    match group.mains.as_slice() {
+        [main] if app.pids.contains(&main.pid) => Some(main),
+        _ => None,
+    }
+}
+
+fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+    let s = &view.snap;
+    let mut procs: Vec<&ProcInfo> = s.procs.iter().filter(|p| app.pids.contains(&p.pid)).collect();
+    if view.process_sort_cpu {
+        procs.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
+    } else {
+        procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    }
+    let pending = view.process_pending;
+    let mut actions = div().flex().items_center().gap_2().flex_wrap();
+    if let Some(main) = registered_main(s, app) {
+        if control::blocked(main).is_none() && !pending {
+            for force in [Force::Quit, Force::ForceQuit] {
+                let action = Action::App { main: main.clone(), name: app.name.clone(), helpers: procs.len(), memory: app.mem_bytes, force };
                 let target = this.clone();
-                row = row.child(button(
-                    format!("quit-app-{}", main.pid),
-                    l("Quit app…", "Avslutt app…"),
+                actions = actions.child(button(
+                    format!("app-{}-{force:?}", main.pid),
+                    match force {
+                        Force::Quit => format!("{} {}…", l("Quit", "Avslutt"), app.name),
+                        Force::ForceQuit => l("Force Quit…", "Tving avslutning…").to_string(),
+                    },
                     false,
                     dark,
                     move |window, cx| request(action.clone(), target.clone(), window, cx),
                 ));
             }
         }
-        let mut content = card(dark).child(row);
-        if group.mains.len() > 1 {
-            content = content.child(sub(l(
-                "Multiple app instances are running; quit them from their own app windows.",
-                "Flere appinstanser kjører; avslutt dem fra sine egne appvinduer.",
-            )));
-        }
-        if group.remaining_count() > 0 {
-            content = content.child(sub(format!(
-                "{} {}",
-                group.remaining_count(),
-                l(
-                    "remaining after an observed app exit",
-                    "gjenværende etter en observert appavslutning"
-                )
-            )));
-        }
-        if expanded {
-            content = content.child(sub(group.bundle.clone()));
-            for row in &group.rows {
-                let p = &row.process;
-                let is_main = group
-                    .mains
-                    .iter()
-                    .any(|main| activity::Identity::of(main) == activity::Identity::of(p));
-                let provenance = if is_main {
-                    l("Main app process", "Appens hovedprosess").into()
-                } else {
-                    match &row.origin {
-                        Some(o) if o.observed_ancestor => format!(
-                            "{} {} · {} {}",
-                            l("Previously observed under", "Tidligere observert under"),
-                            group.name,
-                            l("app PID", "app-PID"),
-                            o.main.pid
-                        ),
-                        Some(_) | None => l(
-                            "Associated by bundle path; app lifecycle unknown",
-                            "Tilknyttet via appsti; appens livssyklus ukjent",
-                        )
-                        .into(),
-                    }
-                };
-                let mut details = div().flex().items_center().gap_2().child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(format!(
-                                    "{} · PID {} · {:.1}% CPU · {}",
-                                    p.comm,
-                                    p.pid,
-                                    p.cpu_pct,
-                                    fmt_bytes(p.mem_bytes as f64)
-                                )),
-                        )
-                        .child(sub(provenance))
-                        .child(sub(format!(
-                            "UID {} · {} {} · {} {}",
-                            p.uid,
-                            l("Current parent PID", "Nåværende forelder-PID"),
-                            p.ppid,
-                            l("Started", "Startet"),
-                            crate::history_browser::local_time(p.start_unix)
-                        )))
-                        .child(sub(if p.ppid == 1 {
-                            l("Parent PID 1 does not establish an orphan or unwanted process.", "Forelder-PID 1 beviser ikke en foreldreløs eller uønsket prosess.")
-                        } else {
-                            l("The current parent is a sampled fact, not necessarily the original launching app.", "Nåværende forelder er en målt opplysning, ikke nødvendigvis appen som opprinnelig startet prosessen.")
-                        }))
-                        .child(sub(p.exe_path.clone())),
-                );
-                let matching: Vec<_> = view.tools.startup.as_ref().map(|inventory| {
-                    inventory.entries.iter().filter(|entry| !p.exe_path.is_empty() && entry.executable.as_deref()==Some(p.exe_path.as_str()))
-                        .map(|entry|entry.label.clone()).take(5).collect()
-                }).unwrap_or_default();
-                let association = if matching.is_empty() {
-                    l("No exact startup executable match in the available inventory. This does not rule out other launch mechanisms.", "Ingen nøyaktig samsvarende oppstartsfil i den tilgjengelige oversikten. Dette utelukker ikke andre oppstartsmekanismer.").to_string()
-                } else {
-                    format!("{}: {}. {}", l("Possible startup association", "Mulig oppstartstilknytning"), matching.join(", "), l("Matching paths do not prove how this process was launched.", "Samsvarende stier beviser ikke hvordan prosessen ble startet."))
-                };
-                if !p.exe_path.is_empty() {
-                    let path=std::path::PathBuf::from(&p.exe_path);
-                    details=details.child(button(format!("process-reveal-{}",p.pid),l("Reveal", "Vis i Finder"),false,dark,move |_,_|crate::storage::reveal(&path)));
-                }
-                if !is_main
-                    && row.remaining
-                    && activity::controllable(p, &group.bundle)
-                    && !view.process_pending
-                {
-                    let target = this.clone();
-                    let action = Action::Stop(row.clone(), group.bundle.clone());
-                    details = details.child(button(
-                        format!("stop-helper-{}", p.pid),
-                        l("Stop…", "Stopp…"),
-                        false,
-                        dark,
-                        move |window, cx| request(action.clone(), target.clone(), window, cx),
-                    ));
-                }
-                content = content.child(
-                    div()
-                        .border_t_1()
-                        .border_color(t::line(dark))
-                        .pt_3()
-                        .child(details)
-                        .child(signing_details(view, p, dark, this.clone()))
-                        .child(sub(association).text_color(t::ink_dim(dark))),
-                );
+    } else {
+        let eligible: Vec<ProcInfo> = procs.iter().filter(|p| control::blocked(p).is_none()).map(|p| (*p).clone()).collect();
+        if eligible.len() > 1 && !pending {
+            for force in [Force::Quit, Force::ForceQuit] {
+                let action = Action::Processes { name: app.name.clone(), targets: eligible.clone(), force };
+                let target = this.clone();
+                actions = actions.child(button(
+                    format!("group-{}-{force:?}", app.key),
+                    match force {
+                        Force::Quit => format!("{} ({})…", l("Quit all", "Avslutt alle"), eligible.len()),
+                        Force::ForceQuit => format!("{} ({})…", l("Force quit all", "Tving avslutning av alle"), eligible.len()),
+                    },
+                    false,
+                    dark,
+                    move |window, cx| request(action.clone(), target.clone(), window, cx),
+                ));
             }
-            content = content.child(sub(l("Quit asks the app to close normally. Stop is available only for verified remaining helpers owned by you. Protected, unknown, or active-app processes cannot be stopped here.", "Avslutt ber appen lukke normalt. Stopp er kun tilgjengelig for bekreftede gjenværende hjelpeprosesser som tilhører deg. Beskyttede, ukjente eller aktive approsesser kan ikke stoppes her.")));
         }
-        panel = panel.child(content);
     }
-    panel
+    if let Some(bundle) = app.icon_path.clone() {
+        let path = std::path::PathBuf::from(bundle);
+        actions = actions.child(button(format!("app-reveal-{}", app.key), l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| crate::storage::reveal(&path)));
+    }
+
+    let mut detail = div()
+        .ml(px(38.))
+        .mr(px(8.))
+        .mb_2()
+        .pl_3()
+        .border_l_1()
+        .border_color(t::line(dark))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .when_some(app.icon_path.clone(), |d, path| d.child(mono(path, dark).pt_1()));
+    for p in procs {
+        detail = detail.child(process_row(view, p, remaining.contains(&p.pid), dark, this.clone()));
+    }
+    detail.child(div().pt_1().child(actions))
+}
+
+fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let id = Identity::of(p);
+    let showing = view.process_detail == Some(id);
+    let blocked = control::blocked(p);
+    let mut controls = div().flex().items_center().gap_1().flex_shrink_0();
+    match blocked {
+        Some(block) => controls = controls.child(sub(block.reason()).text_color(t::ink_dim(dark))),
+        None if !view.process_pending => {
+            for force in [Force::Quit, Force::ForceQuit] {
+                let action = Action::Processes { name: p.comm.clone(), targets: vec![p.clone()], force };
+                let target = this.clone();
+                controls = controls.child(button(
+                    format!("proc-{}-{force:?}", p.pid),
+                    match force {
+                        Force::Quit => l("Quit…", "Avslutt…"),
+                        Force::ForceQuit => l("Force Quit…", "Tving…"),
+                    },
+                    false,
+                    dark,
+                    move |window, cx| request(action.clone(), target.clone(), window, cx),
+                ));
+            }
+        }
+        None => {}
+    }
+    let target = this.clone();
+    controls = controls.child(button(
+        format!("proc-detail-{}", p.pid),
+        if showing { l("Hide details", "Skjul detaljer") } else { l("Details", "Detaljer") },
+        showing,
+        dark,
+        move |_, cx| {
+            target.update(cx, |v, cx| {
+                v.process_detail = if showing { None } else { Some(id) };
+                cx.notify();
+            });
+        },
+    ));
+    let mut row = div().flex().flex_col().gap_1().py_1().child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_size(px(12.))
+                            .child(div().truncate().child(p.comm.clone()))
+                            .child(div().text_color(t::ink_dim(dark)).child(format!("PID {}", p.pid)))
+                            .when(left_running, |d| {
+                                d.child(
+                                    div()
+                                        .px_1()
+                                        .rounded(px(4.))
+                                        .bg(t::warn(dark).opacity(0.14))
+                                        .text_size(px(10.))
+                                        .child(l("Left running", "Fortsatt i gang")),
+                                )
+                            }),
+                    )
+                    .child(mono(p.exe_path.clone(), dark)),
+            )
+            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(format!("{:.1}%", p.cpu_pct)))
+            .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(fmt_bytes(p.mem_bytes as f64)))
+            .child(controls),
+    );
+    if showing {
+        row = row.child(process_details(view, p, dark, this));
+    }
+    row
+}
+
+/// The app this process was seen starting under, when Tidegauge observed it.
+fn started_by(s: &Snapshot, p: &ProcInfo) -> Option<String> {
+    let id = Identity::of(p);
+    s.process_groups.iter().find_map(|group| {
+        let row = group.rows.iter().find(|row| Identity::of(&row.process) == id)?;
+        let origin = row.origin.as_ref().filter(|origin| origin.observed_ancestor && origin.main != id)?;
+        Some(format!(
+            "{} {} (PID {})",
+            l("Started by", "Startet av"),
+            group.name,
+            origin.main.pid
+        ))
+    })
+}
+
+fn process_details(view: &TideGaugeView, p: &ProcInfo, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let matching: Vec<_> = view
+        .tools
+        .startup
+        .as_ref()
+        .map(|inventory| {
+            inventory
+                .entries
+                .iter()
+                .filter(|entry| !p.exe_path.is_empty() && entry.executable.as_deref() == Some(p.exe_path.as_str()))
+                .map(|entry| entry.label.clone())
+                .take(5)
+                .collect()
+        })
+        .unwrap_or_default();
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_2()
+        .rounded(px(8.))
+        .bg(t::card_hi(dark))
+        .child(sub(format!(
+            "UID {} · {} {} · {} {}",
+            p.uid,
+            l("Parent PID", "Forelder-PID"),
+            p.ppid,
+            l("Started", "Startet"),
+            crate::history_browser::local_time(p.start_unix)
+        )))
+        .child(sub(if matching.is_empty() {
+            l("No matching startup item.", "Ingen samsvarende oppstartselement.").to_string()
+        } else {
+            format!("{}: {}", l("Possible startup item", "Mulig oppstartselement"), matching.join(", "))
+        }))
+        .when_some(started_by(&view.snap, p), |d, text| d.child(sub(text)))
+        .when(control::part_of_macos(p), |d| {
+            d.child(sub(l("Part of macOS.", "Del av macOS.")).text_color(t::ink_dim(dark)))
+        })
+        .child(signing_details(view, p, dark, this))
 }
 
 fn signing_details(
@@ -318,55 +661,88 @@ fn signing_details(
 
 #[derive(Clone)]
 enum Action {
-    Quit(ProcInfo, String),
-    Stop(ProcessRow, String),
+    App { main: ProcInfo, name: String, helpers: usize, memory: u64, force: Force },
+    Processes { name: String, targets: Vec<ProcInfo>, force: Force },
 }
 
 fn request(action: Action, this: Entity<TideGaugeView>, window: &mut Window, cx: &mut App) {
     if this.read(cx).process_pending {
         return;
     }
-    let (process, bundle, quit) = match &action {
-        Action::Quit(p, b) => (p, b, true),
-        Action::Stop(r, b) => (&r.process, b, false),
-    };
-    let detail = format!(
-        "{} · PID {}\n{}\n{}\n\n{}",
-        process.comm,
-        process.pid,
-        process.exe_path,
-        bundle,
-        if quit {
-            l("Ask this app to quit normally. It may ask you to save work; helpers may remain. No force quit will be used.", "Be denne appen avslutte normalt. Den kan be deg lagre arbeid; hjelpeprosesser kan bli igjen. Tvungen avslutning brukes ikke.")
-        } else {
-            l("Send SIGTERM to this process only. Unsaved work may be lost and a service may restart it. No other helpers will be stopped.", "Send SIGTERM kun til denne prosessen. Ulagret arbeid kan gå tapt, og en tjeneste kan starte den på nytt. Ingen andre hjelpeprosesser stoppes.")
+    let (title, detail, confirm, level) = match &action {
+        Action::App { name, helpers, memory, force: Force::Quit, .. } => (
+            format!("{} “{name}”?", l("Quit", "Avslutte")),
+            format!(
+                "{}\n{} · {}",
+                l("The app may ask you to save changes first.", "Appen kan be deg lagre endringer først."),
+                count_label(*helpers),
+                fmt_bytes(*memory as f64)
+            ),
+            l("Quit", "Avslutt"),
+            PromptLevel::Warning,
+        ),
+        Action::App { name, helpers, memory, force: Force::ForceQuit, .. } => (
+            format!("{} “{name}”?", l("Force quit", "Tvinge avslutning av")),
+            format!(
+                "{}\n{} · {}",
+                l("Unsaved changes will be lost.", "Endringer som ikke er lagret, går tapt."),
+                count_label(*helpers),
+                fmt_bytes(*memory as f64)
+            ),
+            l("Force Quit", "Tving avslutning"),
+            PromptLevel::Critical,
+        ),
+        Action::Processes { name, targets, force } => {
+            let single = targets.len() == 1;
+            let macos = targets.iter().any(control::part_of_macos);
+            let what = if single {
+                format!("“{name}” (PID {})", targets[0].pid)
+            } else {
+                format!("{} “{name}”", count_label(targets.len()))
+            };
+            let mut detail = match force {
+                Force::Quit => l(
+                    "It is asked to stop (SIGTERM). A service may start it again.",
+                    "Den blir bedt om å stoppe (SIGTERM). En tjeneste kan starte den igjen.",
+                ),
+                Force::ForceQuit => l(
+                    "It is stopped at once (SIGKILL). Unsaved work is lost.",
+                    "Den stoppes umiddelbart (SIGKILL). Ulagret arbeid går tapt.",
+                ),
+            }
+            .to_string();
+            if macos {
+                detail.push_str("\n\n");
+                detail.push_str(l(
+                    "This is part of macOS. It usually restarts on its own, and things may misbehave until it does.",
+                    "Dette er en del av macOS. Den starter vanligvis på nytt av seg selv, og ting kan oppføre seg rart til den gjør det.",
+                ));
+            }
+            if single {
+                detail.push_str("\n\n");
+                detail.push_str(&targets[0].exe_path);
+            }
+            match force {
+                Force::Quit => (
+                    format!("{} {what}?", l("Quit", "Avslutte")),
+                    detail,
+                    l("Quit", "Avslutt"),
+                    PromptLevel::Warning,
+                ),
+                Force::ForceQuit => (
+                    format!("{} {what}?", l("Force quit", "Tvinge avslutning av")),
+                    detail,
+                    l("Force Quit", "Tving avslutning"),
+                    PromptLevel::Critical,
+                ),
+            }
         }
-    );
+    };
     this.update(cx, |v, cx| {
         v.process_pending = true;
         cx.notify();
     });
-    let answer = window.prompt(
-        PromptLevel::Warning,
-        if quit {
-            l("Quit this app?", "Avslutte denne appen?")
-        } else {
-            l(
-                "Stop this remaining helper?",
-                "Stoppe denne gjenværende hjelpeprosessen?",
-            )
-        },
-        Some(&detail),
-        &[
-            l("Cancel", "Avbryt"),
-            if quit {
-                l("Quit app", "Avslutt app")
-            } else {
-                l("Stop process", "Stopp prosess")
-            },
-        ],
-        cx,
-    );
+    let answer = window.prompt(level, &title, Some(&detail), &[l("Cancel", "Avbryt"), confirm], cx);
     cx.spawn(async move |cx| {
         if answer.await != Ok(1) {
             this.update(cx, |v, cx| {
@@ -376,8 +752,8 @@ fn request(action: Action, this: Entity<TideGaugeView>, window: &mut Window, cx:
             return;
         }
         let result = smol::unblock(move || match action {
-            Action::Quit(p, bundle) => activity::quit_app(&p, &bundle),
-            Action::Stop(row, bundle) => activity::stop_remaining(&row, &bundle),
+            Action::App { main, name, force, .. } => control::quit_app(&main, &name, force),
+            Action::Processes { name, targets, force } => control::signal(&targets, &name, force),
         })
         .await;
         this.update(cx, |v, cx| {

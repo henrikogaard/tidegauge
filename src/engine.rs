@@ -182,6 +182,8 @@ pub struct Snapshot {
     pub bt: BtInfo,
     pub projects: Vec<ProjectGroup>,
     pub apps: Vec<AppGroup>,
+    /// Every sampled process, for per-process rows and quit actions.
+    pub procs: Vec<crate::processes::ProcInfo>,
     pub process_groups: Vec<crate::process_activity::ProcessGroup>,
     pub resource_activity: Vec<crate::resource_activity::Activity>,
     pub proc_count: usize,
@@ -224,6 +226,7 @@ impl Default for Snapshot {
             bt: BtInfo::default(),
             projects: Vec::new(),
             apps: Vec::new(),
+            procs: Vec::new(),
             process_groups: Vec::new(),
             resource_activity: Vec::new(),
             proc_count: 0,
@@ -448,6 +451,7 @@ impl Engine {
         s.resource_activity = self.resource_tracker.sample(&procs, self.started.elapsed().as_secs_f64(), now_unix());
         s.apps = regroup_apps(&procs, &s.apps);
         s.app_count = s.apps.len();
+        s.procs = procs.clone();
 
         // attach per-app network via nettop (every other tick to save CPU)
         if self.tick % 2 == 0 {
