@@ -74,6 +74,7 @@ impl Assertion {
                 }
                 return Err(error_message(
                     "Could not create the sleep-prevention assertion name.",
+                    "Kunne ikke opprette navnet på søvnforhindringspåstanden.",
                     -1,
                 ));
             }
@@ -92,7 +93,11 @@ impl Assertion {
                     released: false,
                 })
             } else {
-                Err(error_message("Could not keep the system awake.", status))
+                Err(error_message(
+                    "Could not keep the system awake.",
+                    "Kunne ikke holde systemet våkent.",
+                    status,
+                ))
             }
         }
     }
@@ -180,6 +185,7 @@ fn expiry_worker(manager: Arc<Manager>) {
                 Err(status) => {
                     state.error = Some(error_message(
                         "Could not release the sleep-prevention assertion.",
+                        "Kunne ikke frigjøre søvnforhindringspåstanden.",
                         status,
                     ));
                     state.lease.active = true;
@@ -195,18 +201,11 @@ fn expiry_worker(manager: Arc<Manager>) {
     }
 }
 
-fn error_message(english: &'static str, status: i32) -> String {
+fn error_message(english: &'static str, norwegian: &'static str, status: i32) -> String {
     format!(
-        "{} (OSStatus {status})",
-        crate::locale::text(
-            english,
-            match english {
-                "Could not create the sleep-prevention assertion name." =>
-                    "Kunne ikke opprette navnet på søvnforhindringspåstanden.",
-                "Could not keep the system awake." => "Kunne ikke holde systemet våkent.",
-                _ => "Kunne ikke frigjøre søvnforhindringspåstanden.",
-            }
-        )
+        "{} ({} {status})",
+        crate::locale::text(english, norwegian),
+        crate::locale::text("error code", "feilkode")
     )
 }
 
@@ -238,7 +237,11 @@ pub fn stop() -> Result<(), String> {
         return Ok(());
     };
     if let Err(status) = assertion.release() {
-        let error = error_message("Could not release the sleep-prevention assertion.", status);
+        let error = error_message(
+            "Could not release the sleep-prevention assertion.",
+            "Kunne ikke frigjøre søvnforhindringspåstanden.",
+            status,
+        );
         state.error = Some(error.clone());
         return Err(error);
     }

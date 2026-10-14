@@ -68,10 +68,7 @@ fn remaining_pids(s: &Snapshot) -> HashSet<i32> {
 }
 
 fn count_label(n: usize) -> String {
-    format!(
-        "{n} {}",
-        if n == 1 { l("process", "prosess") } else { l("processes", "prosesser") }
-    )
+    crate::locale::count(n as u64, "process", "processes", "prosess", "prosesser")
 }
 
 fn mono(text: impl Into<String>, dark: bool) -> Div {
@@ -107,7 +104,7 @@ fn header_row(sort_cpu: bool, dark: bool) -> Div {
         .border_color(t::line(dark))
         .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
-        .child(div().flex_1().text_color(t::ink_dim(dark)).child(l("APP", "APP")))
+        .child(div().flex_1().text_color(t::ink_dim(dark)).child(l("App", "App").to_uppercase()))
         .child(cell(l("PROCESSES", "PROSESSER"), COL_PROCS, false))
         .child(cell("CPU", COL_CPU, sort_cpu))
         .child(cell(l("MEMORY", "MINNE"), COL_MEM, !sort_cpu))
@@ -293,7 +290,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                 .justify_between()
                 .px(px(10.))
                 .pt_2()
-                .child(sub(format!("{} {}", total - shown, l("more apps", "flere apper"))).text_color(t::ink_dim(dark)))
+                .child(sub(crate::locale::count((total - shown) as u64, "more app", "more apps", "app til", "apper til")).text_color(t::ink_dim(dark)))
                 .child(button("process-show-all", l("Show all", "Vis alle"), false, dark, move |_, cx| {
                     target.update(cx, |v, cx| {
                         v.process_show_all = true;
@@ -357,7 +354,7 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
                 .child(div().min_w_0().truncate().text_size(px(13.)).when(expanded, |d| d.font_weight(FontWeight::SEMIBOLD)).child(app.name.clone())),
         )
         .child(div().w(px(COL_PROCS)).flex_shrink_0().flex().justify_end().text_size(px(12.)).text_color(t::ink_dim(dark)).child(app.pids.len().to_string()))
-        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(format!("{:.1}%", app.cpu_pct)))
+        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(crate::locale::percent(app.cpu_pct, 1)))
         .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(!sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
         .child(div().w(px(16.)).flex_shrink_0().text_size(px(10.)).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }))
         .on_click(move |_, _, cx| toggle(&this, &key, cx))
@@ -461,7 +458,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: boo
                     format!("proc-{}-{force:?}", p.pid),
                     match force {
                         Force::Quit => l("Quit…", "Avslutt…"),
-                        Force::ForceQuit => l("Force Quit…", "Tving…"),
+                        Force::ForceQuit => l("Force Quit…", "Tving avslutning…"),
                     },
                     false,
                     dark,
@@ -516,7 +513,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: boo
                     )
                     .child(mono(p.exe_path.clone(), dark)),
             )
-            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(format!("{:.1}%", p.cpu_pct)))
+            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(crate::locale::percent(p.cpu_pct, 1)))
             .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(fmt_bytes(p.mem_bytes as f64)))
             .child(controls),
     );
@@ -672,7 +669,7 @@ pub(crate) fn request(action: Action, this: Entity<TideGaugeView>, window: &mut 
     }
     let (title, detail, confirm, level) = match &action {
         Action::App { name, helpers, memory, force: Force::Quit, .. } => (
-            format!("{} “{name}”?", l("Quit", "Avslutte")),
+            format!("{} “{name}”?", l("Do you want to quit", "Vil du avslutte")),
             format!(
                 "{}\n{} · {}",
                 l("The app may ask you to save changes first.", "Appen kan be deg lagre endringer først."),
@@ -683,7 +680,7 @@ pub(crate) fn request(action: Action, this: Entity<TideGaugeView>, window: &mut 
             PromptLevel::Warning,
         ),
         Action::App { name, helpers, memory, force: Force::ForceQuit, .. } => (
-            format!("{} “{name}”?", l("Force quit", "Tvinge avslutning av")),
+            format!("{} “{name}”?", l("Do you want to force quit", "Vil du tvinge avslutning av")),
             format!(
                 "{}\n{} · {}",
                 l("Unsaved changes will be lost.", "Endringer som ikke er lagret, går tapt."),
@@ -725,13 +722,13 @@ pub(crate) fn request(action: Action, this: Entity<TideGaugeView>, window: &mut 
             }
             match force {
                 Force::Quit => (
-                    format!("{} {what}?", l("Quit", "Avslutte")),
+                    format!("{} {what}?", l("Do you want to quit", "Vil du avslutte")),
                     detail,
                     l("Quit", "Avslutt"),
                     PromptLevel::Warning,
                 ),
                 Force::ForceQuit => (
-                    format!("{} {what}?", l("Force quit", "Tvinge avslutning av")),
+                    format!("{} {what}?", l("Do you want to force quit", "Vil du tvinge avslutning av")),
                     detail,
                     l("Force Quit", "Tving avslutning"),
                     PromptLevel::Critical,

@@ -6762,11 +6762,13 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications",
+ "proc-macro2",
  "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
  "smol",
+ "syn 2.0.119",
 ]
 
 [[package]]

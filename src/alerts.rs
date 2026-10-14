@@ -118,9 +118,9 @@ impl AlertEngine {
             |value| Alert {
                 metric: "cpu".into(),
                 message: format!(
-                    "{}: {:.0}% {}",
+                    "{}: {} {}",
                     crate::locale::text("High CPU usage", "Høy CPU-bruk"),
-                    value,
+                    crate::locale::percent(value, 0),
                     crate::locale::text("for over 20 seconds", "i over 20 sekunder")
                 ),
                 at,
@@ -138,9 +138,9 @@ impl AlertEngine {
             |value| Alert {
                 metric: "memory".into(),
                 message: format!(
-                    "{}: {:.0}% {}",
+                    "{}: {} {}",
                     crate::locale::text("High memory usage", "Høy minnebruk"),
-                    value,
+                    crate::locale::percent(value, 0),
                     crate::locale::text("used for over 20 seconds", "brukt i over 20 sekunder")
                 ),
                 at,

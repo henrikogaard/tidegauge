@@ -19,6 +19,8 @@ mod icons;
 mod instance;
 mod keepawake;
 mod locale;
+#[cfg(test)]
+mod locale_guard;
 mod login;
 mod metrics;
 mod notifications;
