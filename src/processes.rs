@@ -106,6 +106,46 @@ pub fn proc_path(pid: i32) -> String {
     }
 }
 
+/// Command-line arguments of a process you may inspect, used only to tell
+/// programs apart (for example a coding agent from its background host).
+/// Arguments can hold secrets, so callers must never display or store them.
+/// `None` when macOS refuses (other users' processes) or the data is malformed.
+pub fn proc_args(pid: i32) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0
+        || size < 4
+        || size > 1 << 20
+    {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr() as *mut c_void, &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    parse_procargs(&buf)
+}
+
+/// KERN_PROCARGS2 layout: argc (i32), the executable path, NUL padding, then
+/// argc NUL-terminated arguments (followed by the environment, ignored).
+fn parse_procargs(buf: &[u8]) -> Option<Vec<String>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if !(0..=4096).contains(&argc) {
+        return None;
+    }
+    let rest = buf.get(4..)?;
+    let path_end = rest.iter().position(|&b| b == 0)?;
+    let rest = &rest[path_end..];
+    let args_start = rest.iter().position(|&b| b != 0)?;
+    let args: Vec<String> = rest[args_start..]
+        .split(|&b| b == 0)
+        .take(argc as usize)
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect();
+    (args.len() == argc as usize).then_some(args)
+}
+
 pub fn proc_cwd(pid: i32) -> String {
     unsafe {
         let mut info: proc_vnodepathinfo_full = std::mem::zeroed();
@@ -228,6 +268,23 @@ pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn procargs_layout_is_parsed_and_bounded() {
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/bin/node\0\0\0node\0/opt/gemini\0HOME=/x\0");
+        assert_eq!(super::parse_procargs(&buf), Some(vec!["node".into(), "/opt/gemini".into()]));
+        let mut short = 3i32.to_ne_bytes().to_vec();
+        short.extend_from_slice(b"/bin/x\0x\0");
+        assert_eq!(super::parse_procargs(&short), None);
+        assert_eq!(super::parse_procargs(&[1, 0]), None);
+    }
+
+    #[test]
+    fn own_arguments_are_readable() {
+        let args = super::proc_args(std::process::id() as i32).expect("own argv");
+        assert!(!args.is_empty());
+    }
+
     #[test]
     fn own_working_directory_is_not_truncated() {
         let actual = super::proc_cwd(std::process::id() as i32);
