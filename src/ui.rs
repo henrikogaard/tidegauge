@@ -1,4 +1,4 @@
-//! The Tidegauge panel: top tab bar, card-based content.
+//! The Tidegauge panel: sidebar navigation, card-based content.
 
 #![allow(dead_code)]
 
@@ -169,7 +169,7 @@ impl TideGaugeView {
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
             process_scroll: ScrollHandle::new(),
-            only_remaining: true,
+            only_remaining: false,
             expanded_process_group: None,
             process_pending: false,
             process_message: None,
@@ -559,53 +559,277 @@ pub(crate) fn section_header(left: &str, right: &str, dark: bool) -> Div {
         )
 }
 
-struct FooterAction {
-    id: &'static str,
-    icon: &'static str,
-    label: &'static str,
-    tab_index: isize,
-    selected: bool,
+/// Where the window is: a metric or work tab, the apps list, a maintenance
+/// tool, or Settings. Derived from the view's flags, so the sidebar can
+/// never highlight a different place than the content shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Destination {
+    Tab(Tab),
+    Apps,
+    Tool(crate::tools_panel::Page),
+    Settings,
 }
 
-/// One shared control style for the footer actions: icon + label on a
-/// bordered, transparent-at-rest button with the metric accent on focus.
-fn footer_button(
-    action_def: FooterAction,
-    accent: Hsla,
+impl Destination {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Tab(tab) => tab.label(),
+            Self::Apps => l("Apps & processes", "Apper og prosesser"),
+            Self::Tool(page) => page.label(),
+            Self::Settings => l("Settings", "Innstillinger"),
+        }
+    }
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Tab(tab) => tab.icon(),
+            Self::Apps => "icons/layout-grid.svg",
+            Self::Tool(page) => page.icon(),
+            Self::Settings => "icons/settings.svg",
+        }
+    }
+    /// Metric tabs carry their metric colour; everything else is neutral.
+    fn tinted(self) -> bool {
+        matches!(self, Self::Tab(tab) if tab.metric().is_some())
+    }
+    /// Live readings get a colour swatch; work, history and tools get icons.
+    fn swatch(self) -> bool {
+        self.tinted() && self != Self::Tab(Tab::Projects)
+    }
+    fn accent(self, dark: bool) -> Hsla {
+        match self {
+            Self::Tab(tab) => tab.metric().map(|m| m.accent(dark)).unwrap_or(t::accent(dark)),
+            _ => t::accent(dark),
+        }
+    }
+    fn id(self) -> SharedString {
+        match self {
+            Self::Tab(tab) => format!("nav-{}", tab.key()).into(),
+            Self::Apps => "nav-apps".into(),
+            Self::Tool(page) => format!("nav-tool-{}", page.key()).into(),
+            Self::Settings => "nav-settings".into(),
+        }
+    }
+}
+
+impl TideGaugeView {
+    pub(crate) fn destination(&self) -> Destination {
+        if self.show_settings {
+            Destination::Settings
+        } else if self.show_processes {
+            Destination::Apps
+        } else if self.show_tools {
+            Destination::Tool(self.tools.page)
+        } else {
+            Destination::Tab(self.tab)
+        }
+    }
+}
+
+pub(crate) fn navigate(this: &Entity<TideGaugeView>, to: Destination, cx: &mut App) {
+    match to {
+        Destination::Tab(tab) => select_tab(this, tab, cx),
+        Destination::Apps => crate::process_panel::open(this, cx),
+        Destination::Tool(page) => crate::tools_panel::open_page(this, page, cx),
+        Destination::Settings => open_settings(this, cx),
+    }
+}
+
+/// Short live reading beside a sidebar entry; `None` when the source is
+/// unavailable on this Mac, which also dims the entry.
+fn sidebar_reading(tab: Tab, s: &Snapshot) -> Option<String> {
+    match tab {
+        Tab::Cpu => Some(fmt_pct(s.cpu_pct)),
+        Tab::Memory => Some(fmt_bytes(s.mem.used as f64)),
+        Tab::Disk => Some(fmt_rate(s.disk.read_rate + s.disk.write_rate)),
+        Tab::Network => Some(fmt_rate(s.net.rate_in + s.net.rate_out)),
+        Tab::Gpu => s.gpu.utilization.map(fmt_pct),
+        Tab::Battery => s.battery.percent.map(fmt_pct),
+        Tab::Sound => match (s.audio.device_muted, s.audio.device_volume) {
+            (Some(true), _) => Some(l("Muted", "Dempet").into()),
+            (_, Some(volume)) => Some(fmt_pct(volume as f64 * 100.)),
+            _ => None,
+        },
+        Tab::Bluetooth => s.bt.enabled.then(|| s.bt.devices.len().to_string()),
+        Tab::Projects => Some(s.projects.len().to_string()),
+        Tab::Overview | Tab::History => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sidebar_item(
+    to: Destination,
+    here: Destination,
+    reading: Option<String>,
+    available: bool,
+    tab_index: isize,
     dark: bool,
-    action: impl Fn(&mut Window, &mut App) + 'static,
+    this: Entity<TideGaugeView>,
 ) -> impl IntoElement {
-    let action = std::rc::Rc::new(action);
-    let keyboard = action.clone();
+    let selected = to == here;
+    let accent = to.accent(dark);
+    let keyboard = this.clone();
+    let leading = if to.swatch() {
+        div()
+            .size(px(8.))
+            .mx(px(3.))
+            .flex_shrink_0()
+            .rounded(px(2.))
+            .bg(if available { accent } else { accent.opacity(0.4) })
+            .into_any_element()
+    } else {
+        div()
+            .flex_shrink_0()
+            .child(icon_img(
+                to.icon(),
+                14.,
+                if selected { t::ink(dark) } else { t::ink_dim(dark) },
+            ))
+            .into_any_element()
+    };
     div()
-        .id(action_def.id)
-        .role(Role::Button)
-        .aria_label(SharedString::from(action_def.label))
-        .tab_index(action_def.tab_index)
+        .id(to.id())
+        .role(Role::Tab)
+        .aria_label(to.title())
+        .aria_selected(selected)
+        .tab_index(tab_index)
         .h(px(28.))
+        .flex_shrink_0()
+        .px(px(8.))
         .flex()
         .items_center()
-        .gap(px(6.))
-        .px_3()
-        .rounded(px(8.))
+        .gap(px(8.))
+        .rounded(px(7.))
         .border_1()
-        .border_color(t::line(dark))
-        .when(action_def.selected, |d| d.bg(accent.opacity(0.12)))
-        .text_size(px(12.))
-        .text_color(t::ink(dark))
+        .border_color(gpui_kit::transparent_black())
+        .text_size(px(13.))
         .cursor_pointer()
-        .hover(|d| d.bg(t::card_hi(dark)))
-        .focus_visible(|d| d.border_color(accent))
-        .child(icon_img(action_def.icon, 14., t::ink_dim(dark)))
-        .child(action_def.label)
-        .on_click(move |_, window, cx| action(window, cx))
+        .text_color(if available || selected { t::ink(dark) } else { t::ink_dim(dark) })
+        .when(selected, |d| {
+            d.font_weight(FontWeight::SEMIBOLD)
+                .bg(if to.tinted() { accent.opacity(0.14) } else { t::card_hi(dark) })
+        })
+        .when(!selected, |d| d.hover(|h| h.bg(t::card_hi(dark))))
+        .focus_visible(move |d| d.border_color(accent))
+        .child(leading)
+        .child(div().flex_1().min_w_0().truncate().child(to.title()))
+        .when_some(reading, |d, reading| {
+            d.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(if selected && to.tinted() { accent } else { t::ink_dim(dark) })
+                    .child(reading),
+            )
+        })
+        .on_click(move |_, _, cx| navigate(&this, to, cx))
         .capture_key_down(move |event, window, cx| {
             if is_activation_key(&event.keystroke) {
                 window.prevent_default();
-                keyboard(window, cx);
+                navigate(&keyboard, to, cx);
                 cx.stop_propagation();
             }
         })
+}
+
+fn sidebar_group(label: &str, dark: bool) -> Div {
+    div()
+        .px(px(8.))
+        .pt(px(12.))
+        .pb(px(4.))
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t::ink_dim(dark))
+        .child(label.to_uppercase())
+}
+
+/// Every place in the app, grouped by what you are doing: watching live
+/// readings, looking at your own work, looking back, or tidying up.
+fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+    use crate::tools_panel::Page;
+    let visible = Tab::visible();
+    let mut index = 0isize;
+    let mut items: Vec<AnyElement> = Vec::new();
+    let mut add = |items: &mut Vec<AnyElement>, to: Destination, reading: Option<String>, available: bool| {
+        items.push(sidebar_item(to, here, reading, available, index, dark, this.clone()).into_any_element());
+        index += 1;
+    };
+
+    add(&mut items, Destination::Tab(Tab::Overview), None, true);
+
+    items.push(sidebar_group(l("Live", "Nå"), dark).into_any_element());
+    for tab in visible
+        .iter()
+        .copied()
+        .filter(|tab| !matches!(tab, Tab::Overview | Tab::Projects | Tab::History))
+    {
+        let reading = sidebar_reading(tab, s);
+        let available = reading.is_some();
+        add(&mut items, Destination::Tab(tab), Some(reading.unwrap_or_else(|| "–".into())), available);
+    }
+
+    items.push(sidebar_group(l("Work", "Arbeid"), dark).into_any_element());
+    add(&mut items, Destination::Apps, Some(s.app_count.to_string()), true);
+    if visible.contains(&Tab::Projects) {
+        add(&mut items, Destination::Tab(Tab::Projects), sidebar_reading(Tab::Projects, s), true);
+    }
+
+    items.push(sidebar_group(l("Over time", "Over tid"), dark).into_any_element());
+    if visible.contains(&Tab::History) {
+        add(&mut items, Destination::Tab(Tab::History), None, true);
+    }
+    add(&mut items, Destination::Tool(Page::Activity), None, true);
+    add(&mut items, Destination::Tool(Page::Baselines), None, true);
+
+    items.push(sidebar_group(l("Maintenance", "Vedlikehold"), dark).into_any_element());
+    for page in [Page::Startup, Page::Storage, Page::Packages] {
+        add(&mut items, Destination::Tool(page), None, true);
+    }
+    let settings_index = index;
+
+    div()
+        .w(px(224.))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .bg(t::sidebar(dark))
+        .border_r_1()
+        .border_color(t::line(dark))
+        // The window's traffic lights sit in this strip.
+        .child(div().h(px(52.)).flex_shrink_0())
+        .child(
+            div()
+                .id("sidebar")
+                .role(Role::TabList)
+                .aria_label(l("Sections", "Seksjoner"))
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(10.))
+                .pb(px(8.))
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .children(items),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .px(px(10.))
+                .py(px(8.))
+                .border_t_1()
+                .border_color(t::line(dark))
+                .child(sidebar_item(
+                    Destination::Settings,
+                    here,
+                    Some("⌘,".into()),
+                    true,
+                    settings_index,
+                    dark,
+                    this,
+                )),
+        )
 }
 
 pub(crate) fn list_card(rows: Vec<Div>, dark: bool) -> Div {
@@ -634,204 +858,38 @@ impl Render for TideGaugeView {
             self.tab_scrolls[tab as usize].clone()
         };
 
-        // Neutral chrome with a quiet metric-colored selection.
-        let topbar = div()
-            .w_full()
-            .h(px(64.))
+        let here = self.destination();
+        let accent = here.accent(dark);
+        let header = div()
+            .h(px(52.))
             .flex_shrink_0()
-            .pl(px(92.))
-            .pr(px(24.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .id("metric-tabs")
-                    .role(Role::TabList)
-                    .aria_label(l("Metrics", "Målinger"))
-                    .tab_group()
-                    .flex()
-                    .items_center()
-                    .gap_0p5()
-                    .rounded_full()
-                    .bg(t::card(dark))
-                    .border_1()
-                    .border_color(t::line(dark))
-                    .p_1()
-                    .children(
-                        Tab::visible()
-                            .into_iter()
-                            .enumerate()
-                            .map(|(tab_index, tb)| {
-                                let active = tb == tab;
-                                let accent = tb.metric().unwrap_or(Metric::Cpu).accent(dark);
-                                let this = this.clone();
-                                let keyboard_target = this.clone();
-                                div()
-                                    .id(SharedString::from(format!("tab-{}", tb.label())))
-                                    .role(Role::Tab)
-                                    .aria_label(tb.label())
-                                    .aria_selected(active)
-                                    .tab_index(tab_index as isize)
-                                    .focus_visible(|d| {
-                                        d.border_color(accent).bg(accent.opacity(0.12))
-                                    })
-                                    .capture_key_down(move |event, window, cx| {
-                                        if is_activation_key(&event.keystroke) {
-                                            window.prevent_default();
-                                            select_tab(&keyboard_target, tb, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    })
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.))
-                                    .px(px(8.))
-                                    .py(px(8.))
-                                    .border_1()
-                                    .border_color(gpui_kit::transparent_black())
-                                    .rounded_full()
-                                    .cursor_pointer()
-                                    .when(active, |d| d.bg(accent.opacity(0.12)).text_color(accent))
-                                    .when(!active, |d| {
-                                        d.text_color(t::ink_dim(dark))
-                                            .hover(|h| h.text_color(t::ink(dark)))
-                                    })
-                                    .child(icon_img(
-                                        tb.icon(),
-                                        13.0,
-                                        if active { accent } else { t::ink_dim(dark) },
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .line_height(px(13.))
-                                            .child(tb.label()),
-                                    )
-                                    .on_click(move |_, _w, cx| {
-                                        select_tab(&this, tb, cx);
-                                    })
-                            }),
-                    ),
-            );
-
-        let topbar = if self.show_settings {
-            let back = this.clone();
-            let keyboard_back = this.clone();
-            div()
-                .h(px(64.))
-                .flex_shrink_0()
-                .pl(px(104.))
-                .pr(px(24.))
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .id("back-to-module")
-                        .role(Role::Button)
-                        .aria_label(SharedString::from(format!(
-                            "{} {}",
-                            l("Back to", "Tilbake til"),
-                            tab.label()
-                        )))
-                        .tab_index(0)
-                        .rounded_md()
-                        .p_2()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(t::card_hi(dark)))
-                        .focus_visible(|d| d.bg(t::card_hi(dark)))
-                        .child(icon_img("icons/arrow-left.svg", 16., t::ink(dark)))
-                        .capture_key_down(move |event, window, cx| {
-                            if is_activation_key(&event.keystroke) {
-                                window.prevent_default();
-                                select_tab(&keyboard_back, tab, cx);
-                                cx.stop_propagation();
-                            }
-                        })
-                        .on_click(move |_, _, cx| select_tab(&back, tab, cx)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(l("Settings", "Innstillinger")),
-                )
-                .into_any_element()
-        } else {
-            topbar.into_any_element()
-        };
-
-        let accent = tab.metric().unwrap_or(Metric::Cpu).accent(dark);
-        let settings_target = this.clone();
-        let process_target = this.clone();
-        let tools_target = this.clone();
-        let footer = div()
-            .w_full()
             .px(px(20.))
-            .py_2()
             .flex()
             .items_center()
-            .child(footer_button(
-                FooterAction {
-                    id: "dashboard-settings",
-                    icon: "icons/settings.svg",
-                    label: l("Settings", "Innstillinger"),
-                    tab_index: 11,
-                    selected: self.show_settings,
-                },
-                accent,
-                dark,
-                move |_, cx| open_settings(&settings_target, cx),
-            ))
+            .gap_3()
             .child(
                 div()
-                    .flex_1()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(t::ink_dim(dark))
-                            .child(format!(
-                                "{} {} · {} {}",
-                                s.app_count,
-                                l("apps", "apper"),
-                                s.proc_count,
-                                l("processes", "prosesser")
-                            )),
-                    ),
+                    .text_size(px(20.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(if here.tinted() { accent } else { t::ink(dark) })
+                    .child(here.title()),
             )
+            .child(div().flex_1())
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(footer_button(
-                        FooterAction {
-                            id: "open-processes",
-                            icon: "icons/list.svg",
-                            label: l("Processes", "Prosesser"),
-                            tab_index: 12,
-                            selected: self.show_processes,
-                        },
-                        accent,
-                        dark,
-                        move |_, cx| crate::process_panel::open(&process_target, cx),
-                    ))
-                    .child(footer_button(
-                        FooterAction {
-                            id: "open-tools",
-                            icon: "icons/wrench.svg",
-                            label: l("Tools", "Verktøy"),
-                            tab_index: 13,
-                            selected: self.show_tools,
-                        },
-                        accent,
-                        dark,
-                        move |_, cx| crate::tools_panel::open(&tools_target, cx),
-                    )),
+                    .text_size(px(12.))
+                    .text_color(t::ink_dim(dark))
+                    .child(if here == Destination::Settings {
+                        l("Saved on this Mac", "Lagres på denne Macen").to_string()
+                    } else {
+                        format!(
+                            "{} {} · {} {}",
+                            s.app_count,
+                            l("apps", "apper"),
+                            s.proc_count,
+                            l("processes", "prosesser")
+                        )
+                    }),
             );
 
         let content = div()
@@ -874,14 +932,22 @@ impl Render for TideGaugeView {
             }))
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(t::bg(dark))
             .text_color(t::ink(dark))
             .font_family(".AppleSystemUIFont")
             .track_focus(&self.focus)
-            .child(topbar)
-            .child(content)
-            .child(footer)
+            .child(sidebar(s, here, dark, this.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(content),
+            )
     }
 }
 
@@ -1059,11 +1125,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
         localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
     };
     let settings = Settings::load();
-    let mut panel = div().flex().flex_col().gap_3().child(section_header(
-        l("Settings", "Innstillinger"),
-        l("Saved locally", "Lagres lokalt"),
-        dark,
-    ));
+    let mut panel = div().flex().flex_col().gap_3();
     if let Some(error) = error {
         panel = panel.child(
             div()

@@ -25,31 +25,7 @@ pub fn open(this: &Entity<TideGaugeView>, cx: &mut App) {
 }
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let back = this.clone();
-    let mut panel = div().flex().flex_col().gap_3().child(
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(l("Apps and helpers", "Apper og hjelpeprosesser")),
-            )
-            .child(button(
-                "process-back",
-                l("Back", "Tilbake"),
-                false,
-                dark,
-                move |_, cx| {
-                    back.update(cx, |v, cx| {
-                        v.show_processes = false;
-                        cx.notify();
-                    });
-                },
-            )),
-    );
+    let mut panel = div().flex().flex_col().gap_3();
     let mut filters =
         segment_group("process-filters", l("Process filter", "Prosessfilter"), dark);
     for (remaining, label) in [
