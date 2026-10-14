@@ -160,6 +160,13 @@ hardware acceptance checks. A merge and a published release are separate events.
   overrides remain unknown.
 - Package discovery and cask target validation handle verified installed
   metadata while rejecting mismatched, stale, unsafe, or ambiguous identities.
+- English and Norwegian Bokmål UI text no longer mix. Counts read "1 app" or
+  "1 prosess" instead of "1 apps"; Norwegian uses a decimal comma and "50 %"
+  with a space; battery time uses "t" for hours; menu-bar labels DISK, NETT and
+  BATT follow MINNE and EFF; error codes read "feilkode" instead of "OSStatus";
+  and terminology is consistent (Bundet, Utnyttelse, Påloggingsobjekter, App,
+  anslått, utgangspunkt). A source-level test fails when UI text bypasses the
+  locale helpers.
 
 ### Boundaries and remaining acceptance
 
