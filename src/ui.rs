@@ -415,11 +415,13 @@ fn app_row(rank: usize, app: &AppGroup, value: String, frac: f64, color: Hsla, d
                     div()
                         .text_xs()
                         .text_color(t::ink_dim(dark))
-                        .child(if app.pids.len() > 1 {
-                            format!("{} {}", app.pids.len(), l("processes", "prosesser"))
-                        } else {
-                            l("1 process", "1 prosess").into()
-                        }),
+                        .child(crate::locale::count(
+                            app.pids.len().max(1) as u64,
+                            "process",
+                            "processes",
+                            "prosess",
+                            "prosesser",
+                        )),
                 ),
         )
         .child(usage_bar(frac, color))
@@ -494,7 +496,7 @@ fn hero(
                                     .text_xs()
                                     .text_color(t::ink_dim(dark))
                                     .child(l("Recent samples", "Siste målinger"))
-                                    .child(max_hint.map(|v| format!("0–{v:.0}%")).unwrap_or_else(
+                                    .child(max_hint.map(|v| format!("0–{}", fmt_pct(v))).unwrap_or_else(
                                         || l("Auto scale", "Automatisk skala").into(),
                                     )),
                             )
@@ -795,11 +797,15 @@ impl Render for TideGaugeView {
                             .text_size(px(10.))
                             .text_color(t::ink_dim(dark))
                             .child(format!(
-                                "{} {} · {} {}",
-                                s.app_count,
-                                l("apps", "apper"),
-                                s.proc_count,
-                                l("processes", "prosesser")
+                                "{} · {}",
+                                crate::locale::count(s.app_count as u64, "app", "apps", "app", "apper"),
+                                crate::locale::count(
+                                    s.proc_count as u64,
+                                    "process",
+                                    "processes",
+                                    "prosess",
+                                    "prosesser"
+                                )
                             )),
                     ),
             )
@@ -1124,7 +1130,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
                     dark,
                 )
                 .children(
-                    [(true, l("Shown", "Vises")), (false, l("Hidden", "Skjult"))]
+                    [(true, l("Shown", "Vist")), (false, l("Hidden", "Skjult"))]
                         .into_iter()
                         .enumerate()
                         .map(|(i, (shown, label))| {
@@ -1389,7 +1395,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .battery
         .minutes_remaining
         .filter(|m| s.battery.on_battery && *m >= 0)
-        .map(|m| format!("{}h {}m", m / 60, m % 60))
+        .map(fmt_hours_minutes)
         .unwrap_or("—".into());
     let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
     let settings = crate::settings::Settings::load();
@@ -1398,9 +1404,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         (
             Tab::Cpu,
             l("Now", "Nå").into(),
-            format!("{:.0} %", s.cpu_pct),
+            fmt_pct(s.cpu_pct),
             [
-                (l("Load · 1 min", "Last · 1 min"), format!("{:.2}", s.load_avg[0])),
+                (l("Load · 1 min", "Last · 1 min"), crate::locale::number(s.load_avg[0], 2)),
                 (l("Cores", "Kjerner"), s.chip.cores.to_string()),
                 (l("Average", "Gjennomsnitt"), history_average(&s.cpu_hist)),
             ],
@@ -1426,14 +1432,14 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         (
             Tab::Gpu,
             if s.gpu.utilization.is_some() {
-                l("GPU utilization", "GPU-bruk")
+                l("GPU utilization", "GPU-utnyttelse")
             } else {
-                l("Utilization unavailable", "Bruk utilgjengelig")
+                l("Utilization unavailable", "Utnyttelse utilgjengelig")
             }
             .into(),
             s.gpu
                 .utilization
-                .map(|v| format!("{:.0} %", v))
+                .map(fmt_pct)
                 .unwrap_or("—".into()),
             [
                 (
@@ -1496,7 +1502,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             battery_context.into(),
             s.battery
                 .percent
-                .map(|v| format!("{:.0} %", v))
+                .map(fmt_pct)
                 .unwrap_or("—".into()),
             [
                 (l("Remaining", "Gjenstår"), remaining),
@@ -1504,7 +1510,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     crate::locale::text("Battery flow", "Batteristrøm"),
                     s.battery
                         .power_w
-                        .map(|w| format!("{:+.1} W", w))
+                        .map(fmt_signed_watts)
                         .unwrap_or("—".into()),
                 ),
                 (
@@ -1578,7 +1584,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                             BreakdownEntry::new(l("Cached", "Hurtigbufret"), s.mem.cached as f64, t::ink_dim(dark)),
                             BreakdownEntry::new(l("Free", "Ledig"), s.mem.free as f64, t::card_hi(dark)),
                         ],
-                        format!("{:.0}%", mem_pct),
+                        fmt_pct(mem_pct),
                         l("in use", "i bruk"),
                         fmt_bytes,
                         dark,
@@ -1718,7 +1724,7 @@ fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
 fn breakdown_watts(watts: f64) -> String {
     if watts <= 0. { "0 W".into() }
     else if watts < 0.001 { "<1 mW".into() }
-    else if watts < 1. { format!("{:.0} mW", watts * 1000.) }
+    else if watts < 1. { format!("{} mW", crate::locale::number(watts * 1000., 0)) }
     else { fmt_watts(watts) }
 }
 
@@ -1742,7 +1748,7 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
     }
     let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
     if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
-    donut_card(l("Power by App", "Effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("estimated", "beregnet"), breakdown_watts, dark)
+    donut_card(l("Power by App", "Effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("estimated", "anslått"), breakdown_watts, dark)
 }
 
 // ---------- metric tabs ----------
@@ -1776,13 +1782,13 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
         .gap_3()
         .child(hero(
             l("CPU usage", "CPU-bruk"),
-            format!("{:.0}%", s.cpu_pct),
+            fmt_pct(s.cpu_pct),
             format!(
                 "{} · {} P + {} E {}",
                 s.chip.brand,
                 s.chip.p_cores,
                 s.chip.e_cores,
-                l("cores", "kjerner")
+                crate::locale::plural((s.chip.p_cores + s.chip.e_cores) as u64, "core", "cores", "kjerne", "kjerner")
             ),
             &s.cpu_hist,
             m.accent(dark),
@@ -1791,8 +1797,10 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
                 (
                     l("Load · 1 / 5 / 15 min", "Last · 1 / 5 / 15 min").into(),
                     format!(
-                        "{:.2} / {:.2} / {:.2}",
-                        s.load_avg[0], s.load_avg[1], s.load_avg[2]
+                        "{} / {} / {}",
+                        crate::locale::number(s.load_avg[0], 2),
+                        crate::locale::number(s.load_avg[1], 2),
+                        crate::locale::number(s.load_avg[2], 2)
                     ),
                 ),
                 (
@@ -1821,7 +1829,7 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
                     app_row(
                         i + 1,
                         a,
-                        format!("{:.0}%", a.cpu_pct),
+                        fmt_pct(a.cpu_pct),
                         a.cpu_pct / max,
                         m.accent(dark),
                         dark,
@@ -1885,7 +1893,7 @@ fn temperature_display_caption(
         "{} {shown} {} {total} {}",
         l("Showing", "Viser"),
         l("of", "av"),
-        l("channels", "kanaler")
+        if total == 1 { l("channel", "kanal") } else { l("channels", "kanaler") }
     );
     if display.unavailable > 0 {
         caption.push_str(&format!(
@@ -1938,7 +1946,7 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
                                     if unit == "RPM" {
                                         format!("{:.0} RPM", v)
                                     } else {
-                                        format!("{:.1} °C", v)
+                                        fmt_celsius(v)
                                     }
                                 })
                                 .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()),
@@ -1977,14 +1985,14 @@ fn memory_tab(s: &Snapshot, dark: bool) -> Div {
         .gap_3()
         .child(hero(
             l("Memory", "Minne"),
-            format!("{:.0}%", mem_pct),
+            fmt_pct(mem_pct),
             format!("{} {} {}", fmt_bytes(s.mem.used as f64), l("used of", "brukt av"), fmt_bytes(s.mem.total as f64)),
             &s.mem_hist,
             m.accent(dark),
             dark,
             vec![
                 (l("App memory", "Appminne").into(), fmt_bytes(s.mem.app as f64)),
-                (l("Wired", "Reservert").into(), fmt_bytes(s.mem.wired as f64)),
+                (l("Wired", "Bundet").into(), fmt_bytes(s.mem.wired as f64)),
                 (l("Compressed", "Komprimert").into(), fmt_bytes(s.mem.compressed as f64)),
                 (l("Cached", "Hurtigbufret").into(), fmt_bytes(s.mem.cached as f64)),
                 (l("Swap used", "Brukt vekselminne").into(), fmt_bytes(s.mem.swap_used as f64)),
@@ -2305,8 +2313,8 @@ fn disk_detail(
         .child(section_header(l("Health and lifetime", "Helse og levetid"), "SMART", dark))
         .child(div().grid().grid_cols(3).gap_3()
             .child(stat_card("SMART", health.to_string(), None, dark))
-            .child(stat_card(l("Temperature", "Temperatur"), device.smart.temperature_c.map(|v| format!("{v:.1} °C")).unwrap_or_else(unknown), None, dark))
-            .child(stat_card(l("Endurance used", "Brukt skrivelevetid"), device.smart.endurance_used.map(|v| format!("{v}%")).unwrap_or_else(unknown), None, dark)))
+            .child(stat_card(l("Temperature", "Temperatur"), device.smart.temperature_c.map(fmt_celsius).unwrap_or_else(unknown), None, dark))
+            .child(stat_card(l("Endurance used", "Brukt skrivelevetid"), device.smart.endurance_used.map(|v| fmt_pct(v as f64)).unwrap_or_else(unknown), None, dark)))
         .child(div().grid().grid_cols(4).gap_3()
             .child(stat_card(l("Lifetime read", "Lest i levetiden"), bytes(device.smart.lifetime_read), None, dark))
             .child(stat_card(l("Lifetime write", "Skrevet i levetiden"), bytes(device.smart.lifetime_write), None, dark))
@@ -2449,7 +2457,7 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
         page = page
             .child(hero(
                 "GPU",
-                s.gpu.utilization.map(|u| format!("{:.0}%", u)).unwrap_or_else(|| "—".into()),
+                s.gpu.utilization.map(fmt_pct).unwrap_or_else(|| "—".into()),
                 if supported { "Apple GPU".into() } else { l("Not available on this Mac", "Ikke tilgjengelig på denne Macen").into() },
                 &s.gpu_hist,
                 m.accent(dark),
@@ -2505,7 +2513,7 @@ fn neural_section(s: &Snapshot, dark: bool) -> Div {
                 .gap_3()
                 .child(stat_card(
                     l("Utilization", "Utnyttelse"),
-                    s.neural.map(|v| format!("{:.0}%", v)).unwrap_or("—".into()),
+                    s.neural.map(fmt_pct).unwrap_or("—".into()),
                     Some(m.accent(dark)),
                     dark,
                 ))
@@ -2545,7 +2553,7 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
     let empty_history = Hist::default();
     let status = b.status();
     let main = if b.present {
-        b.percent.map(|p| format!("{:.0}%", p)).unwrap_or("—".into())
+        b.percent.map(fmt_pct).unwrap_or("—".into())
     } else {
         "—".into()
     };
@@ -2562,11 +2570,11 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             m.accent(dark),
             dark,
             vec![
-                (l("Capacity health", "Kapasitetshelse").into(), b.health.map(|h| format!("{:.0}%", h)).unwrap_or("—".into())),
+                (l("Capacity health", "Kapasitetshelse").into(), b.health.map(fmt_pct).unwrap_or("—".into())),
                 (l("Cycles", "Sykluser").into(), b.cycles.map(|c| c.to_string()).unwrap_or("—".into())),
-                (l("Temperature", "Temperatur").into(), b.temperature_c.map(|t| format!("{:.1} °C", t)).unwrap_or("—".into())),
-                (if b.is_charging { l("Until full · estimated", "Til fulladet · anslag") } else { l("Time left · estimated", "Tid igjen · anslag") }.into(),
-                    (if b.is_charging { b.minutes_to_full } else { b.minutes_remaining }).map(|m| format!("{} h {} min", m / 60, m % 60)).unwrap_or("—".into())),
+                (l("Temperature", "Temperatur").into(), b.temperature_c.map(fmt_celsius).unwrap_or("—".into())),
+                (if b.is_charging { l("Until full · estimated", "Til fulladet · anslått") } else { l("Time left · estimated", "Tid igjen · anslått") }.into(),
+                    (if b.is_charging { b.minutes_to_full } else { b.minutes_remaining }).map(fmt_hours_minutes).unwrap_or("—".into())),
             ],
             Some(100.0),
         )))
@@ -2605,8 +2613,8 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             .child(sub(l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS.")).text_color(t::ink_dim(dark)))
             .child(section_header(l("Electrical details", "Elektriske detaljer"), l("Live battery readings", "Aktuelle batterimålinger"), dark))
             .child(div().grid().grid_cols(4).gap_3()
-                .child(stat_card(l("Battery flow", "Batteristrøm"), b.power_w.map(|w| format!("{:+.1} W", w)).unwrap_or("—".into()), None, dark))
-                .child(stat_card(l("Voltage", "Spenning"), b.voltage_v.map(|v| format!("{:.2} V", v)).unwrap_or("—".into()), None, dark))
+                .child(stat_card(l("Battery flow", "Batteristrøm"), b.power_w.map(fmt_signed_watts).unwrap_or("—".into()), None, dark))
+                .child(stat_card(l("Voltage", "Spenning"), b.voltage_v.map(fmt_volts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Current", "Strømstyrke"), b.current_ma.map(|a| format!("{:+} mA", a)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Adapter rating", "Adapterkapasitet"), b.adapter_rating_w.map(|w| format!("{} W", w)).unwrap_or("—".into()), None, dark)))
             .child(sub(l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor.")).text_color(t::ink_dim(dark))))
@@ -2717,7 +2725,7 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
                             if s.audio.device_muted == Some(true) {
                                 l("Muted", "Dempet").into()
                             } else {
-                                vol.map(|v|format!("{:.0}%",v*100.)).unwrap_or_else(||l("Unavailable", "Utilgjengelig").into())
+                                vol.map(|v|fmt_pct(v as f64 * 100.)).unwrap_or_else(||l("Unavailable", "Utilgjengelig").into())
                             },
                         )),
                 )
@@ -2810,7 +2818,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                                 (l("Case", "Etui"), d.case_battery),
                             ] {
                                 if let Some(b) = value {
-                                    kind_line.push_str(&format!(" · {} {:.0}%", part, b));
+                                    kind_line.push_str(&format!(" · {} {}", part, fmt_pct(b)));
                                 }
                             }
                         }
@@ -2871,7 +2879,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                                     .text_sm()
                                     .child(
                                         d.battery
-                                            .map(|b| format!("{:.0}%", b))
+                                            .map(fmt_pct)
                                             .unwrap_or("—".into()),
                                     ),
                             )
@@ -3029,19 +3037,21 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!(
-                                        "{} {} · {} {}",
-                                        projects,
-                                        if projects == 1 {
-                                            l("project", "prosjekt")
-                                        } else {
-                                            l("projects", "prosjekter")
-                                        },
-                                        total,
-                                        if total == 1 {
-                                            l("server", "server")
-                                        } else {
-                                            l("servers", "servere")
-                                        },
+                                        "{} · {}",
+                                        crate::locale::count(
+                                            projects as u64,
+                                            "project",
+                                            "projects",
+                                            "prosjekt",
+                                            "prosjekter"
+                                        ),
+                                        crate::locale::count(
+                                            total as u64,
+                                            "server",
+                                            "servers",
+                                            "server",
+                                            "servere"
+                                        ),
                                     )),
                             )
                             .child(
@@ -3070,15 +3080,7 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         )
         .child(section_header(
             l("Projects", "Prosjekter"),
-            &format!(
-                "{} {}",
-                total,
-                if total == 1 {
-                    l("server", "server")
-                } else {
-                    l("servers", "servere")
-                }
-            ),
+            &crate::locale::count(total as u64, "server", "servers", "server", "servere"),
             dark,
         ));
     for g in &s.projects {
@@ -3121,14 +3123,12 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                                 .flex_shrink_0()
                                 .text_xs()
                                 .text_color(t::ink_dim(dark))
-                                .child(format!(
-                                    "{} {}",
-                                    server_count,
-                                    if server_count == 1 {
-                                        l("server", "server")
-                                    } else {
-                                        l("servers", "servere")
-                                    }
+                                .child(crate::locale::count(
+                                    server_count as u64,
+                                    "server",
+                                    "servers",
+                                    "server",
+                                    "servere",
                                 )),
                         ),
                 )

@@ -38,6 +38,11 @@ objc2-user-notifications = { version = "0.3.2", default-features = false, featur
     "UNNotificationTrigger", "UNUserNotificationCenter", "block2",
 ] }
 
+[dev-dependencies]
+# Source-level language-isolation guard in src/locale_guard.rs.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full", "visit"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
