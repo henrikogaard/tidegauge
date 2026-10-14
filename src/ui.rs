@@ -389,6 +389,34 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
                 stroke.line_to(point(px(x0), px(y0 - thick)));
             }
             window.paint_path(stroke, color);
+
+            // High water: the highest sample in view, as a dashed line.
+            if data_max > 0. {
+                let yh = y_of(data_max);
+                let end = ox + w - 2.0;
+                let mut dash = Path::new(point(px(ox + 2.0), px(yh)));
+                let mut x = ox + 2.0;
+                while x < end {
+                    let x1 = (x + 4.0).min(end);
+                    dash.move_to(point(px(x), px(yh - 0.5)));
+                    dash.line_to(point(px(x1), px(yh - 0.5)));
+                    dash.line_to(point(px(x1), px(yh + 0.5)));
+                    dash.line_to(point(px(x), px(yh + 0.5)));
+                    dash.line_to(point(px(x), px(yh - 0.5)));
+                    x += 8.0;
+                }
+                window.paint_path(dash, color.opacity(0.6));
+            }
+            // Now: a dot on the newest sample.
+            if let Some(i) = tail.iter().rposition(|v| v.is_finite()) {
+                let (cx, cy, r) = (ox + 2.0 + i as f32 * px_per, y_of(tail[i]), 3.0f32);
+                let mut dot = Path::new(point(px(cx + r), px(cy)));
+                for k in 1..=8 {
+                    let a = k as f32 * std::f32::consts::TAU / 8.0;
+                    dot.line_to(point(px(cx + r * a.cos()), px(cy + r * a.sin())));
+                }
+                window.paint_path(dot, color);
+            }
         },
     )
     .w_full()
@@ -411,54 +439,115 @@ fn usage_bar(frac: f64, color: Hsla) -> Div {
         )
 }
 
-/// Ranked "app | metric" row: icon, name + "N processes", bar, value.
-fn app_row(rank: usize, app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) -> Div {
+/// App row: icon, name (+ process count when more than one), value, with a
+/// quiet fill behind the row showing its share of the busiest app.
+fn app_row(app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) -> Div {
     div()
+        .relative()
         .flex()
         .items_center()
         .gap_2()
-        .py(px(5.))
-        .px_4()
-        .rounded_md()
+        .h(px(36.))
+        .px_3()
+        .mx_2()
+        .rounded(px(7.))
         .child(
             div()
-                .w(px(16.))
-                .text_xs()
-                .text_color(t::ink_dim(dark))
-                .child(format!("{}", rank)),
+                .absolute()
+                .left_0()
+                .top(px(4.))
+                .bottom(px(4.))
+                .rounded(px(6.))
+                .w(relative(frac.clamp(0.0, 1.0) as f32))
+                .bg(color.opacity(0.14)),
         )
         .child(app_icon(app, dark))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .whitespace_nowrap()
-                        .overflow_hidden()
-                        .child(app.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(t::ink_dim(dark))
-                        .child(if app.pids.len() > 1 {
-                            format!("{} {}", app.pids.len(), l("processes", "prosesser"))
-                        } else {
-                            l("1 process", "1 prosess").into()
-                        }),
-                ),
+                .flex()
+                .items_baseline()
+                .gap_2()
+                .child(div().text_size(px(13.)).truncate().child(app.name.clone()))
+                .when(app.pids.len() > 1, |d| {
+                    d.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(t::ink_dim(dark))
+                            .child(format!("{} {}", app.pids.len(), l("processes", "prosesser"))),
+                    )
+                }),
         )
-        .child(usage_bar(frac, color))
         .child(
             div()
                 .w(px(88.))
-                .text_right()
-                .text_sm()
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_size(px(13.))
+                .font_weight(FontWeight::MEDIUM)
                 .child(value),
         )
+}
+
+/// The rest of a ranked list, as one line that opens the full sortable table.
+fn more_apps(rest: usize, sort_cpu: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .px_4()
+        .pt_1()
+        .child(
+            sub(if rest == 0 {
+                String::new()
+            } else {
+                format!("{rest} {}", l("more apps", "flere apper"))
+            })
+            .text_color(t::ink_dim(dark)),
+        )
+        .child(crate::controls::button(
+            format!("more-apps-{sort_cpu}"),
+            l("Open Apps & processes", "Åpne Apper og prosesser"),
+            false,
+            dark,
+            move |_, cx| {
+                this.update(cx, |v, _| {
+                    v.process_sort_cpu = sort_cpu;
+                    v.process_order.clear();
+                });
+                crate::process_panel::open(&this, cx);
+            },
+        ))
+}
+
+/// Top apps above zero for a metric tab: at most ten rows, then `more_apps`.
+fn top_apps<'a>(
+    rows: impl Iterator<Item = &'a AppGroup>,
+    value: impl Fn(&AppGroup) -> (String, f64),
+    max: f64,
+    color: Hsla,
+    sort_cpu: bool,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> Div {
+    let active: Vec<&AppGroup> = rows.filter(|a| value(a).1 > 0.).collect();
+    let mut list = card(dark).p_0().py_2().gap_0();
+    for app in active.iter().take(10) {
+        let (text, raw) = value(app);
+        list = list.child(app_row(app, text, raw / max.max(1e-9), color, dark));
+    }
+    if active.is_empty() {
+        list = list.child(
+            div().px_4().py_2().child(
+                sub(l("No app is using this right now.", "Ingen app bruker dette akkurat nå."))
+                    .text_color(t::ink_dim(dark)),
+            ),
+        );
+    }
+    list.child(more_apps(active.len().saturating_sub(10), sort_cpu, dark, this))
 }
 
 pub(crate) fn card(dark: bool) -> Div {
@@ -535,6 +624,7 @@ fn hero(
                                     .text_xs()
                                     .text_color(t::ink_dim(dark))
                                     .child(l("Older", "Eldre"))
+                                    .child(l("- - high water in view", "- - høyvann i visningen"))
                                     .child(l("Now", "Nå")),
                             ),
                     )
@@ -1025,10 +1115,10 @@ impl TideGaugeView {
         let s = &self.snap;
         match self.tab {
             Tab::Overview => overview(s, dark, this).into_any_element(),
-            Tab::Cpu => cpu_tab(s, dark).into_any_element(),
-            Tab::Memory => memory_tab(s, dark).into_any_element(),
-            Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), cx).into_any_element(),
-            Tab::Network => network_tab(s, dark).into_any_element(),
+            Tab::Cpu => cpu_tab(s, dark, this).into_any_element(),
+            Tab::Memory => memory_tab(s, dark, this).into_any_element(),
+            Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), this, cx).into_any_element(),
+            Tab::Network => network_tab(s, dark, this).into_any_element(),
             Tab::Gpu => gpu_tab(s, dark).into_any_element(),
             Tab::Battery => battery_tab(s, dark).into_any_element(),
             Tab::Sound => div().flex().flex_col().gap_3()
@@ -1655,16 +1745,16 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         l("Memory by Type", "Minne etter type"),
                         Tab::Memory,
                         vec![
-                            BreakdownEntry::new(l("App", "App"), s.mem.app as f64, Metric::Cpu.accent(dark)),
+                            BreakdownEntry::new(l("App", "App"), s.mem.app as f64, Metric::Memory.accent(dark)),
                             BreakdownEntry::new(
                                 l("Wired", "Bundet"),
                                 s.mem.wired as f64,
-                                Metric::Memory.accent(dark),
+                                Metric::Memory.accent(dark).opacity(0.62),
                             ),
                             BreakdownEntry::new(
                                 l("Compressed", "Komprimert"),
                                 s.mem.compressed as f64,
-                                Metric::Gpu.accent(dark),
+                                Metric::Memory.accent(dark).opacity(0.36),
                             ),
                             BreakdownEntry::new(l("Cached", "Hurtigbufret"), s.mem.cached as f64, t::ink_dim(dark)),
                             BreakdownEntry::new(l("Free", "Ledig"), s.mem.free as f64, t::card_hi(dark)),
@@ -1691,7 +1781,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
 
 /// Draw a ring from convex quadrilaterals. GPUI triangulates filled paths
 /// as a fan, so a concave wedge would incorrectly paint across the center.
-fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
+fn donut(slices: &[(f64, Hsla)], size: f32, empty: Hsla) -> Canvas<()> {
     let slices = slices.to_vec();
     canvas(
         |_, _, _| (),
@@ -1708,7 +1798,7 @@ fn donut(slices: &[(f64, Hsla)], size: f32) -> Canvas<()> {
             let ring = if total > 0. {
                 slices.clone()
             } else {
-                vec![(1., t::hex(0x8e8e93))]
+                vec![(1., empty)]
             };
             let total = if total > 0. { total } else { 1. };
             let mut angle = -std::f64::consts::FRAC_PI_2;
@@ -1782,7 +1872,7 @@ fn donut_card(
                 .text_color(tab.metric().unwrap().accent(dark)).child(label.to_string())))
         .child(div().flex().items_center().gap(px(16.))
             .child(div().relative().size(px(92.)).flex_shrink_0()
-                .child(donut(&chart, 92.))
+                .child(donut(&chart, 92., t::card_hi(dark)))
                 .child(div().absolute().inset_0().flex().flex_col().items_center().justify_center()
                     .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(center))
                     .child(div().text_size(px(9.)).text_color(t::ink_dim(dark)).child(center_label.to_string()))))
@@ -1838,25 +1928,7 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
 
 // ---------- metric tabs ----------
 
-fn apps_rows<'a>(
-    s: &Snapshot,
-    dark: bool,
-    accent: Hsla,
-    val: impl Fn(&AppGroup) -> (String, f64),
-    max_v: f64,
-) -> Vec<Div> {
-    s.apps
-        .iter()
-        .take(30)
-        .enumerate()
-        .map(|(i, a)| {
-            let (v, raw) = val(a);
-            app_row(i + 1, a, v, raw / max_v.max(1e-6), accent, dark)
-        })
-        .collect()
-}
-
-fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
+fn cpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Cpu;
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
     rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap());
@@ -1904,23 +1976,7 @@ fn cpu_tab(s: &Snapshot, dark: bool) -> Div {
             l("CPU · 100% per core", "CPU · 100 % per kjerne"),
             dark,
         ))
-        .child(list_card(
-            rows.iter()
-                .take(30)
-                .enumerate()
-                .map(|(i, a)| {
-                    app_row(
-                        i + 1,
-                        a,
-                        format!("{:.0}%", a.cpu_pct),
-                        a.cpu_pct / max,
-                        m.accent(dark),
-                        dark,
-                    )
-                })
-                .collect(),
-            dark,
-        ))
+        .child(top_apps(rows.iter().copied(), |a| (format!("{:.0}%", a.cpu_pct), a.cpu_pct), max, m.accent(dark), true, dark, this))
         .child(sensor_panel(s, dark))
 }
 
@@ -2056,7 +2112,7 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
         .child(sub(l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll.")).text_color(t::ink_dim(dark)))
 }
 
-fn memory_tab(s: &Snapshot, dark: bool) -> Div {
+fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Memory;
     let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
@@ -2083,16 +2139,7 @@ fn memory_tab(s: &Snapshot, dark: bool) -> Div {
             Some(100.0),
         ))
         .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Memory", "Minne"), dark))
-        .child(list_card(
-            rows.iter()
-                .take(30)
-                .enumerate()
-                .map(|(i, a)| {
-                    app_row(i + 1, a, fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64 / max, m.accent(dark), dark)
-                })
-                .collect(),
-            dark,
-        ))
+        .child(top_apps(rows.iter().copied(), |a| (fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64), max, m.accent(dark), false, dark, this))
         .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Utilization is not memory pressure.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Utnyttelse er ikke minnepress.")).text_color(t::ink_dim(dark)))
 }
 
@@ -2100,6 +2147,7 @@ fn disk_tab(
     s: &Snapshot,
     dark: bool,
     selected: Option<&str>,
+    this: Entity<TideGaugeView>,
     cx: &mut Context<TideGaugeView>,
 ) -> Div {
     use crate::locale::text as l;
@@ -2180,17 +2228,7 @@ fn disk_tab(
         .child(sub(l("Inventory refreshes every 30 seconds. Virtual disk images are omitted. No mount, eject, erase, or SMART-setting operations are performed.", "Oversikten oppdateres hvert 30. sekund. Virtuelle diskbilder utelates. Ingen montering, utmating, sletting eller endring av SMART-innstillinger utføres.")).text_color(t::ink_dim(dark)))
         .child(section_header(l("All apps · all devices", "Alle apper · alle enheter"), l("Disk activity", "Diskaktivitet"), dark))
         .child(sub(l("App activity below is system-wide, not attributed to the selected drive.", "Appaktiviteten nedenfor gjelder hele systemet, ikke bare den valgte disken.")).text_color(t::ink_dim(dark)))
-        .child(list_card(
-            rows.iter()
-                .take(30)
-                .enumerate()
-                .map(|(i, a)| {
-                    let r = a.disk_read_rate + a.disk_write_rate;
-                    app_row(i + 1, a, fmt_rate(r), r / max, m.accent(dark), dark)
-                })
-                .collect(),
-            dark,
-        ))
+        .child(top_apps(rows.iter().copied(), |a| { let r = a.disk_read_rate + a.disk_write_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
 }
 
 fn disk_detail(
@@ -2406,7 +2444,7 @@ fn disk_detail(
         .child(sub(if device.smart.extended { l("Extended source: read-only SMART log. Endurance used is a wear indicator, not a health score; it can exceed 100%.", "Utvidet kilde: skrivebeskyttet SMART-logg. Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore; den kan overstige 100 %.") } else { l("SMART status source: macOS. Extended SMART data is unavailable without a supported local reader and device. Missing data never means healthy.", "Kilde for SMART-status: macOS. Utvidede SMART-data er utilgjengelige uten en støttet lokal leser og enhet. Manglende data betyr aldri frisk.") }).text_color(t::ink_dim(dark)))
 }
 
-fn network_tab(s: &Snapshot, dark: bool) -> Div {
+fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Network;
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
     rows.sort_by(|a, b| {
@@ -2457,17 +2495,7 @@ fn network_tab(s: &Snapshot, dark: bool) -> Div {
             l("Download + upload", "Nedlasting + opplasting"),
             dark,
         ))
-        .child(list_card(
-            rows.iter()
-                .take(30)
-                .enumerate()
-                .map(|(i, a)| {
-                    let r = a.net_in_rate + a.net_out_rate;
-                    app_row(i + 1, a, fmt_rate(r), r / max, m.accent(dark), dark)
-                })
-                .collect(),
-            dark,
-        ))
+        .child(top_apps(rows.iter().copied(), |a| { let r = a.net_in_rate + a.net_out_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
         .child(
             sub(format!(
                 "{}: {} / {}",
@@ -2676,9 +2704,8 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                 rows.sort_by(|a, b| b.power_w.partial_cmp(&a.power_w).unwrap());
                 let max = rows.first().map(|a| a.power_w).unwrap_or(1.0).max(0.01);
                 rows.iter()
-                    .take(30)
-                    .enumerate()
-                    .map(|(i, a)| app_row(i + 1, a, fmt_watts(a.power_w), a.power_w / max, m.accent(dark), dark))
+                    .take(10)
+                    .map(|a| app_row(a, fmt_watts(a.power_w), a.power_w / max, m.accent(dark), dark))
                     .collect()
             },
             dark,
