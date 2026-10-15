@@ -46,14 +46,14 @@ fn control_with(
             spec.aria.unwrap_or_else(|| spec.label.clone()),
         ))
         .tab_index(spec.tab_index)
-        .h(px(28.))
+        .h(t::CONTROL_H)
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .px_3()
         .whitespace_nowrap()
-        .text_size(px(12.))
+        .text_size(t::TEXT_BODY)
         .text_color(if spec.selected {
             spec.accent
         } else {
@@ -70,7 +70,7 @@ fn control_with(
     }
     if spec.framed {
         base = base
-            .rounded(px(8.))
+            .rounded(t::RADIUS_CONTROL)
             .border_1()
             .border_color(if spec.selected {
                 spec.accent
@@ -193,7 +193,7 @@ pub fn segment_group(id: impl Into<String>, label: impl Into<String>, dark: bool
         .items_center()
         .border_1()
         .border_color(t::line(dark))
-        .rounded(px(8.))
+        .rounded(t::RADIUS_CONTROL)
         .overflow_hidden()
 }
 
@@ -206,7 +206,7 @@ pub fn stepper_group(id: impl Into<String>, label: impl Into<String>, dark: bool
         .items_center()
         .border_1()
         .border_color(t::line(dark))
-        .rounded(px(8.))
+        .rounded(t::RADIUS_CONTROL)
         .overflow_hidden()
 }
 
@@ -227,7 +227,7 @@ pub fn step_button(
 pub fn step_value(value: String, dark: bool) -> Div {
     div()
         .min_w(px(56.))
-        .h(px(28.))
+        .h(t::CONTROL_H)
         .flex()
         .items_center()
         .justify_center()

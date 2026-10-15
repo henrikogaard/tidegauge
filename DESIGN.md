@@ -43,14 +43,25 @@ The soft metric tone uses 16% alpha. Chart fills use lower opacity. Selected nav
 - **Navigation**: horizontal top tab bar with all 11 tabs including Overview, metric icon + label, selected tab = quiet metric-tinted surface. Tab/Shift-Tab moves keyboard focus; Enter/Space opens a tab or metric card.
 - **Footer**: Settings icon and label, live app and process counts, and the Prosesser and Verktøy entry buttons, on the same uninterrupted canvas. No divider or decorative app-logo tile.
 - **Cards**: 12 px radius, `card` fill, 1 px `line` border.
-- **Overview**: six 208 px metric cards in three columns (154 px in the user-toggleable `compact_dashboard` mode), 12 px radius, 16 px gaps; 34 px headline with a separate unit, three supporting readings, and a 38 px tinted strip holding a filled sparkline. Clicking a card opens its detail tab.
+- **Overview**: six 208 px metric cards in three columns (154 px in the user-toggleable `compact_dashboard` mode), 12 px radius, 16 px gaps (8 px in compact mode); 34 px headline with a separate unit, three supporting readings, and a 38 px tinted strip holding a filled sparkline. Clicking a card opens its detail tab.
 - **Hero card**: caption, 42 px number, sub-caption, filled area chart (130 px), footer stat triplets.
 - **App rows**: rank, icon (rounded tile or cached app icon), name + `N processes`, usage bar, right-aligned value.
 - **Donuts**: convex ring segments (inner radius 0.70), 92 px chart with a center value and subtitle, legend beside the chart with actual amounts and app icons. App breakdowns show the top four entries and Other. Donut cards pad 16 px with 12 px gaps.
-- **Fonts**: `.AppleSystemUIFont`; captions uppercase 10 px semibold, body 12–14 px, hero number 42 px bold. Explanatory sentences and honesty disclaimers stay at 12 px.
-- **Spacing**: 4/8/12/16 grid; overview padding 18–20 px; lists always expanded.
+- **Fonts**: `.AppleSystemUIFont`; captions uppercase 10 px semibold, body 12–14 px, page titles 20 px, hero number 42 px bold (sizes are the Tokens below). Explanatory sentences and honesty disclaimers stay at 12 px.
+- **Spacing**: 4/8/12/16/20/24 grid; 20 px page gutter; lists always expanded.
 
 Overview sparklines share the detail-tab area chart and show the same recent samples. CPU/GPU averages and peaks cover the current session; network totals are interface counters since boot. Unavailable hardware readings show a dash. Per-app power remains labeled as estimated.
+
+## Tokens
+
+Typography, corner radii and layout spacing come from named constants in `src/theme.rs`; raw `px(..)` literals for those are rejected by a unit test. Chart geometry, icon sizes and column widths stay literal.
+
+| Group | Tokens |
+|---|---|
+| Text | `TEXT_CAPTION` 10, `TEXT_SMALL` 11, `TEXT_BODY` 12, `TEXT_ROW` 13, `TEXT_EMPH` 14, `TEXT_TITLE` 20, `TEXT_STAT` 34, `TEXT_HERO` 42 |
+| Radius | `RADIUS_BAR` 2, `RADIUS_CHIP` 6 (badges, icon tiles, row-highlight bars), `RADIUS_CONTROL` 8 (controls, list rows, toasts, notices), `RADIUS_CARD` 12 |
+| Space | `SPACE_1` 4, `SPACE_2` 8, `SPACE_3` 12, `SPACE_4` 16, `SPACE_5` 20 (page gutter), `SPACE_6` 24; `SECTION_GAP` = `SPACE_4` between detail-page sections |
+| Height | `CONTROL_H` 28, `ROW_H` 36 |
 
 ## Detail-page template
 

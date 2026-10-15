@@ -271,7 +271,7 @@ fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl In
     let color = if toast.failed { t::warn(dark) } else { t::ok(dark) };
     div()
         .absolute()
-        .bottom(px(18.))
+        .bottom(t::SPACE_4)
         .left_0()
         .right_0()
         .flex()
@@ -288,11 +288,11 @@ fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl In
                 .pl_3()
                 .pr_1()
                 .py_1()
-                .rounded(px(10.))
+                .rounded(t::RADIUS_CONTROL)
                 .border_1()
                 .border_color(t::line(dark))
                 .bg(t::card_hi(dark))
-                .text_size(px(12.))
+                .text_size(t::TEXT_BODY)
                 .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
                 .child(div().min_w_0().child(toast.text.clone()))
                 .child(
@@ -306,7 +306,7 @@ fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl In
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(6.))
+                        .rounded(t::RADIUS_CHIP)
                         .cursor_pointer()
                         .text_color(t::ink_dim(dark))
                         .hover(|d| d.bg(t::card(dark)))
@@ -327,7 +327,7 @@ fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl In
 /// and disclaimers use `sub()` at 12 px instead.
 pub(crate) fn caption(text: &str, dark: bool) -> Div {
     div()
-        .text_size(px(10.))
+        .text_size(t::TEXT_CAPTION)
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(t::ink_dim(dark))
         .child(text.to_uppercase())
@@ -529,17 +529,17 @@ fn app_row(app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) ->
         .flex()
         .items_center()
         .gap_2()
-        .h(px(36.))
+        .h(t::ROW_H)
         .px_3()
         .mx_2()
-        .rounded(px(7.))
+        .rounded(t::RADIUS_CONTROL)
         .child(
             div()
                 .absolute()
                 .left_0()
-                .top(px(4.))
-                .bottom(px(4.))
-                .rounded(px(6.))
+                .top(t::SPACE_1)
+                .bottom(t::SPACE_1)
+                .rounded(t::RADIUS_CHIP)
                 .w(relative(frac.clamp(0.0, 1.0) as f32))
                 .bg(color.opacity(0.14)),
         )
@@ -551,7 +551,7 @@ fn app_row(app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) ->
                 .flex()
                 .items_baseline()
                 .gap_2()
-                .child(div().text_size(px(13.)).truncate().child(app.name.clone()))
+                .child(div().text_size(t::TEXT_ROW).truncate().child(app.name.clone()))
                 .when(app.pids.len() > 1, |d| {
                     d.child(
                         div()
@@ -568,7 +568,7 @@ fn app_row(app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) ->
                 .flex_shrink_0()
                 .flex()
                 .justify_end()
-                .text_size(px(13.))
+                .text_size(t::TEXT_ROW)
                 .font_weight(FontWeight::MEDIUM)
                 .child(value),
         )
@@ -635,7 +635,7 @@ fn top_apps<'a>(
 pub(crate) fn card(dark: bool) -> Div {
     div()
         .bg(t::card(dark))
-        .rounded(px(12.))
+        .rounded(t::RADIUS_CARD)
         .border_1()
         .border_color(t::line(dark))
         .p_4()
@@ -666,14 +666,14 @@ fn hero(
                         .flex_shrink_0()
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(t::TEXT_CAPTION)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(color)
                                 .child(label.to_uppercase()),
                         )
                         .child(
                             div()
-                                .text_size(px(42.))
+                                .text_size(t::TEXT_HERO)
                                 .font_weight(FontWeight::BOLD)
                                 .child(value),
                         )
@@ -723,7 +723,7 @@ fn hero(
                             .min_w_0()
                             .child(
                                 div()
-                                    .text_size(px(10.))
+                                    .text_size(t::TEXT_CAPTION)
                                     .text_color(t::ink_dim(dark))
                                     .child(k),
                             )
@@ -754,7 +754,7 @@ pub(crate) fn section_header(left: &str, right: &str, dark: bool) -> Div {
         .child(caption(left, dark))
         .child(
             div()
-                .text_size(px(10.))
+                .text_size(t::TEXT_CAPTION)
                 .text_color(t::ink_dim(dark))
                 .child(right.to_string()),
         )
@@ -881,7 +881,7 @@ fn sidebar_item(
             .size(px(8.))
             .mx(px(3.))
             .flex_shrink_0()
-            .rounded(px(2.))
+            .rounded(t::RADIUS_BAR)
             .bg(if available { accent } else { accent.opacity(0.4) })
             .into_any_element()
     } else {
@@ -900,16 +900,16 @@ fn sidebar_item(
         .aria_label(to.title())
         .aria_selected(selected)
         .tab_index(tab_index)
-        .h(px(28.))
+        .h(t::CONTROL_H)
         .flex_shrink_0()
-        .px(px(8.))
+        .px(t::SPACE_2)
         .flex()
         .items_center()
-        .gap(px(8.))
-        .rounded(px(7.))
+        .gap(t::SPACE_2)
+        .rounded(t::RADIUS_CONTROL)
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .text_size(px(13.))
+        .text_size(t::TEXT_ROW)
         .cursor_pointer()
         .text_color(if available || selected { t::ink(dark) } else { t::ink_dim(dark) })
         .when(selected, |d| {
@@ -924,7 +924,7 @@ fn sidebar_item(
             d.child(
                 div()
                     .flex_shrink_0()
-                    .text_size(px(11.))
+                    .text_size(t::TEXT_SMALL)
                     .font_weight(FontWeight::NORMAL)
                     .text_color(if selected && to.tinted() { accent } else { t::ink_dim(dark) })
                     .child(reading),
@@ -942,10 +942,10 @@ fn sidebar_item(
 
 fn sidebar_group(label: &str, dark: bool) -> Div {
     div()
-        .px(px(8.))
-        .pt(px(12.))
-        .pb(px(4.))
-        .text_size(px(10.))
+        .px(t::SPACE_2)
+        .pt(t::SPACE_3)
+        .pb(t::SPACE_1)
+        .text_size(t::TEXT_CAPTION)
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(t::ink_dim(dark))
         .child(label.to_uppercase())
@@ -1015,8 +1015,8 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .px(px(10.))
-                .pb(px(8.))
+                .px(t::SPACE_2)
+                .pb(t::SPACE_2)
                 .flex()
                 .flex_col()
                 .gap(px(1.))
@@ -1025,8 +1025,8 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
         .child(
             div()
                 .flex_shrink_0()
-                .px(px(10.))
-                .py(px(8.))
+                .px(t::SPACE_2)
+                .py(t::SPACE_2)
                 .border_t_1()
                 .border_color(t::line(dark))
                 .child(sidebar_item(
@@ -1074,13 +1074,13 @@ impl Render for TideGaugeView {
         let header = div()
             .h(px(52.))
             .flex_shrink_0()
-            .px(px(20.))
+            .px(t::SPACE_5)
             .flex()
             .items_center()
             .gap_3()
             .child(
                 div()
-                    .text_size(px(20.))
+                    .text_size(t::TEXT_TITLE)
                     .font_weight(FontWeight::BOLD)
                     .text_color(if here.tinted() { accent } else { t::ink(dark) })
                     .child(here.title()),
@@ -1088,7 +1088,7 @@ impl Render for TideGaugeView {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(t::TEXT_BODY)
                     .text_color(t::ink_dim(dark))
                     .child(if here == Destination::Settings {
                         l("Saved on this Mac", "Lagres på denne Macen").to_string()
@@ -1107,11 +1107,11 @@ impl Render for TideGaugeView {
             .h_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .px(px(20.))
-            .pb(px(16.))
+            .px(t::SPACE_5)
+            .pb(t::SPACE_4)
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(t::SECTION_GAP)
             .child(self.render_tab(dark, this.clone(), cx));
 
         div()
@@ -1218,14 +1218,14 @@ impl TideGaugeView {
             Tab::Network => network_tab(s, dark, this).into_any_element(),
             Tab::Gpu => gpu_tab(s, dark).into_any_element(),
             Tab::Battery => battery_tab(s, dark).into_any_element(),
-            Tab::Sound => div().flex().flex_col().gap_3()
+            Tab::Sound => div().flex().flex_col().gap(t::SECTION_GAP)
                 .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
                 .child(sound_tab(s, dark, this, self.audio_pending)).into_any_element(),
             Tab::Bluetooth => bt_tab(s, dark).into_any_element(),
             Tab::Projects => div()
                 .flex()
                 .flex_col()
-                .gap_3()
+                .gap(t::SECTION_GAP)
                 .when_some(self.project_error.as_ref(), |d, error| {
                     d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed {t::warn(dark)} else {t::ink_dim(dark)})))
                 })
@@ -1341,7 +1341,7 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
         localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
     };
     let settings = Settings::load();
-    let mut panel = div().flex().flex_col().gap_3();
+    let mut panel = div().flex().flex_col().gap(t::SECTION_GAP);
     if let Some(error) = error {
         panel = panel.child(
             div()
@@ -1523,9 +1523,9 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
 fn metric_heading(tab: Tab, dark: bool) -> Div {
     let color = tab.metric().map(|m| m.accent(dark)).unwrap_or_else(|| t::accent(dark));
     div().flex().items_center().gap_2()
-        .child(div().size(px(22.)).rounded(px(7.)).bg(color.opacity(0.14))
+        .child(div().size(px(22.)).rounded(t::RADIUS_CONTROL).bg(color.opacity(0.14))
             .flex().items_center().justify_center().child(icon_img(tab.icon(), 13., color)))
-        .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM)
+        .child(div().text_size(t::TEXT_BODY).font_weight(FontWeight::MEDIUM)
             .text_color(color).child(tab.label()))
 }
 
@@ -1566,7 +1566,7 @@ fn overview_card(
         .min_w_0()
         .h(px(if compact { 154. } else { 208. }))
         .p_4()
-        .rounded(px(12.))
+        .rounded(t::RADIUS_CARD)
         .bg(t::card(dark))
         .flex()
         .flex_col()
@@ -1585,7 +1585,7 @@ fn overview_card(
             div()
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(t::TEXT_SMALL)
                         .line_height(px(16.))
                         .text_color(t::ink_dim(dark))
                         .child(context),
@@ -1594,17 +1594,17 @@ fn overview_card(
                     div()
                         .flex()
                         .items_baseline()
-                        .gap(px(6.))
+                        .gap(t::SPACE_2)
                         .child(
                             div()
-                                .text_size(px(34.))
+                                .text_size(t::TEXT_STAT)
                                 .line_height(px(42.))
                                 .font_weight(FontWeight::BOLD)
                                 .child(number.to_string()),
                         )
                         .child(
                             div()
-                                .text_size(px(15.))
+                                .text_size(t::TEXT_EMPH)
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(t::ink_dim(dark))
                                 .child(unit.to_string()),
@@ -1622,14 +1622,14 @@ fn overview_card(
                             .min_w_0()
                             .child(
                                 div()
-                                    .text_size(px(10.))
+                                    .text_size(t::TEXT_CAPTION)
                                     .line_height(px(16.))
                                     .text_color(t::ink_dim(dark))
                                     .child(label.to_string()),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(t::TEXT_BODY)
                                     .line_height(px(17.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(value),
@@ -1641,9 +1641,9 @@ fn overview_card(
             d.child(
                 div()
                     .h(px(38.))
-                    .rounded(px(8.))
-                    .px(px(6.))
-                    .py(px(5.))
+                    .rounded(t::RADIUS_CONTROL)
+                    .px(t::SPACE_2)
+                    .py(t::SPACE_1)
                     .bg(color.opacity(0.09))
                     .child(area_chart(&hist.pts, 28.0, color, max)),
             )
@@ -1798,7 +1798,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(if settings.compact_dashboard { 10. } else { 16. }))
+        .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
         .when_some(crate::agents_panel::plan_strip(&s.plans, dark, this.clone()), |d, strip| d.child(strip))
         .when(crate::keepawake::status().active, |d| {
             d.child(crate::controls::keep_awake(dark, this.clone()))
@@ -1823,7 +1823,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             div()
                 .grid()
                 .grid_cols(3)
-                .gap(px(if settings.compact_dashboard { 10. } else { 16. }))
+                .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
                 .children(
                     cards
                         .into_iter()
@@ -1838,7 +1838,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 div()
                     .grid()
                     .grid_cols(3)
-                    .gap(px(16.))
+                    .gap(t::SPACE_4)
                     .when(favorites.iter().any(|key| key == "memory"), |row| row.child(donut_card(
                         l("Memory by Type", "Minne etter type"),
                         Tab::Memory,
@@ -1868,7 +1868,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         })
         .child(
             div()
-                .text_size(px(10.))
+                .text_size(t::TEXT_CAPTION)
                 .text_color(t::ink_dim(dark))
                 .child(l(
                 "¹ Network totals since boot. Averages and peaks cover this session.",
@@ -1953,27 +1953,27 @@ fn donut_card(
 ) -> Div {
     let chart = slices.iter().map(|s| (s.value, s.color)).collect::<Vec<_>>();
     let legend = slices.iter().map(|entry| {
-        div().flex().items_center().gap(px(6.)).h(px(23.))
+        div().flex().items_center().gap(t::SPACE_2).h(px(23.))
             .child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(entry.color))
             .when_some(entry.app.as_ref(), |d, app| d.child(app_icon(app, dark)))
-            .child(div().flex_1().min_w_0().text_size(px(11.)).truncate().child(entry.name.clone()))
-            .child(div().flex_shrink_0().text_size(px(11.)).text_color(t::ink_dim(dark))
+            .child(div().flex_1().min_w_0().text_size(t::TEXT_SMALL).truncate().child(entry.name.clone()))
+            .child(div().flex_shrink_0().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark))
                 .child(format(entry.value)))
     }).collect::<Vec<_>>();
-    div().min_w_0().h(px(184.)).rounded(px(12.)).bg(t::card(dark)).p(px(16.))
-        .flex().flex_col().gap(px(12.))
+    div().min_w_0().h(px(184.)).rounded(t::RADIUS_CARD).bg(t::card(dark)).p(t::SPACE_4)
+        .flex().flex_col().gap(t::SPACE_3)
         .child(div().flex().items_center().gap_2()
-            .child(div().size(px(22.)).rounded(px(7.)).bg(tab.metric().unwrap().soft(dark))
+            .child(div().size(px(22.)).rounded(t::RADIUS_CONTROL).bg(tab.metric().unwrap().soft(dark))
                 .flex().items_center().justify_center()
                 .child(icon_img(tab.icon(), 13., tab.metric().unwrap().accent(dark))))
-            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM)
+            .child(div().text_size(t::TEXT_BODY).font_weight(FontWeight::MEDIUM)
                 .text_color(tab.metric().unwrap().accent(dark)).child(label.to_string())))
-        .child(div().flex().items_center().gap(px(16.))
+        .child(div().flex().items_center().gap(t::SPACE_4)
             .child(div().relative().size(px(92.)).flex_shrink_0()
                 .child(donut(&chart, 92., t::card_hi(dark)))
                 .child(div().absolute().inset_0().flex().flex_col().items_center().justify_center()
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(center))
-                    .child(div().text_size(px(9.)).text_color(t::ink_dim(dark)).child(center_label.to_string()))))
+                    .child(div().text_size(t::TEXT_BODY).font_weight(FontWeight::SEMIBOLD).child(center))
+                    .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(center_label.to_string()))))
             .child(div().flex_1().min_w_0().flex().flex_col().children(legend)))
 }
 
@@ -2037,7 +2037,7 @@ fn cpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(t::SECTION_GAP)
         .child(hero(
             l("CPU usage", "CPU-bruk"),
             fmt_pct(s.cpu_pct),
@@ -2224,7 +2224,7 @@ fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(t::SECTION_GAP)
         .child(hero(
             l("Memory", "Minne"),
             fmt_pct(mem_pct),
@@ -2286,7 +2286,7 @@ fn disk_tab(
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(t::SECTION_GAP)
         .child(hero(
             l("Disk activity · all devices", "Diskaktivitet · alle enheter"),
             fmt_rate(s.disk.read_rate + s.disk.write_rate),
@@ -2459,7 +2459,7 @@ fn disk_detail(
                                 .flex()
                                 .items_center()
                                 .gap_3()
-                                .pt(px(4.))
+                                .pt(t::SPACE_1)
                                 .child(
                                     div()
                                         .w(px(150.))
@@ -2483,7 +2483,7 @@ fn disk_detail(
                                 .flex()
                                 .items_center()
                                 .gap_3()
-                                .py(px(4.))
+                                .py(t::SPACE_1)
                                 .child(
                                     div()
                                         .w(px(150.))
@@ -2581,7 +2581,7 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(t::SECTION_GAP)
         .child(hero(
             l("Network · combined traffic", "Nettverk · samlet trafikk"),
             fmt_rate(s.net.rate_in + s.net.rate_out),
@@ -2629,7 +2629,7 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
 pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, explanation: String, dark: bool) -> Div {
     div()
         .bg(t::card(dark))
-        .rounded(px(12.))
+        .rounded(t::RADIUS_CARD)
         .border_1()
         .border_color(t::line(dark))
         .p_4()
@@ -2640,7 +2640,7 @@ pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, exp
             div()
                 .size(px(36.))
                 .flex_shrink_0()
-                .rounded(px(9.))
+                .rounded(t::RADIUS_CONTROL)
                 .bg(color.opacity(0.16))
                 .flex()
                 .items_center()
@@ -2653,7 +2653,7 @@ pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, exp
                 .min_w_0()
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(t::TEXT_ROW)
                         .font_weight(FontWeight::MEDIUM)
                         .child(headline),
                 )
@@ -2664,7 +2664,7 @@ pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, exp
 fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
     let m = Metric::Gpu;
     let supported = s.gpu.supported;
-    let mut page = div().flex().flex_col().gap_3();
+    let mut page = div().flex().flex_col().gap(t::SECTION_GAP);
     if s.gpu.utilization.is_none() {
         page = page
             .child(empty_state(
@@ -2784,7 +2784,7 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(t::SECTION_GAP)
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample battery values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke batterimålinger")).text_color(t::ink_dim(dark)))))
         .when(b.present, |d| d.child(hero(
             l("Battery", "Batteri"),
@@ -2899,7 +2899,7 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
                 .flex()
                 .items_center()
                 .gap_2()
-                .py(px(5.))
+                .py(t::SPACE_1)
                 .px_4()
                 .child(app_icon(&fake, dark))
                 .child(
@@ -2933,7 +2933,7 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(t::SECTION_GAP)
         .child(
             card(dark)
                 .child(
@@ -3013,7 +3013,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
         .iter()
         .filter_map(|d| d.battery.map(|b| (d.name.clone(), b)))
         .min_by(|a: &(String, f64), b: &(String, f64)| a.1.partial_cmp(&b.1).unwrap());
-    let mut c = div().flex().flex_col().gap_3().child(
+    let mut c = div().flex().flex_col().gap(t::SECTION_GAP).child(
         card(dark)
             .child(
                 div()
@@ -3075,7 +3075,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .py(px(5.))
+                            .py(t::SPACE_1)
                             .px_4()
                             .child(
                                 div()
@@ -3386,7 +3386,7 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         .flex()
                         .items_center()
                         .gap_3()
-                        .py(px(4.))
+                        .py(t::SPACE_1)
                         .px_1()
                         .child(
                             div()
@@ -3399,7 +3399,7 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         )
                         .child(
                             div()
-                                .px(px(6.))
+                                .px(t::SPACE_2)
                                 .py(px(1.))
                                 .rounded_sm()
                                 .bg(t::card_hi(dark))
@@ -3408,7 +3408,7 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         )
                         .child(
                             div()
-                                .px(px(6.))
+                                .px(t::SPACE_2)
                                 .py(px(1.))
                                 .rounded_sm()
                                 .bg(accent.opacity(0.15))

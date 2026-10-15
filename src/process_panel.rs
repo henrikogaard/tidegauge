@@ -74,7 +74,7 @@ fn count_label(n: usize) -> String {
 fn mono(text: impl Into<String>, dark: bool) -> Div {
     div()
         .font_family("Menlo")
-        .text_size(px(10.5))
+        .text_size(t::TEXT_CAPTION)
         .text_color(t::ink_dim(dark))
         .truncate()
         .child(text.into())
@@ -98,11 +98,11 @@ fn header_row(sort_cpu: bool, dark: bool) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .px(px(10.))
+        .px(t::SPACE_2)
         .pb_2()
         .border_b_1()
         .border_color(t::line(dark))
-        .text_size(px(10.))
+        .text_size(t::TEXT_CAPTION)
         .font_weight(FontWeight::SEMIBOLD)
         .child(div().flex_1().text_color(t::ink_dim(dark)).child(l("App", "App").to_uppercase()))
         .child(cell(l("PROCESSES", "PROSESSER"), COL_PROCS, false))
@@ -159,7 +159,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             },
         ));
     }
-    let mut page = div().flex().flex_col().gap_3().child(
+    let mut page = div().flex().flex_col().gap(t::SECTION_GAP).child(
         div()
             .flex()
             .items_center()
@@ -168,14 +168,14 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             .child(
                 div()
                     .w(px(220.))
-                    .h(px(28.))
+                    .h(t::CONTROL_H)
                     .px_2()
                     .flex()
                     .items_center()
-                    .rounded(px(8.))
+                    .rounded(t::RADIUS_CONTROL)
                     .border_1()
                     .border_color(t::line(dark))
-                    .text_size(px(12.))
+                    .text_size(t::TEXT_BODY)
                     .child(gpui_kit::base::input::Input::new(&view.process_filter)),
             )
             .child(div().flex_1())
@@ -280,7 +280,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                 .flex()
                 .items_center()
                 .justify_between()
-                .px(px(10.))
+                .px(t::SPACE_2)
                 .pt_2()
                 .child(sub(crate::locale::count((total - shown) as u64, "more app", "more apps", "app til", "apper til")).text_color(t::ink_dim(dark)))
                 .child(button("process-show-all", l("Show all", "Vis alle"), false, dark, move |_, cx| {
@@ -313,12 +313,12 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
         .aria_expanded(expanded)
         .tab_index(0)
         .relative()
-        .h(px(36.))
+        .h(t::ROW_H)
         .flex()
         .items_center()
         .gap_2()
-        .px(px(10.))
-        .rounded(px(7.))
+        .px(t::SPACE_2)
+        .rounded(t::RADIUS_CONTROL)
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .cursor_pointer()
@@ -329,9 +329,9 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
             div()
                 .absolute()
                 .left_0()
-                .top(px(4.))
-                .bottom(px(4.))
-                .rounded(px(6.))
+                .top(t::SPACE_1)
+                .bottom(t::SPACE_1)
+                .rounded(t::RADIUS_CHIP)
                 .w(relative(frac as f32))
                 .bg(tide.opacity(0.12)),
         )
@@ -343,12 +343,12 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
                 .items_center()
                 .gap_2()
                 .child(app_icon(app, dark))
-                .child(div().min_w_0().truncate().text_size(px(13.)).when(expanded, |d| d.font_weight(FontWeight::SEMIBOLD)).child(app.name.clone())),
+                .child(div().min_w_0().truncate().text_size(t::TEXT_ROW).when(expanded, |d| d.font_weight(FontWeight::SEMIBOLD)).child(app.name.clone())),
         )
-        .child(div().w(px(COL_PROCS)).flex_shrink_0().flex().justify_end().text_size(px(12.)).text_color(t::ink_dim(dark)).child(app.pids.len().to_string()))
-        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(crate::locale::percent(app.cpu_pct, 1)))
-        .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).when(!sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
-        .child(div().w(px(16.)).flex_shrink_0().text_size(px(10.)).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }))
+        .child(div().w(px(COL_PROCS)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(app.pids.len().to_string()))
+        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(crate::locale::percent(app.cpu_pct, 1)))
+        .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(!sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
+        .child(div().w(px(16.)).flex_shrink_0().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }))
         .on_click(move |_, _, cx| toggle(&this, &key, cx))
         .capture_key_down(move |event, window, cx| {
             if crate::controls::is_activation_key(&event.keystroke) {
@@ -422,7 +422,7 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
     let total = procs.len();
     let mut detail = div()
         .ml(px(38.))
-        .mr(px(8.))
+        .mr(t::SPACE_2)
         .mb_2()
         .pl_3()
         .border_l_1()
@@ -547,9 +547,9 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
             .aria_label(SharedString::from(format!("{} PID {}", program_name(p), p.pid)))
             .aria_selected(selected)
             .tab_index(0)
-            .min_h(px(36.))
+            .min_h(t::ROW_H)
             .px_2()
-            .rounded(px(7.))
+            .rounded(t::RADIUS_CONTROL)
             .border_1()
             .border_color(gpui_kit::transparent_black())
             .cursor_pointer()
@@ -578,24 +578,24 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_size(px(12.))
+                            .text_size(t::TEXT_BODY)
                             .child(div().truncate().child(program_name(p)))
                             .child(div().text_color(t::ink_dim(dark)).child(format!("PID {}", p.pid)))
                             .when(left_running, |d| {
                                 d.child(
                                     div()
                                         .px_1()
-                                        .rounded(px(4.))
+                                        .rounded(t::RADIUS_CHIP)
                                         .bg(t::warn(dark).opacity(0.14))
-                                        .text_size(px(10.))
+                                        .text_size(t::TEXT_CAPTION)
                                         .child(l("Left running", "Fortsatt i gang")),
                                 )
                             }),
                     )
                     .child(mono(short_path(p, bundle), dark)),
             )
-            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(crate::locale::percent(p.cpu_pct, 1)))
-            .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(fmt_bytes(p.mem_bytes as f64)))
+            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(crate::locale::percent(p.cpu_pct, 1)))
+            .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(fmt_bytes(p.mem_bytes as f64)))
             .child(controls),
     );
     if showing {
@@ -639,7 +639,7 @@ fn process_details(view: &TideGaugeView, p: &ProcInfo, dark: bool, this: Entity<
         .flex_col()
         .gap_1()
         .p_2()
-        .rounded(px(8.))
+        .rounded(t::RADIUS_CONTROL)
         .bg(t::card_hi(dark))
         .child(sub(format!(
             "UID {} · {} {} · {} {}",

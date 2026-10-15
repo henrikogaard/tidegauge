@@ -137,7 +137,7 @@ pub fn refresh_startup(this: &Entity<TideGaugeView>, cx: &mut App) {
 }
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut body = div().flex().flex_col().gap_3();
+    let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if let Some(msg) = &view.tools.message {
         body = body.child(card(dark).child(sub(msg.clone())));
     }
@@ -268,7 +268,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
             login_target.update(cx,|v,cx|{v.tools.message=result.err();cx.notify();});
         }));
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark)
+    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
         .child(sub(l("Review the legacy launch registrations found on this Mac.","Se gjennom eldre oppstartsregistreringer funnet på denne Macen.")))
         .child(sub(format!("Tidegauge: {}",login.message())))
         .child(actions));
@@ -285,13 +285,13 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 .flex_col()
                 .gap_1()
                 .p_3()
-                .rounded(px(10.))
+                .rounded(t::RADIUS_CONTROL)
                 .border_1()
                 .border_color(t::caution(dark).opacity(0.4))
                 .bg(t::caution(dark).opacity(0.08))
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(t::TEXT_BODY)
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(l(
                             "Partial list: some registrations were skipped",
@@ -495,7 +495,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         ));
     }
     let wakeups_label = l("reported interrupt wakeups/s", "rapporterte avbruddsoppvåkninger/s");
-    let mut body=div().flex().flex_col().gap_3().child(card(dark)
+    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
         .child(sub(l("Recent CPU, disk and wakeup activity for each process.","Nylig CPU-, disk- og oppvåkningsaktivitet for hver prosess.")))
         .child(actions));
     let mut rows: Vec<_> = view.snap.resource_activity.iter().collect();
@@ -585,7 +585,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
 
 fn mono(text: impl Into<String>, dark: bool) -> Div {
     div()
-        .text_size(px(10.))
+        .text_size(t::TEXT_CAPTION)
         .font_family("Menlo")
         .text_color(t::ink_dim(dark))
         .child(text.into())
@@ -748,7 +748,7 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             ));
         }
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark)
+    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
         .child(sub(l("Save a fixed system baseline, make your change, then compare an equal-length later window.","Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu.")))
         .child(actions));
     if view.tools.baseline_busy {
@@ -876,7 +876,7 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
             move |_, _| cancel.store(true, std::sync::atomic::Ordering::Relaxed),
         ));
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark)
+    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
         .child(sub(l("Find the largest folders and files inside a folder you choose.","Finn de største mappene og filene i en mappe du velger.")))
         .child(actions));
     if let Some(d) = data {
@@ -1096,7 +1096,7 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             ));
         }
     }
-    let mut body=div().flex().flex_col().gap_3().child(card(dark)
+    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
         .child(sub(l("Local app bundles, Homebrew formulae/casks and global npm packages.","Lokale app-pakker, Homebrew-formler/-casks og globale npm-pakker.")))
         .child(actions));
     if view.tools.packages_busy {
