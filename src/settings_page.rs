@@ -160,6 +160,25 @@ fn preference_switch(
     })
 }
 
+/// Save the language and switch to it at once: the next frame, the filter
+/// fields and the menu-bar menu all use it.
+fn set_language(this: &Entity<TideGaugeView>, value: Option<&'static str>, window: &mut Window, cx: &mut App) {
+    let saved = crate::settings::mutate(|s| s.language = value.map(str::to_string));
+    crate::locale::set_language(value);
+    this.update(cx, |view, cx| {
+        view.settings_error = saved.err().map(|_| {
+            l("Settings could not be saved. Try again.", "Innstillingene kunne ikke lagres. Prøv igjen.").to_string()
+        });
+        view.process_filter.update(cx, |input, cx| {
+            input.set_placeholder(l("Filter by name or PID", "Filtrer på navn eller PID"), window, cx)
+        });
+        view.startup_filter.update(cx, |input, cx| {
+            input.set_placeholder(l("Filter by app or label", "Filtrer på app eller etikett"), window, cx)
+        });
+        cx.notify();
+    });
+}
+
 fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
     let error = match crate::login::set_enabled(enabled) {
         Ok(status) => crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
@@ -196,6 +215,21 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
                 )
             }),
     );
+    let mut language = segment_group("language-options", l("Language", "Språk"), dark);
+    for (i, (value, label)) in [(None, l("System", "System")), (Some("en"), l("English", "English")), (Some("nb"), l("Norsk", "Norsk"))]
+        .into_iter()
+        .enumerate()
+    {
+        let target = this.clone();
+        language = language.child(segment(
+            format!("language-{i}"),
+            label,
+            settings.language.as_deref() == value,
+            dark,
+            t::accent(dark),
+            move |window, cx| set_language(&target, value, window, cx),
+        ));
+    }
     let login = crate::login::status();
     let login_control: AnyElement = if login.can_change() {
         let on = login.is_registered();
@@ -216,6 +250,7 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         l("General", "Generelt"),
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
+            row(l("Language", "Språk"), None, language, false, dark),
             row(
                 l("Launch at login", "Start ved pålogging"),
                 (!login.can_change() || login.needs_approval()).then(|| login.message().to_string()),

@@ -114,7 +114,9 @@ const GRAPH_WIDTH: f64 = 24.;
 /// A single native item keeps readings together and preserves their identity.
 pub struct StatusBar {
     item: Retained<NSStatusItem>,
-    _target: Retained<TideGaugeTarget>,
+    target: Retained<TideGaugeTarget>,
+    /// The language the menu was built in; it is rebuilt when that changes.
+    norwegian: bool,
 }
 
 impl StatusBar {
@@ -124,11 +126,16 @@ impl StatusBar {
         item.setMenu(Some(&context_menu(&target)));
         Self {
             item,
-            _target: target,
+            target,
+            norwegian: crate::locale::is_norwegian(),
         }
     }
 
     pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
+        if self.norwegian != crate::locale::is_norwegian() {
+            self.norwegian = crate::locale::is_norwegian();
+            self.item.setMenu(Some(&context_menu(&self.target)));
+        }
         let readouts = menu_readouts(settings, snap, measure_label_width);
         let show_icon = settings.show_app_icon || readouts.is_empty();
         let menu_hint = l(
