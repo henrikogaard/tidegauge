@@ -375,9 +375,38 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
     } else {
         procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
     }
+    // Left-running helpers first, so the row cutoff never hides them; in the
+    // Left running view they are the only rows.
+    procs.sort_by_key(|p| !remaining.contains(&p.pid));
+    if view.only_remaining {
+        procs.retain(|p| remaining.contains(&p.pid));
+    }
     let pending = view.process_pending;
     let mut actions = div().flex().items_center().gap_2().flex_wrap();
-    if let Some(main) = registered_main(s, app) {
+    let left_running: Vec<ProcInfo> = if view.only_remaining {
+        procs.iter().filter(|p| control::blocked(p).is_none()).map(|p| (*p).clone()).collect()
+    } else {
+        Vec::new()
+    };
+    if view.only_remaining {
+        // Only the leftovers: never offer to quit a relaunched app from here.
+        if !left_running.is_empty() && !pending {
+            for force in [Force::Quit, Force::ForceQuit] {
+                let action = Action::Processes { name: app.name.clone(), targets: left_running.clone(), force };
+                let target = this.clone();
+                actions = actions.child(button(
+                    format!("leftover-{}-{force:?}", app.key),
+                    match force {
+                        Force::Quit => format!("{} ({})…", l("Quit all", "Avslutt alle"), left_running.len()),
+                        Force::ForceQuit => format!("{} ({})…", l("Force quit all", "Tving avslutning av alle"), left_running.len()),
+                    },
+                    false,
+                    dark,
+                    move |window, cx| request(action.clone(), target.clone(), window, cx),
+                ));
+            }
+        }
+    } else if let Some(main) = registered_main(s, app) {
         if control::blocked(main).is_none() && !pending {
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::App { main: main.clone(), name: app.name.clone(), helpers: procs.len(), memory: app.mem_bytes, force };
