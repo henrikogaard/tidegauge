@@ -105,6 +105,8 @@ pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
         v.show_settings = false;
         v.tools.page = page;
         v.tools.message = None;
+        // A page always opens with its "About this data" closed.
+        v.tools.about = None;
         v.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     });

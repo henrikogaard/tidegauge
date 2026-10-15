@@ -82,6 +82,11 @@ fn percent(fraction: f64) -> String {
     format!("{:.0}%", (fraction * 100.).round())
 }
 
+/// Stale, failed or too old to trust: show its age, never a pace.
+fn plan_not_updating(plan: &Plan, now: f64) -> bool {
+    plan.stale || plan.failed || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS)
+}
+
 /// Plan rings for the Overview: one compact chip per provider, opening Agents.
 pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
     let Plans::Loaded(plans) = plans else { return None };
@@ -93,7 +98,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
     for plan in plans {
         let tight = plan.tightest();
         let left = tight.map(|w| 1. - w.used);
-        let old = plan.stale || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS);
+        let old = plan_not_updating(plan, now);
         let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
         let color = if old {
             t::ink_dim(dark)
@@ -114,6 +119,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
             (false, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
         };
         let target = this.clone();
+        let keyboard = this.clone();
         let provider = plan.provider.clone();
         strip = strip.child(
             div()
@@ -133,6 +139,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                 .bg(t::card(dark))
                 .cursor_pointer()
                 .hover(|d| d.bg(t::card_hi(dark)))
+                .focus_visible(move |d| d.border_color(t::accent(dark)))
                 .child(div().size(px(28.)).flex_shrink_0().child(donut(&ring, 28., t::card_hi(dark))))
                 .child(
                     div()
@@ -152,7 +159,14 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                         )
                         .child(div().text_size(t::TEXT_SMALL).text_color(if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) }).child(note)),
                 )
-                .on_click(move |_, _, cx| open(&target, cx)),
+                .on_click(move |_, _, cx| open(&target, cx))
+                .capture_key_down(move |event, window, cx| {
+                    if crate::controls::is_activation_key(&event.keystroke) {
+                        window.prevent_default();
+                        open(&keyboard, cx);
+                        cx.stop_propagation();
+                    }
+                }),
         );
     }
     Some(strip)
@@ -162,7 +176,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
     let tight = plan.tightest();
     let left = tight.map(|w| 1. - w.used);
     let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
-    let old = plan.stale || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS);
+    let old = plan_not_updating(plan, now);
     let color = if old {
         t::ink_dim(dark)
     } else {
@@ -571,4 +585,29 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         list = list.child(session_row(session, now, expanded, view.process_pending, dark, this.clone()));
     }
     page.child(list)
+}
+
+#[cfg(test)]
+mod tests {
+    // Named imports: the UI kit's glob export includes its own `test`.
+    use super::{plan_not_updating, Plan, FRESH_SECS};
+
+    #[test]
+    fn failed_or_stale_plans_never_show_a_pace() {
+        let plan = |stale, failed, fetched_at| Plan {
+            provider: "claude".into(),
+            plan: None,
+            windows: Vec::new(),
+            credits: None,
+            fetched_at,
+            stale,
+            failed,
+        };
+        let now = 10_000.;
+        assert!(!plan_not_updating(&plan(false, false, Some(now - 60.)), now));
+        assert!(plan_not_updating(&plan(false, true, Some(now - 60.)), now), "a failed refresh is not current");
+        assert!(plan_not_updating(&plan(true, false, Some(now - 60.)), now));
+        assert!(plan_not_updating(&plan(false, false, Some(now - FRESH_SECS - 1.)), now));
+        assert!(plan_not_updating(&plan(false, false, None), now));
+    }
 }
