@@ -1,7 +1,7 @@
 use crate::controls::{button, segment, segment_group};
 use crate::locale::text as l;
 use crate::theme as t;
-use crate::ui::{card, sub, TideGaugeView};
+use crate::ui::{card, empty_state, sub, TideGaugeView};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -53,6 +53,8 @@ impl Page {
 }
 pub struct State {
     pub page: Page,
+    /// The page whose "About this data" notes are expanded.
+    pub about: Option<Page>,
     pub startup: Option<crate::startup::Inventory>,
     pub startup_busy: bool,
     pub message: Option<String>,
@@ -74,6 +76,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             page: Page::Startup,
+            about: None,
             startup: None,
             startup_busy: false,
             message: None,
@@ -102,6 +105,8 @@ pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
         v.show_settings = false;
         v.tools.page = page;
         v.tools.message = None;
+        // A page always opens with its "About this data" closed.
+        v.tools.about = None;
         v.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     });
@@ -139,12 +144,72 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         body = body.child(card(dark).child(sub(msg.clone())));
     }
     body.child(match view.tools.page {
-        Page::Startup => startup(view, dark, this),
-        Page::Activity => activity(view, dark, this),
-        Page::Baselines => baselines(view, dark, this),
-        Page::Storage => storage(view, dark, this),
-        Page::Packages => packages(view, dark, this),
+        Page::Startup => startup(view, dark, this.clone()),
+        Page::Activity => activity(view, dark, this.clone()),
+        Page::Baselines => baselines(view, dark, this.clone()),
+        Page::Storage => storage(view, dark, this.clone()),
+        Page::Packages => packages(view, dark, this.clone()),
     })
+    .child(about(view.tools.page, view.tools.about == Some(view.tools.page), dark, this))
+}
+
+/// The caveats for a page, kept out of its opening card so the page leads
+/// with what it is for.
+fn about_notes(page: Page) -> Vec<&'static str> {
+    match page {
+        Page::Startup => vec![
+            l("Partial inventory of legacy launch registrations. A file is not proof of approval or a running process. Modern app background items and managed items belong in System Settings.", "Delvis oversikt over eldre oppstartsregistreringer. En fil beviser ikke godkjenning eller at prosessen kjører. Moderne bakgrunnselementer og administrerte elementer håndteres i Systeminnstillinger."),
+        ],
+        Page::Activity => vec![
+            l("Time-weighted activity over up to 60 observed seconds per process. CPU: 100% is one core. No energy score or battery-drain estimate. New, missing or reset counters remain unavailable.", "Tidsvektet aktivitet over inntil 60 observerte sekunder per prosess. CPU: 100 % er én kjerne. Ingen energipoeng eller anslag for batteriforbruk. Nye, manglende eller nullstilte tellere vises som utilgjengelige."),
+            l("Interrupt wakeups are reported kernel counts, not energy use. Package-idle wakeups remain unvalidated and unavailable. Denied or new counters show a dash.", "Avbruddsoppvåkninger er rapporterte kjernetellere, ikke energibruk. Oppvåkninger fra pakkehvile er fortsatt uvaliderte og utilgjengelige. Nye tellere eller tellere uten tilgang vises med en strek."),
+            l("System processes may deny access. The list is limited to 8,192 sampled processes; the top 80 are shown.", "Systemprosesser kan nekte tilgang. Listen er begrenset til 8 192 målte prosesser; de 80 øverste vises."),
+        ],
+        Page::Baselines => vec![
+            l("Differences are observations, not proof of a speed boost or causation.", "Forskjeller er observasjoner, ikke bevis på høyere hastighet eller årsakssammenheng."),
+            l("Samples are held until the next sample only when the gap is at most 30 seconds. No extrapolation through sleep or missing data. A comparison needs 80% coverage on each side. Power-source and thermal context were not recorded; app-level comparisons are not supported.", "Hver måling gjelder frem til neste måling bare når avstanden er høyst 30 sekunder. Ingen fremskriving gjennom dvale eller manglende data. Sammenligning krever 80 % dekning på hver side. Strømkilde og termisk tilstand ble ikke lagret; sammenligning per app støttes ikke."),
+        ],
+        Page::Storage => vec![
+            l("Read-only metadata scan, no deletion or file downloads. Allocated bytes are not reclaimable space: APFS sharing, snapshots and compression affect totals. Links and other volumes are skipped; hard links are counted once. Access failures and cloud placeholders leave incomplete results.", "Skrivebeskyttet metadataskanning, ingen sletting eller filnedlasting. Tildelte byte er ikke frigjørbar plass: APFS-deling, øyeblikksbilder og komprimering påvirker summene. Lenker og andre volumer hoppes over; harde lenker telles én gang. Tilgangsfeil og skyplassholdere gir ufullstendige resultater."),
+            l("Bounded to 100,000 entries, depth 64 and 128 queued folders. Large scans may be partial. Folder totals attribute shared hard links to the first path encountered.", "Begrenset til 100 000 oppføringer, dybde 64 og 128 mapper i kø. Store skanninger kan være delvise. Mapper tilordnes delte harde lenker etter første sti som blir funnet."),
+        ],
+        Page::Packages => vec![
+            l("Refresh is explicit; checking updates may contact package registries. Only detected installations are covered, not every runtime manager or project.", "Oppdatering av listen er manuell; søk etter oppdateringer kan kontakte pakkeregistre. Bare oppdagede installasjoner dekkes, ikke alle kjøremiljøbehandlere eller prosjekter."),
+            l("Standalone and protected apps use their own updater or system management. Reveal never uninstalls an app. Managed removals do not search for or delete leftover user data.", "Frittstående og beskyttede apper bruker sin egen oppdateringsfunksjon eller systemadministrasjon. Vis i Finder avinstallerer aldri en app. Pakkefjerning søker ikke etter eller sletter gjenværende brukerdata."),
+        ],
+    }
+}
+
+/// A collapsed "About this data" disclosure at the bottom of a page.
+fn about(page: Page, open: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let toggle = this.clone();
+    let mut section = div().flex().flex_col().gap_2().child(
+        div().flex().child(crate::controls::button_labeled(
+            format!("{}-about", page.key()),
+            l("About this data", "Om disse dataene"),
+            if open {
+                l("About this data, expanded", "Om disse dataene, utvidet")
+            } else {
+                l("About this data, collapsed", "Om disse dataene, skjult")
+            },
+            open,
+            dark,
+            move |_, cx| {
+                toggle.update(cx, |v, cx| {
+                    v.tools.about = if v.tools.about == Some(page) { None } else { Some(page) };
+                    cx.notify();
+                });
+            },
+        )),
+    );
+    if open {
+        let mut notes = card(dark);
+        for note in about_notes(page) {
+            notes = notes.child(sub(note).text_color(t::ink_dim(dark)));
+        }
+        section = section.child(notes);
+    }
+    section
 }
 
 fn title(text: &str) -> Div {
@@ -206,7 +271,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         }));
     }
     let mut body=div().flex().flex_col().gap_3().child(card(dark)
-        .child(sub(l("Partial inventory of legacy launch registrations. A file is not proof of approval or a running process. Modern app background items and managed items belong in System Settings.","Delvis oversikt over eldre oppstartsregistreringer. En fil beviser ikke godkjenning eller at prosessen kjører. Moderne bakgrunnselementer og administrerte elementer håndteres i Systeminnstillinger.")))
+        .child(sub(l("Review the legacy launch registrations found on this Mac.","Se gjennom eldre oppstartsregistreringer funnet på denne Macen.")))
         .child(sub(format!("Tidegauge: {}",login.message())))
         .child(actions));
     if view.tools.startup_busy {
@@ -241,10 +306,17 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
             body = body.child(notice);
         }
         if inventory.entries.is_empty() {
-            body = body.child(sub(l(
-                "No registrations found in the inspected locations.",
-                "Ingen registreringer funnet på de undersøkte stedene.",
-            )));
+            body = body.child(empty_state(
+                Page::Startup.icon(),
+                t::accent(dark),
+                l("No registrations found", "Ingen registreringer funnet").into(),
+                l(
+                    "No registrations found in the inspected locations.",
+                    "Ingen registreringer funnet på de undersøkte stedene.",
+                )
+                .into(),
+                dark,
+            ));
         } else {
             let len = inventory.entries.len();
             let range = startup_page_range(view.tools.startup_page, len);
@@ -426,9 +498,8 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
     }
     let wakeups_label = l("reported interrupt wakeups/s", "rapporterte avbruddsoppvåkninger/s");
     let mut body=div().flex().flex_col().gap_3().child(card(dark)
-        .child(sub(l("Time-weighted activity over up to 60 observed seconds per process. CPU: 100% is one core. No energy score or battery-drain estimate. New, missing or reset counters remain unavailable.","Tidsvektet aktivitet over inntil 60 observerte sekunder per prosess. CPU: 100 % er én kjerne. Ingen energipoeng eller anslag for batteriforbruk. Nye, manglende eller nullstilte tellere vises som utilgjengelige.")))
-        .child(sub(l("Interrupt wakeups are reported kernel counts, not energy use. Package-idle wakeups remain unvalidated and unavailable. Denied or new counters show a dash.","Avbruddsoppvåkninger er rapporterte kjernetellere, ikke energibruk. Oppvåkninger fra pakkehvile er fortsatt uvaliderte og utilgjengelige. Nye tellere eller tellere uten tilgang vises med en strek.")))
-        .child(sub(l("System processes may deny access. The list is limited to 8,192 sampled processes; the top 80 are shown.","Systemprosesser kan nekte tilgang. Listen er begrenset til 8 192 målte prosesser; de 80 øverste vises."))).child(actions));
+        .child(sub(l("Recent CPU, disk and wakeup activity for each process.","Nylig CPU-, disk- og oppvåkningsaktivitet for hver prosess.")))
+        .child(actions));
     let mut rows: Vec<_> = view.snap.resource_activity.iter().collect();
     let metric = |r: &crate::resource_activity::Activity| match view.tools.activity_sort {
         ActivitySort::Cpu => r.cpu,
@@ -462,38 +533,88 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             l("s covered", "s dekket")
         )));
     }
-    let mut list = card(dark);
+    if rows.is_empty() {
+        return body.child(empty_state(
+            Page::Activity.icon(),
+            t::accent(dark),
+            l("No process activity yet", "Ingen prosessaktivitet ennå").into(),
+            l("Activity appears after the first samples have been collected.", "Aktivitet vises etter at de første målingene er samlet inn.").into(),
+            dark,
+        ));
+    }
+    let dash = || String::from("—");
+    let mut list = card(dark).gap_0().child(
+        activity_row(
+            div().child(l("Process", "Prosess")),
+            "PID".into(),
+            "CPU".into(),
+            l("Disk I/O", "Diskaktivitet").into(),
+            l("Wakeups/s", "Oppvåkninger/s").into(),
+        )
+        .text_color(t::ink_dim(dark))
+        .pb_2()
+        .border_b_1()
+        .border_color(t::line(dark)),
+    );
     for r in rows.iter().take(80) {
         list = list.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .py_2()
-                .border_b_1()
-                .border_color(t::line(dark))
-                .child(sub(format!(
-                    "{} · PID {} · {} CPU · {} · {} {} · {:.0} {} / {:.0} {}",
-                    r.name,
-                    r.pid,
-                    r.cpu
-                        .map(|v| crate::locale::percent(v, 1))
-                        .unwrap_or_else(|| "—".into()),
-                    r.io.map(crate::engine::fmt_rate)
-                        .unwrap_or_else(|| "—".into()),
-                    r.interrupt_wakeups
-                        .map(|v| crate::locale::number(v, 1))
-                        .unwrap_or_else(|| "—".into()),
-                    wakeups_label,
-                    r.covered,
-                    l("s CPU/I/O", "s CPU/I/O"),
-                    r.wakeups_covered,
-                    l("s wakeups", "s oppvåkninger")
-                )))
-                .child(sub(r.path.clone()).text_color(t::ink_dim(dark))),
+            activity_row(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(r.name.clone()))
+                    .child(mono(r.path.clone(), dark))
+                    .child(sub(format!(
+                        "{:.0} {} / {:.0} {}",
+                        r.covered,
+                        l("s CPU/I/O", "s CPU/I/O"),
+                        r.wakeups_covered,
+                        l("s wakeups", "s oppvåkninger")
+                    )).text_color(t::ink_dim(dark))),
+                r.pid.to_string(),
+                r.cpu.map(|v| crate::locale::percent(v, 1)).unwrap_or_else(dash),
+                r.io.map(crate::engine::fmt_rate).unwrap_or_else(dash),
+                r.interrupt_wakeups.map(|v| crate::locale::number(v, 1)).unwrap_or_else(dash),
+            )
+            .py_2()
+            .border_b_1()
+            .border_color(t::line(dark)),
         );
     }
     body.child(list)
+}
+
+fn mono(text: impl Into<String>, dark: bool) -> Div {
+    div()
+        .text_size(px(10.))
+        .font_family("Menlo")
+        .text_color(t::ink_dim(dark))
+        .child(text.into())
+}
+
+/// One row of the activity table: the process on the left, then fixed-width
+/// right-aligned columns so the numbers line up from row to row.
+fn activity_row(name: Div, pid: String, cpu: String, io: String, wakeups: String) -> Div {
+    let cell = |width: f32, value: String| {
+        div()
+            .w(px(width))
+            .flex_shrink_0()
+            .flex()
+            .justify_end()
+            .text_xs()
+            .child(value)
+    };
+    div()
+        .flex()
+        .items_start()
+        .gap_3()
+        .text_xs()
+        .child(name.flex_1().min_w_0())
+        .child(cell(56., pid))
+        .child(cell(56., cpu))
+        .child(cell(84., io))
+        .child(cell(84., wakeups))
 }
 
 fn load_baseline(this: &Entity<TideGaugeView>, cx: &mut App) {
@@ -630,16 +751,23 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         }
     }
     let mut body=div().flex().flex_col().gap_3().child(card(dark)
-        .child(sub(l("Save a fixed system baseline, make your change, then compare an equal-length later window. Differences are observations, not proof of a speed boost or causation.","Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu. Forskjeller er observasjoner, ikke bevis på høyere hastighet eller årsakssammenheng.")))
-        .child(sub(l("Samples are held until the next sample only when the gap is at most 30 seconds. No extrapolation through sleep or missing data. A comparison needs 80% coverage on each side. Power-source and thermal context were not recorded; app-level comparisons are not supported.","Hver måling gjelder frem til neste måling bare når avstanden er høyst 30 sekunder. Ingen fremskriving gjennom dvale eller manglende data. Sammenligning krever 80 % dekning på hver side. Strømkilde og termisk tilstand ble ikke lagret; sammenligning per app støttes ikke."))).child(actions));
+        .child(sub(l("Save a fixed system baseline, make your change, then compare an equal-length later window.","Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu.")))
+        .child(actions));
     if view.tools.baseline_busy {
         body = body.child(sub(l("Reading history…", "Leser historikk…")));
     }
     let Some(before) = &view.tools.baseline else {
-        return body.child(sub(l(
-            "No saved baseline yet.",
-            "Ikke noe lagret utgangspunkt ennå.",
-        )));
+        return body.child(empty_state(
+            Page::Baselines.icon(),
+            t::accent(dark),
+            l("No saved baseline yet", "Ikke noe lagret utgangspunkt ennå").into(),
+            l(
+                "Save the recent window to have something to compare against later.",
+                "Lagre det siste tidsvinduet for å ha noe å sammenligne med senere.",
+            )
+            .into(),
+            dark,
+        ));
     };
     body = body.child(sub(format!(
         "{}: {} – {} · {} min",
@@ -751,8 +879,8 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         ));
     }
     let mut body=div().flex().flex_col().gap_3().child(card(dark)
-        .child(sub(l("Read-only metadata scan, no deletion or file downloads. Allocated bytes are not reclaimable space: APFS sharing, snapshots and compression affect totals. Links and other volumes are skipped; hard links are counted once. Access failures and cloud placeholders leave incomplete results.","Skrivebeskyttet metadataskanning, ingen sletting eller filnedlasting. Tildelte byte er ikke frigjørbar plass: APFS-deling, øyeblikksbilder og komprimering påvirker summene. Lenker og andre volumer hoppes over; harde lenker telles én gang. Tilgangsfeil og skyplassholdere gir ufullstendige resultater.")))
-        .child(sub(l("Bounded to 100,000 entries, depth 64 and 128 queued folders. Large scans may be partial. Folder totals attribute shared hard links to the first path encountered.","Begrenset til 100 000 oppføringer, dybde 64 og 128 mapper i kø. Store skanninger kan være delvise. Mapper tilordnes delte harde lenker etter første sti som blir funnet."))).child(actions));
+        .child(sub(l("Find the largest folders and files inside a folder you choose.","Finn de største mappene og filene i en mappe du velger.")))
+        .child(actions));
     if let Some(d) = data {
         let status = if d.error.is_some() {
             l("Scan unavailable", "Skanning utilgjengelig")
@@ -971,8 +1099,8 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         }
     }
     let mut body=div().flex().flex_col().gap_3().child(card(dark)
-        .child(sub(l("Local app bundles, Homebrew formulae/casks and global npm packages. Refresh is explicit; checking updates may contact package registries. Only detected installations are covered, not every runtime manager or project.","Lokale app-pakker, Homebrew-formler/-casks og globale npm-pakker. Oppdatering av listen er manuell; søk etter oppdateringer kan kontakte pakkeregistre. Bare oppdagede installasjoner dekkes, ikke alle kjøremiljøbehandlere eller prosjekter.")))
-        .child(sub(l("Standalone and protected apps use their own updater or system management. Reveal never uninstalls an app. Managed removals do not search for or delete leftover user data.","Frittstående og beskyttede apper bruker sin egen oppdateringsfunksjon eller systemadministrasjon. Vis i Finder avinstallerer aldri en app. Pakkefjerning søker ikke etter eller sletter gjenværende brukerdata."))).child(actions));
+        .child(sub(l("Local app bundles, Homebrew formulae/casks and global npm packages.","Lokale app-pakker, Homebrew-formler/-casks og globale npm-pakker.")))
+        .child(actions));
     if view.tools.packages_busy {
         body = body.child(sub(l(
             "Working… Other package actions are locked until this finishes.",
@@ -980,10 +1108,17 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         )));
     }
     let Some(inventory) = &view.tools.packages else {
-        return body.child(sub(l(
-            "Choose Refresh installed to load the inventory. Nothing has been changed.",
-            "Velg Oppdater installerte for å laste oversikten. Ingenting er endret.",
-        )));
+        return body.child(empty_state(
+            Page::Packages.icon(),
+            t::accent(dark),
+            l("Inventory not loaded", "Oversikten er ikke lastet").into(),
+            l(
+                "Choose Refresh installed to load the inventory. Nothing has been changed.",
+                "Velg Oppdater installerte for å laste oversikten. Ingenting er endret.",
+            )
+            .into(),
+            dark,
+        ));
     };
     for warning in &inventory.warnings {
         body = body.child(sub(warning.clone()).text_color(t::warn(dark)));
