@@ -97,7 +97,7 @@ impl Tab {
             Tab::History => "icons/clock.svg",
         }
     }
-    fn metric(self) -> Option<Metric> {
+    pub(crate) fn metric(self) -> Option<Metric> {
         match self {
             Tab::Cpu => Some(Metric::Cpu),
             Tab::Memory => Some(Metric::Memory),
@@ -460,7 +460,7 @@ impl ChartScale {
 /// full-opacity stroke on top, so a full or flat series stays legible. Empty
 /// series draw nothing; a single point draws a short tick; non-finite samples
 /// become gaps rather than fabricated values.
-fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
+pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
     let pts = pts.to_vec();
     canvas(
         move |_, _, _| (),

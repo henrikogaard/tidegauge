@@ -111,6 +111,49 @@ fn plan_not_updating(plan: &Plan, now: f64) -> bool {
 }
 
 /// Plan rings for the Overview: one compact chip per provider, opening Agents.
+/// A plan at a glance: how much is left, in which colour, and one word on
+/// how it is going. Shared by the Overview strip and the menu-bar panel.
+pub(crate) struct PlanGlance {
+    pub name: String,
+    pub left: Option<f64>,
+    pub color: Hsla,
+    pub ring: Vec<(f64, Hsla)>,
+    pub note: String,
+    /// The note stands out only when the plan is running out.
+    pub note_color: Hsla,
+}
+
+pub(crate) fn plan_glance(plan: &Plan, now: f64, dark: bool) -> PlanGlance {
+    let tight = plan.tightest();
+    let left = tight.map(|w| 1. - w.used);
+    let old = plan_not_updating(plan, now);
+    let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
+    let color = if old {
+        t::ink_dim(dark)
+    } else {
+        match (&pace, left) {
+            (Pace::UsedUp, _) => t::warn(dark),
+            (Pace::RunsOut { .. }, _) => t::caution(dark),
+            (_, Some(left)) if left < 0.15 => t::caution(dark),
+            _ => t::ok(dark),
+        }
+    };
+    let ring = left.map(|left| vec![(left, color), (1. - left, t::card_hi(dark))]).unwrap_or_default();
+    let note = match (old, &pace) {
+        (true, _) => l("not updating", "oppdateres ikke").to_string(),
+        (false, Pace::RunsOut { in_secs }) => format!("{} {}", l("out in", "tom om"), duration(*in_secs)),
+        (false, Pace::UsedUp) => l("used up", "brukt opp").to_string(),
+        (false, Pace::OnPace { .. }) => l("on pace", "i rute").to_string(),
+        (false, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
+    };
+    let note_color = if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) };
+    PlanGlance { name: provider_name(&plan.provider), left, color, ring, note, note_color }
+}
+
+pub(crate) fn left_text(left: Option<f64>) -> String {
+    left.map(percent).unwrap_or_default()
+}
+
 pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
     let Plans::Loaded(plans) = plans else { return None };
     if plans.is_empty() {
@@ -119,28 +162,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
     let now = now();
     let mut strip = div().flex().flex_wrap().gap_2();
     for plan in plans {
-        let tight = plan.tightest();
-        let left = tight.map(|w| 1. - w.used);
-        let old = plan_not_updating(plan, now);
-        let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
-        let color = if old {
-            t::ink_dim(dark)
-        } else {
-            match (&pace, left) {
-                (Pace::UsedUp, _) => t::warn(dark),
-                (Pace::RunsOut { .. }, _) => t::caution(dark),
-                (_, Some(left)) if left < 0.15 => t::caution(dark),
-                _ => t::ok(dark),
-            }
-        };
-        let ring: Vec<(f64, Hsla)> = left.map(|left| vec![(left, color), (1. - left, t::card_hi(dark))]).unwrap_or_default();
-        let note = match (old, &pace) {
-            (true, _) => l("not updating", "oppdateres ikke").to_string(),
-            (false, Pace::RunsOut { in_secs }) => format!("{} {}", l("out in", "tom om"), duration(*in_secs)),
-            (false, Pace::UsedUp) => l("used up", "brukt opp").to_string(),
-            (false, Pace::OnPace { .. }) => l("on pace", "i rute").to_string(),
-            (false, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
-        };
+        let PlanGlance { left, color, ring, note, note_color, .. } = plan_glance(plan, now, dark);
         let target = this.clone();
         let keyboard = this.clone();
         let provider = plan.provider.clone();
@@ -180,7 +202,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                                     l("left", "igjen")
                                 ))),
                         )
-                        .child(div().text_size(t::TEXT_SMALL).text_color(if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) }).child(note)),
+                        .child(div().text_size(t::TEXT_SMALL).text_color(note_color).child(note)),
                 )
                 .on_click(move |_, _, cx| open(&target, cx))
                 .capture_key_down(move |event, window, cx| {
