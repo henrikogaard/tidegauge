@@ -282,28 +282,19 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
     }
     if let Some(inventory) = &view.tools.startup {
         if !inventory.warnings.is_empty() {
-            let mut notice = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_3()
-                .rounded(t::RADIUS_CONTROL)
-                .border_1()
-                .border_color(t::caution(dark).opacity(0.4))
-                .bg(t::caution(dark).opacity(0.08))
-                .child(
-                    div()
-                        .text_size(t::TEXT_BODY)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(l(
-                            "Partial list: some registrations were skipped",
-                            "Delvis liste: noen registreringer ble hoppet over",
-                        )),
-                );
-            for warning in &inventory.warnings {
-                notice = notice.child(sub(warning.clone()).text_color(t::ink_dim(dark)));
-            }
-            body = body.child(notice);
+            // A skipped entry is worth knowing, not worth alarming about:
+            // one quiet line, with the reasons after it.
+            body = body.child(
+                sub(format!(
+                    "{} {}",
+                    l(
+                        "Partial list: some registrations were skipped.",
+                        "Delvis liste: noen registreringer ble hoppet over.",
+                    ),
+                    inventory.warnings.join(" ")
+                ))
+                .text_color(t::ink_dim(dark)),
+            );
         }
         if inventory.entries.is_empty() {
             body = body.child(empty_state(
@@ -372,14 +363,14 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 .skip(range.start)
                 .take(range.len())
             {
-                let state = match entry.disabled {
-                    Some(true) => l("Disabled override", "Overstyring: deaktivert"),
-                    Some(false) => l("Enabled override", "Overstyring: aktivert"),
-                    None => l(
-                        "Effective configuration unknown",
-                        "Effektiv konfigurasjon ukjent",
-                    ),
-                };
+                // Only an override says something; most entries have none.
+                let state = entry.disabled.map(|disabled| {
+                    if disabled {
+                        l("Disabled override", "Overstyring: deaktivert")
+                    } else {
+                        l("Enabled override", "Overstyring: aktivert")
+                    }
+                });
                 // One table row per registration: label and program on the
                 // left, kind and state on the right; the plist path is the
                 // small line under the label.
@@ -404,7 +395,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                                     .child(entry.label.clone()),
                             )
                             .child(mono(
-                                entry.executable.clone().unwrap_or_else(|| {
+                                entry.executable.as_deref().map(crate::processes::path_summary).unwrap_or_else(|| {
                                     l("Executable unknown", "Ukjent kjørbar fil").into()
                                 }),
                                 dark,
@@ -423,16 +414,18 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                             .text_xs()
                             .child(entry.source.clone()),
                     )
-                    .child(
-                        div()
-                            .w(px(150.))
-                            .flex_shrink_0()
-                            .flex()
-                            .justify_end()
-                            .text_xs()
-                            .text_color(t::ink_dim(dark))
-                            .child(state),
-                    );
+                    .when_some(state, |d, state| {
+                        d.child(
+                            div()
+                                .w(px(150.))
+                                .flex_shrink_0()
+                                .flex()
+                                .justify_end()
+                                .text_xs()
+                                .text_color(t::ink_dim(dark))
+                                .child(state),
+                        )
+                    });
                 if entry.manageable && !view.tools.startup_busy {
                     if let Some(disabled) = entry.disabled {
                         let target = this.clone();
@@ -614,7 +607,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                             .filter(|n| !n.is_empty())
                             .unwrap_or_else(|| r.name.clone()),
                     ))
-                    .child(mono(r.path.clone(), dark).truncate())
+                    .child(mono(crate::processes::path_summary(&r.path), dark).truncate())
                     // Coverage only matters while it is short of the full minute.
                     .when(r.covered < 59.5 || r.wakeups_covered < 59.5, |d| {
                         d.child(sub(format!(

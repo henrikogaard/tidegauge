@@ -187,6 +187,42 @@ fn app_name(bundle_path: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Bundles along a path that a person would recognise: apps, XPC services
+/// and extensions. Frameworks are plumbing and left out.
+fn bundles(path: &str) -> Vec<(usize, &str)> {
+    let mut end = 0;
+    let mut found = Vec::new();
+    for part in path.split('/') {
+        end += part.len() + 1;
+        if [".app", ".xpc", ".appex"].iter().any(|ext| part.ends_with(ext)) {
+            found.push((end - 1, part));
+        }
+    }
+    found
+}
+
+/// A path short enough to read in one line: the outer bundle and the nested
+/// bundle the program runs from, or the plain path with `~` for home.
+/// "/Applications/ChatGPT.app › Codex (Service).app"
+pub fn path_summary(path: &str) -> String {
+    let found = bundles(path);
+    let shown = match (found.first(), found.last()) {
+        (Some(&(outer_end, _)), Some(&(_, inner))) if found.len() > 1 => format!("{} › {inner}", &path[..outer_end]),
+        (Some(&(outer_end, _)), _) => path[..outer_end].to_string(),
+        _ => path.to_string(),
+    };
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && shown.starts_with(&home) => format!("~{}", &shown[home.len()..]),
+        _ => shown,
+    }
+}
+
+/// The nested bundle a helper runs from inside its app, if any.
+pub fn nested_bundle(path: &str) -> Option<String> {
+    let found = bundles(path);
+    (found.len() > 1).then(|| found.last().unwrap().1.to_string())
+}
+
 /// Programs whose files don't name them well, grouped under one name.
 fn known_tool(path: &str) -> Option<&'static str> {
     // Claude Code runs as `…/claude/versions/2.1.300` from the installer and
@@ -310,6 +346,17 @@ mod tests {
         let names: Vec<_> = groups.iter().map(|g| (g.name.as_str(), g.pids.len())).collect();
         assert!(names.contains(&("Claude Code", 2)), "{names:?}");
         assert!(names.contains(&("Virtual Machine", 1)), "{names:?}");
+    }
+
+    #[test]
+    fn long_paths_are_summarised() {
+        let helper = "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/155.0/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)";
+        assert_eq!(super::path_summary(helper), "/Applications/ChatGPT.app › Codex (Service).app");
+        assert_eq!(super::nested_bundle(helper).as_deref(), Some("Codex (Service).app"));
+        let main = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
+        assert_eq!(super::path_summary(main), "/Applications/CuaDriver.app");
+        assert_eq!(super::nested_bundle(main), None);
+        assert_eq!(super::path_summary("/usr/libexec/trustd"), "/usr/libexec/trustd");
     }
 
     #[test]

@@ -502,9 +502,12 @@ fn program_name(p: &ProcInfo) -> String {
 /// Path inside the app's bundle when it has one, so helpers do not repeat
 /// the whole bundle path on every row.
 fn short_path(p: &ProcInfo, bundle: Option<&str>) -> String {
+    if let Some(nested) = crate::processes::nested_bundle(&p.exe_path) {
+        return format!("› {nested}");
+    }
     match bundle.and_then(|b| p.exe_path.strip_prefix(b)) {
         Some(rest) => format!("…{rest}"),
-        None => p.exe_path.clone(),
+        None => crate::processes::path_summary(&p.exe_path),
     }
 }
 

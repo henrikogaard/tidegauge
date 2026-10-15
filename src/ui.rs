@@ -125,6 +125,7 @@ pub struct TideGaugeView {
     pub show_tools: bool,
     pub show_agents: bool,
     pub agent_expanded: Option<i32>,
+    pub show_sensor_channels: bool,
     agents_scroll: ScrollHandle,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
@@ -192,6 +193,7 @@ impl TideGaugeView {
             show_tools: false,
             show_agents: false,
             agent_expanded: None,
+            show_sensor_channels: false,
             agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
@@ -1213,7 +1215,7 @@ impl TideGaugeView {
         let s = &self.snap;
         match self.tab {
             Tab::Overview => overview(s, dark, this).into_any_element(),
-            Tab::Cpu => cpu_tab(s, dark, this).into_any_element(),
+            Tab::Cpu => cpu_tab(s, dark, self.show_sensor_channels, this).into_any_element(),
             Tab::Memory => memory_tab(s, dark, this).into_any_element(),
             Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), this, cx).into_any_element(),
             Tab::Network => network_tab(s, dark, this).into_any_element(),
@@ -2036,7 +2038,7 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
 
 // ---------- metric tabs ----------
 
-fn cpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
+fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Cpu;
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
     rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap());
@@ -2086,8 +2088,8 @@ fn cpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             l("CPU · 100% per core", "CPU · 100 % per kjerne"),
             dark,
         ))
-        .child(top_apps(rows.iter().copied(), |a| (fmt_pct(a.cpu_pct), a.cpu_pct), max, m.accent(dark), true, dark, this))
-        .child(sensor_panel(s, dark))
+        .child(top_apps(rows.iter().copied(), |a| (fmt_pct(a.cpu_pct), a.cpu_pct), max, m.accent(dark), true, dark, this.clone()))
+        .child(sensor_panel(s, dark, open_sensors, this))
 }
 
 const MAX_DISPLAYED_TEMPERATURE_CHANNELS: usize = 24;
@@ -2154,7 +2156,14 @@ fn temperature_display_caption(
     Some(caption)
 }
 
-fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
+/// Hottest and average of the channels that reported, or `None` without any.
+fn temperature_summary(values: &[crate::sensors::Reading], fresh: bool) -> Option<(f64, f64)> {
+    let reported: Vec<f64> = values.iter().filter_map(|r| r.value).filter(|_| fresh).collect();
+    let hottest = reported.iter().copied().reduce(f64::max)?;
+    Some((hottest, reported.iter().sum::<f64>() / reported.len() as f64))
+}
+
+fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView>) -> Div {
     use crate::locale::text as l;
     let preview = crate::sensors::preview();
     let sample = preview.clone().unwrap_or_else(crate::sensors::latest);
@@ -2170,54 +2179,87 @@ fn sensor_panel(s: &Snapshot, dark: bool) -> Div {
     };
     let temperature_display = bound_temperature_display(&sample.temperatures, fresh);
     let temperature_caption = temperature_display_caption(&temperature_display, l);
-    let readings = |title: &'static str,
-                    values: &[crate::sensors::Reading],
-                    unit: &'static str,
-                    empty: &'static str| {
-        card(dark)
-            .child(section_header(title, unit, dark))
-            .when(values.is_empty(), |d| {
-                d.child(sub(empty).text_color(t::ink_dim(dark)))
-            })
-            .children(values.iter().map(|reading| {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(div().text_sm().child(reading.key.clone()))
-                    .child(
-                        div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                            reading
-                                .value
-                                .filter(|_| fresh)
-                                .map(|v| {
-                                    if unit == "RPM" {
-                                        format!("{:.0} RPM", v)
-                                    } else {
-                                        fmt_celsius(v)
-                                    }
-                                })
-                                .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()),
-                        ),
-                    )
-            }))
+    let summary = temperature_summary(&sample.temperatures, fresh);
+    let reading_row = move |reading: &crate::sensors::Reading, unit: &'static str| {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(div().text_sm().child(reading.key.clone()))
+            .child(
+                div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                    reading
+                        .value
+                        .filter(|_| fresh)
+                        .map(|v| if unit == "RPM" { format!("{:.0} RPM", v) } else { fmt_celsius(v) })
+                        .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()),
+                ),
+            )
     };
+    let summary_stat = |label: &'static str, value: f64| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(t::SPACE_1)
+            .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label))
+            .child(div().text_size(t::TEXT_EMPH).font_weight(FontWeight::SEMIBOLD).child(fmt_celsius(value)))
+    };
+    // The channel list is long and its names are the hardware's own, so it
+    // stays folded behind the hottest and average readings.
+    let temperatures = card(dark)
+        .child(section_header(l("Temperature channels", "Temperaturkanaler"), "°C", dark))
+        .when(sample.temperatures.is_empty(), |d| {
+            d.child(sub(if sample.discovering {
+                l("Discovering temperature channels…", "Finner temperaturkanaler…")
+            } else {
+                l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.")
+            }).text_color(t::ink_dim(dark)))
+        })
+        .when_some(summary, |d, (hottest, average)| {
+            d.child(div().flex().gap(t::SPACE_6)
+                .child(summary_stat(l("Hottest", "Varmest"), hottest))
+                .child(summary_stat(l("Average", "Gjennomsnitt"), average)))
+        })
+        .when(open, |d| {
+            d.children(temperature_display.rows.iter().map(|r| reading_row(r, "°C")))
+                .when_some(temperature_caption, |d, caption| d.child(sub(caption).text_color(t::ink_dim(dark))))
+        })
+        .when(!sample.temperatures.is_empty(), |d| {
+            d.child(div().flex().child(crate::controls::button(
+                "sensor-channels",
+                if open {
+                    l("Hide channels", "Skjul kanaler").to_string()
+                } else {
+                    format!("{} ({})", l("Show channels", "Vis kanaler"), sample.temperatures.len())
+                },
+                false,
+                dark,
+                move |_, cx| {
+                    this.update(cx, |v, cx| {
+                        v.show_sensor_channels = !v.show_sensor_channels;
+                        cx.notify();
+                    });
+                },
+            )))
+        });
+    let fans = card(dark)
+        .child(section_header(l("Fan speed", "Viftehastighet"), "RPM", dark))
+        .when(sample.fans.is_empty(), |d| {
+            d.child(sub(if sample.fan_count == Some(0) && fresh {
+                l("The controller reports no fans.", "Kontrolleren rapporterer ingen vifter.")
+            } else {
+                l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.")
+            }).text_color(t::ink_dim(dark)))
+        })
+        .children(sample.fans.iter().map(|r| reading_row(r, "RPM")));
     div().flex().flex_col().gap_3()
         .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), l("Read-only", "Kun avlesning"), dark))
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample sensor values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke sensormålinger")).text_color(t::ink_dim(dark)))))
-        .child(div().grid().grid_cols(2).gap_3()
-            .child(readings(l("Temperature channels", "Temperaturkanaler"), &temperature_display.rows, "°C", if sample.discovering { l("Discovering temperature channels…", "Finner temperaturkanaler…") } else { l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.") })
-                .when_some(temperature_caption, |d, caption| {
-                    d.child(sub(caption).text_color(t::ink_dim(dark)))
-                }))
-            .child(readings(l("Fan speed", "Viftehastighet"), &sample.fans, "RPM", if sample.fan_count == Some(0) && fresh {
-                l("The controller reports no fans.", "Kontrolleren rapporterer ingen vifter.")
-            } else { l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.") })))
+        .child(div().grid().grid_cols(2).gap_3().items_start().child(temperatures).child(fans))
         .child(div().flex().justify_between().gap_3()
             .child(sub(source).text_color(t::ink_dim(dark)))
             .child(sub(format!("{}: {}", l("macOS thermal state", "Termisk tilstand fra macOS"), s.thermal)).text_color(t::ink_dim(dark))))
-        .when(sample.discovering, |d| d.child(sub(l("Discovering sensor channels…", "Finner sensorkanaler…")).text_color(t::ink_dim(dark))))
         .when(sample.inventory_limited, |d| d.child(sub(l("Sensor inventory is limited; some channels are not shown.", "Sensoroversikten er begrenset; enkelte kanaler vises ikke.")).text_color(t::ink_dim(dark))))
         .child(sub(l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll.")).text_color(t::ink_dim(dark)))
 }
@@ -2309,7 +2351,8 @@ fn disk_tab(
         ))
         .child(section_header(l("Storage devices", "Lagringsenheter"), l("Read-only", "Kun avlesning"), dark))
         .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
-        .child(div().id("disk-device-picker").role(Role::RadioGroup).aria_label(l("Storage devices", "Lagringsenheter")).tab_group().flex().flex_wrap().gap_2().children(inventory.devices.iter().enumerate().map(|(index, device)| {
+        // One drive needs no picker: its card below already names it.
+        .when(inventory.devices.len() > 1, |d| d.child(div().id("disk-device-picker").role(Role::RadioGroup).aria_label(l("Storage devices", "Lagringsenheter")).tab_group().flex().flex_wrap().gap_2().children(inventory.devices.iter().enumerate().map(|(index, device)| {
             let id = device.id.clone();
             let key_id = id.clone();
             div().id(SharedString::from(format!("disk-{}", id)))
@@ -2327,7 +2370,7 @@ fn disk_tab(
                     }
                 }))
                 .on_click(cx.listener(move |view, _, _, cx| { view.selected_disk = Some(id.clone()); cx.notify(); }))
-        })))
+        }))))
         .when(!inventory.fresh(), |d| d.child(if inventory.collected_at.is_none() {
             empty_state(Tab::Disk.icon(), m.accent(dark),
                 l("Discovering storage devices…", "Finner lagringsenheter…").into(),
@@ -2761,15 +2804,17 @@ fn neural_section(s: &Snapshot, dark: bool) -> Div {
             "icons/brain.svg",
             m.accent(dark),
             l("Utilization unavailable", "Utnyttelse utilgjengelig").into(),
-            format!(
-                "{} {}",
-                l("Neural Engine utilization needs real Apple Silicon hardware with IOReport access; the current collector does not report it.", "Neural Engine-utnyttelse krever ekte Apple Silicon-maskinvare med IOReport-tilgang; den aktive datakilden rapporterer det ikke."),
+            {
+                let why = l(
+                    "Tidegauge can't read Neural Engine usage on this Mac yet.",
+                    "Tidegauge kan ikke lese bruken av Neural Engine på denne Macen ennå.",
+                );
                 if cores > 0 {
-                    format!("{}: {} · {}", l("Reported cores", "Rapporterte kjerner"), cores, l("a core count does not imply live utilization support", "et kjerneantall betyr ikke at direkte måling er støttet"))
+                    format!("{why} {} {cores}.", l("Neural Engine cores:", "Kjerner i Neural Engine:"))
                 } else {
-                    l("A core count does not imply live utilization support.", "Et kjerneantall betyr ikke at direkte måling er støttet.").to_string()
+                    why.to_string()
                 }
-            ),
+            },
             dark,
         ));
     }
@@ -2818,16 +2863,17 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             dark,
         )))
         .when(b.present, |d| d
-            .child(section_header(l("App", "App"), l("Estimated power usage", "Anslått strømforbruk"), dark))
-            .child(if s.apps.iter().any(|a| a.power_w > 0.0) {
+            .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Estimated power usage", "Anslått strømforbruk"), dark))
+            // Below a milliwatt reads as zero, so those apps are left out.
+            .child(if s.apps.iter().any(|a| a.power_w >= 0.001) {
                 list_card(
                     {
-                        let mut rows: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w > 0.0).collect();
+                        let mut rows: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w >= 0.001).collect();
                         rows.sort_by(|a, b| b.power_w.partial_cmp(&a.power_w).unwrap());
                         let max = rows.first().map(|a| a.power_w).unwrap_or(1.0).max(0.01);
                         rows.iter()
                             .take(10)
-                            .map(|a| app_row(a, fmt_watts(a.power_w), a.power_w / max, m.accent(dark), dark))
+                            .map(|a| app_row(a, breakdown_watts(a.power_w), a.power_w / max, m.accent(dark), dark))
                             .collect()
                     },
                     dark,
@@ -2924,7 +2970,7 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
         );
     }
     let idle_line = (idle > 0).then(|| {
-        sub(crate::locale::count(idle as u64, "app idle", "apps idle", "app inaktiv", "apper inaktive"))
+        sub(crate::locale::count(idle as u64, "app connected to audio, silent", "apps connected to audio, silent", "app koblet til lyd, stille", "apper koblet til lyd, stille"))
             .text_color(t::ink_dim(dark))
     });
     // The volume shows once: in the stepper when it can be changed, otherwise
@@ -2992,7 +3038,7 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
             list_card(rows, dark)
         })
         .children(idle_line)
-        .child(sub(l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd.")))
+        .child(sub(l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd.")).text_color(t::ink_dim(dark)))
 }
 
 // ---------- bluetooth ----------
@@ -3122,23 +3168,12 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                                             .child(kind_line),
                                     ),
                             )
-                            .child(level_meter(
-                                (d.battery.unwrap_or(0.0) / 100.0) as f32,
-                                m.accent(dark),
-                                dark,
-                                8,
-                            ))
-                            .child(
-                                div()
-                                    .w(px(70.))
-                                    .text_right()
-                                    .text_sm()
-                                    .child(
-                                        d.battery
-                                            .map(fmt_pct)
-                                            .unwrap_or("—".into()),
-                                    ),
-                            )
+                            // Many devices don't report a battery; an empty
+                            // meter would read as a flat battery.
+                            .when_some(d.battery, |row, battery| {
+                                row.child(level_meter((battery / 100.0) as f32, m.accent(dark), dark, 8))
+                                    .child(div().w(px(70.)).text_right().text_sm().child(fmt_pct(battery)))
+                            })
                     })
                     .collect(),
                 dark,
@@ -3461,7 +3496,7 @@ fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
 mod tests {
     use super::{
         ChartScale, MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
-        temperature_display_caption,
+        temperature_display_caption, temperature_summary,
     };
     use crate::sensors::Reading;
 
@@ -3538,6 +3573,14 @@ mod tests {
             temperature_display_caption(&display, norwegian).as_deref(),
             Some("Viser 24 av 342 kanaler · 22 utilgjengelige")
         );
+    }
+
+    #[test]
+    fn temperature_summary_uses_only_fresh_reported_channels() {
+        let values = vec![reading("Ta00", Some(70.0)), reading("Tb00", Some(80.0)), reading("Tc00", None)];
+        assert_eq!(temperature_summary(&values, true), Some((80.0, 75.0)));
+        assert_eq!(temperature_summary(&values, false), None, "stale readings are not summarised");
+        assert_eq!(temperature_summary(&[reading("Ta00", None)], true), None);
     }
 
     #[test]
