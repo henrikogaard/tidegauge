@@ -1874,7 +1874,13 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .child(l(
                 "¹ Network totals since boot. Averages and peaks cover this session.",
                 "¹ Nettverkstotaler siden oppstart. Gjennomsnitt og topper gjelder denne økten.",
-            )),
+            ))
+                .when(!settings.compact_dashboard && !favorites.is_empty(), |d| {
+                    d.child(l(
+                        "² Apps share memory, so their sum can be larger than memory in use.",
+                        "² Apper deler minne, så summen kan bli større enn minne i bruk.",
+                    ))
+                }),
         )
 }
 
@@ -1992,7 +1998,7 @@ fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
     }
     let other: f64 = top.iter().skip(4).map(|a| a.mem_bytes as f64).sum();
     if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
-    donut_card(l("Memory by App", "Minne etter app"), Tab::Memory, slices, fmt_bytes(total), l("all apps", "alle apper"), fmt_bytes, dark)
+    donut_card(l("Memory by App", "Minne etter app"), Tab::Memory, slices, fmt_bytes(total), l("all apps²", "alle apper²"), fmt_bytes, dark)
 }
 
 fn breakdown_watts(watts: f64) -> String {

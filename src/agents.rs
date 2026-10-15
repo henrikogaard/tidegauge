@@ -375,11 +375,16 @@ struct ClaudeSessionFile {
     proc_start: Option<String>,
 }
 
-/// `ctime`-style local start time, as Claude Code records `procStart`.
-fn ctime(start_unix: f64) -> Option<String> {
+/// `ctime`-style start time, as Claude Code records `procStart` (in UTC).
+fn ctime(start_unix: f64, utc: bool) -> Option<String> {
     let secs = start_unix as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+    let converted = if utc {
+        unsafe { libc::gmtime_r(&secs, &mut tm) }
+    } else {
+        unsafe { libc::localtime_r(&secs, &mut tm) }
+    };
+    if converted.is_null() {
         return None;
     }
     let mut buf = [0u8; 64];
@@ -390,6 +395,15 @@ fn ctime(start_unix: f64) -> Option<String> {
 
 fn same_words(a: &str, b: &str) -> bool {
     a.split_whitespace().eq(b.split_whitespace())
+}
+
+/// Whether a session file belongs to the process started at `start_unix`.
+/// Claude Code writes UTC; local time is accepted too in case that changes.
+fn same_start(proc_start: &str, start_unix: f64) -> bool {
+    [true, false]
+        .into_iter()
+        .filter_map(|utc| ctime(start_unix, utc))
+        .any(|stamp| same_words(proc_start, &stamp))
 }
 
 fn claude_sessions() -> HashMap<i32, ClaudeSessionFile> {
@@ -505,7 +519,7 @@ pub fn detect(
             let file = claude
                 .get(&root.pid)
                 .filter(|_| agent == Agent::ClaudeCode)
-                .filter(|file| file.proc_start.as_deref().zip(ctime(root.start_unix)).is_some_and(|(a, b)| same_words(a, &b)));
+                .filter(|file| file.proc_start.as_deref().is_some_and(|start| same_start(start, root.start_unix)));
             let activity = match file.and_then(|f| f.status.as_deref()) {
                 Some("busy" | "working" | "running") => Activity::Working,
                 Some(_) => Activity::Idle { since: file.and_then(|f| f.status_updated_at).map(|ms| ms / 1000.) },
@@ -721,5 +735,22 @@ mod tests {
         let browser = s.started.iter().find(|g| g.role == Role::Browser).unwrap();
         assert_eq!(browser.count, 2, "browser helpers group under the browser app");
         assert!(s.started.iter().all(|g| g.name != "zsh"), "shells are hidden");
+    }
+
+    #[test]
+    fn claude_session_file_matches_utc_start_time() {
+        // 2023-11-14 22:13:20 UTC, as Claude Code writes it.
+        let procs = vec![proc(100, 1, "/Users/x/.local/bin/claude")];
+        let file = |start: &str| ClaudeSessionFileView {
+            cwd: None,
+            status: Some("busy".into()),
+            name: None,
+            status_updated_at: None,
+            proc_start: Some(start.into()),
+        };
+        let busy = detect(&procs, &[], &|_| None, &HashMap::from([(100, file("Tue Nov 14 22:13:20 2023"))]));
+        assert_eq!(busy[0].activity, Activity::Working);
+        let reused = detect(&procs, &[], &|_| None, &HashMap::from([(100, file("Tue Nov 14 22:13:21 2023"))]));
+        assert!(matches!(reused[0].activity, Activity::Idle { .. }), "another start time is another process");
     }
 }

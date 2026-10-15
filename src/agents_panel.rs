@@ -78,8 +78,31 @@ fn window_title(label: &str) -> String {
     }
 }
 
+/// The short name of a window, for the line listing the other windows.
+fn window_short(label: &str) -> String {
+    match label.to_lowercase().as_str() {
+        "5h" => l("5-hour", "5 timer").into(),
+        "week" | "1w" | "7d" => l("Week", "Uke").into(),
+        "month" => l("Month", "Måned").into(),
+        "24h" | "day" => l("Today", "I dag").into(),
+        _ => label.to_string(),
+    }
+}
+
 fn percent(fraction: f64) -> String {
-    format!("{:.0}%", (fraction * 100.).round())
+    crate::locale::percent((fraction * 100.).round(), 0)
+}
+
+/// What is left of a plan's credits. Money gets cents; nothing left reads 0.
+fn credits_left(amount: f64, unit: &str) -> String {
+    let amount = amount.max(0.);
+    let is_money = unit.len() == 3 && unit.chars().all(|c| c.is_ascii_uppercase());
+    let value = if is_money && amount < 100. {
+        crate::locale::number(amount, 2)
+    } else {
+        crate::locale::whole(amount)
+    };
+    format!("{value} {unit} {}", l("left", "igjen"))
 }
 
 /// Stale, failed or too old to trust: show its age, never a pace.
@@ -226,7 +249,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
         .windows
         .iter()
         .filter(|w| Some(*w) != tight)
-        .map(|w| format!("{} {} {}", w.label, percent(1. - w.used), l("left", "igjen")))
+        .map(|w| format!("{} {} {}", window_short(&w.label), percent(1. - w.used), l("left", "igjen")))
         .collect();
     card(dark)
         .flex_row()
@@ -276,7 +299,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                 .when_some(status, |d, (text, color)| d.child(sub(text).text_color(color)))
                 .when(!others.is_empty(), |d| d.child(sub(others.join(" · ")).text_color(t::ink_dim(dark))))
                 .when_some(plan.credits.clone(), |d, (amount, unit)| {
-                    d.child(sub(format!("{amount:.0} {unit} {}", l("left", "igjen"))).text_color(t::ink_dim(dark)))
+                    d.child(sub(credits_left(amount, &unit)).text_color(t::ink_dim(dark)))
                 })
                 .when(plan.failed, |d| {
                     d.child(sub(l("OpenQuota's last refresh failed", "OpenQuotas siste oppdatering mislyktes")).text_color(t::caution(dark)))
@@ -595,7 +618,16 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
 #[cfg(test)]
 mod tests {
     // Named imports: the UI kit's glob export includes its own `test`.
-    use super::{plan_not_updating, Plan, FRESH_SECS};
+    use super::{credits_left, plan_not_updating, Plan, FRESH_SECS};
+    use crate::locale::{number, text as l, whole};
+
+    #[test]
+    fn credits_read_as_people_write_them() {
+        let left = l("left", "igjen");
+        assert_eq!(credits_left(57602., "credits"), format!("{} credits {left}", whole(57602.)));
+        assert_eq!(credits_left(-0.3, "USD"), format!("{} USD {left}", number(0., 2)), "never -0");
+        assert_eq!(credits_left(12.5, "USD"), format!("{} USD {left}", number(12.5, 2)));
+    }
 
     #[test]
     fn failed_or_stale_plans_never_show_a_pace() {
