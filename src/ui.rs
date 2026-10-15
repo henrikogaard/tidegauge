@@ -129,6 +129,9 @@ pub struct TideGaugeView {
     /// The page whose "About this page" notes are open; any other page
     /// opens with them closed.
     pub(crate) info_for: Option<Destination>,
+    pub(crate) sliders: crate::settings_page::Sliders,
+    /// How long Keep awake lasts when switched on; `None` until stopped.
+    pub(crate) awake_choice: Option<u64>,
     agents_scroll: ScrollHandle,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
@@ -144,6 +147,8 @@ pub struct TideGaugeView {
     pub process_table_hovered: bool,
     pub process_filter: Entity<gpui_kit::base::input::InputState>,
     pub process_query: String,
+    pub startup_filter: Entity<gpui_kit::base::input::InputState>,
+    pub startup_query: String,
     pub process_pending: bool,
     pub toast: Option<Toast>,
     pub process_selected: Option<crate::process_activity::Identity>,
@@ -181,6 +186,19 @@ impl TideGaugeView {
             }
         })
         .detach();
+        let sliders = crate::settings_page::Sliders::new(cx);
+        let startup_filter = cx.new(|cx| {
+            gpui_kit::base::input::InputState::new(window, cx)
+                .placeholder(l("Filter by app or label", "Filtrer på app eller etikett"))
+        });
+        cx.subscribe(&startup_filter, |view: &mut TideGaugeView, input, event: &gpui_kit::base::input::InputEvent, cx| {
+            if matches!(event, gpui_kit::base::input::InputEvent::Change) {
+                view.startup_query = input.read(cx).value().trim().to_lowercase();
+                view.tools.startup_limit = crate::tools_panel::LIST_STEP;
+                cx.notify();
+            }
+        })
+        .detach();
         let v = TideGaugeView {
             tab: Tab::Overview,
             dark: matches!(
@@ -198,6 +216,8 @@ impl TideGaugeView {
             agent_expanded: None,
             show_sensor_channels: false,
             info_for: None,
+            sliders,
+            awake_choice: Some(60),
             agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
@@ -213,6 +233,8 @@ impl TideGaugeView {
             process_table_hovered: false,
             process_filter,
             process_query: String::new(),
+            startup_filter,
+            startup_query: String::new(),
             process_pending: false,
             toast: None,
             process_selected: None,
@@ -252,10 +274,9 @@ impl TideGaugeView {
             },
         )
         .detach();
-        // Debug builds can open on a given page, so rendered checks need no
+        // The window can open on a given page, so rendered checks need no
         // clicks: TIDEGAUGE_START=cpu|apps|agents|settings|tool-startup…,
-        // and TIDEGAUGE_START_INFO=1 opens its notes.
-        #[cfg(debug_assertions)]
+        // and TIDEGAUGE_START_INFO=1 opens its notes. Navigation only.
         if let Some(to) = std::env::var("TIDEGAUGE_START").ok().as_deref().and_then(Destination::from_key) {
             let info = std::env::var("TIDEGAUGE_START_INFO").as_deref() == Ok("1");
             cx.spawn(async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| {
@@ -369,29 +390,39 @@ fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
 }
 
 pub(crate) fn app_icon(app: &AppGroup, dark: bool) -> impl IntoElement {
-    if let Some(path) = &app.icon_path {
+    bundle_icon(app.icon_path.as_deref(), dark)
+}
+
+/// The app's own icon when its bundle has one; otherwise a quiet glyph: a
+/// window for an app without an icon, a terminal for a background program.
+pub(crate) fn bundle_icon(bundle: Option<&str>, dark: bool) -> AnyElement {
+    if let Some(path) = bundle {
         if let Some(file) = crate::icons::cached_icon_for_bundle(path) {
             return div()
                 .size(px(20.))
+                .flex_shrink_0()
                 .rounded_sm()
                 .overflow_hidden()
-                .child(img(file).size(px(20.)).rounded_sm());
+                .child(img(file).size(px(20.)).rounded_sm())
+                .into_any_element();
         }
         crate::icons::request_icon_for_bundle(path);
     }
-    // letter tile fallback
-    let initial = app.name.chars().next().unwrap_or('?').to_uppercase().to_string();
+    glyph_tile(if bundle.is_some() { "icons/app-window.svg" } else { "icons/terminal.svg" }, dark)
+        .into_any_element()
+}
+
+/// A 20 px soft tile holding a small line glyph.
+pub(crate) fn glyph_tile(icon: &'static str, dark: bool) -> Div {
     div()
         .size(px(20.))
-        .rounded_sm()
+        .flex_shrink_0()
+        .rounded(t::RADIUS_CHIP)
+        .bg(t::card_hi(dark))
         .flex()
         .items_center()
         .justify_center()
-        .text_xs()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(t::on_accent(dark))
-        .bg(t::accent(dark))
-        .child(initial)
+        .child(icon_img(icon, 12., t::ink_dim(dark)))
 }
 
 /// Vertical scale for `area_chart`. Values map into a plot inset from the
@@ -804,7 +835,6 @@ pub(crate) enum Destination {
 }
 
 impl Destination {
-    #[cfg(debug_assertions)]
     fn from_key(key: &str) -> Option<Self> {
         use crate::tools_panel::Page;
         match key {
@@ -1090,6 +1120,94 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
         )
 }
 
+/// One row of a list: icon, name, one quiet line, values on the right. A
+/// row that can be picked gets a hover, a selected tint, and keyboard
+/// activation; its actions go underneath in `row_detail` while selected.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn list_row(
+    id: impl Into<SharedString>,
+    icon: AnyElement,
+    title: String,
+    meta: Option<String>,
+    trailing: Vec<AnyElement>,
+    selected: bool,
+    dark: bool,
+    on_toggle: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+) -> Stateful<Div> {
+    let id: SharedString = id.into();
+    let pickable = on_toggle.is_some();
+    let keyboard = on_toggle.clone();
+    div()
+        .id(id)
+        .role(if pickable { Role::Button } else { Role::Row })
+        .aria_label(SharedString::from(title.clone()))
+        .when(pickable, |d| d.aria_selected(selected).tab_index(0))
+        .min_h(t::ROW_H)
+        .py(t::SPACE_1)
+        .px(t::SPACE_3)
+        .mx(t::SPACE_2)
+        .flex()
+        .items_center()
+        .gap(t::SPACE_3)
+        .rounded(t::RADIUS_CONTROL)
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .when(selected, |d| d.bg(t::card_hi(dark)))
+        .when(pickable && !selected, |d| d.hover(|h| h.bg(t::card_hi(dark).opacity(0.5))))
+        .when(pickable, |d| d.cursor_pointer().focus_visible(move |d| d.border_color(t::accent(dark))))
+        .child(icon)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_size(t::TEXT_ROW).truncate().child(title))
+                .when_some(meta, |d, meta| {
+                    d.child(div().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).truncate().child(meta))
+                }),
+        )
+        .children(trailing)
+        .when_some(on_toggle, |d, toggle| d.on_click(move |_, _, cx| toggle(cx)))
+        .when_some(keyboard, |d, toggle| {
+            d.capture_key_down(move |event, window, cx| {
+                if is_activation_key(&event.keystroke) {
+                    window.prevent_default();
+                    toggle(cx);
+                    cx.stop_propagation();
+                }
+            })
+        })
+}
+
+/// The actions and details shown under a selected `list_row`, lined up with
+/// its name.
+pub(crate) fn row_detail(dark: bool) -> Div {
+    div()
+        .ml(px(52.))
+        .mr(t::SPACE_4)
+        .mt(t::SPACE_1)
+        .mb(t::SPACE_2)
+        .flex()
+        .flex_col()
+        .gap(t::SPACE_2)
+        .text_size(t::TEXT_SMALL)
+        .text_color(t::ink_dim(dark))
+}
+
+/// A small rounded label beside a row's values.
+pub(crate) fn chip(text: impl Into<SharedString>, color: Option<Hsla>, dark: bool) -> Div {
+    let color = color.unwrap_or(t::ink_dim(dark));
+    div()
+        .flex_shrink_0()
+        .px(t::SPACE_2)
+        .rounded(t::RADIUS_CHIP)
+        .bg(color.opacity(0.12))
+        .text_color(color)
+        .text_size(t::TEXT_SMALL)
+        .child(text.into())
+}
+
 pub(crate) fn list_card(rows: Vec<Div>, dark: bool) -> Div {
     card(dark).p_0().py_2().gap_0().children(rows)
 }
@@ -1312,6 +1430,7 @@ impl Render for TideGaugeView {
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
         let dark = self.dark;
+        self.sliders.sync(self.snap.audio.device_volume, window, cx);
         let s = &self.snap;
         let tab = self.tab;
         let this = cx.entity();
@@ -1434,7 +1553,7 @@ impl TideGaugeView {
         cx: &mut Context<TideGaugeView>,
     ) -> AnyElement {
         if self.show_settings {
-            return settings_panel(dark, this, self.settings_error.as_deref()).into_any_element();
+            return crate::settings_page::panel(self, dark, this).into_any_element();
         }
         if self.show_processes {
             return crate::process_panel::panel(self, dark, this).into_any_element();
@@ -1456,7 +1575,7 @@ impl TideGaugeView {
             Tab::Battery => battery_tab(s, dark).into_any_element(),
             Tab::Sound => div().flex().flex_col().gap(t::SECTION_GAP)
                 .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
-                .child(sound_tab(s, dark, this, self.audio_pending)).into_any_element(),
+                .child(sound_tab(s, &self.sliders.volume, dark, this, self.audio_pending)).into_any_element(),
             Tab::Bluetooth => bt_tab(s, dark).into_any_element(),
             Tab::Projects => div()
                 .flex()
@@ -1493,262 +1612,6 @@ pub(crate) fn update_preference(
         if !Tab::visible().contains(&view.tab) { view.tab = Tab::Overview; }
         cx.notify();
     });
-}
-
-fn settings_choice(
-    id: String,
-    label: &str,
-    description: String,
-    active: bool,
-    index: isize,
-    dark: bool,
-    this: Entity<TideGaugeView>,
-    change: impl Fn(&mut crate::settings::Settings) + 'static,
-) -> impl IntoElement {
-    crate::controls::control(
-        crate::controls::ControlSpec {
-            id,
-            label: label.to_string(),
-            aria: Some(description),
-            role: Role::RadioButton,
-            tab_index: index,
-            selected: active,
-            accent: t::accent(dark),
-            dark,
-            framed: false,
-        },
-        move |window, cx| update_preference(&this, |settings| change(settings), window, cx),
-    )
-}
-
-fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
-    let error = match crate::login::set_enabled(enabled) {
-        Ok(status) => {
-            crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
-                .err()
-                .map(|_| {
-                    l(
-                        "The login setting changed, but its local preference could not be saved.",
-                        "Påloggingsinnstillingen ble endret, men kunne ikke lagres lokalt.",
-                    )
-                    .to_string()
-                })
-        }
-        Err(error) => Some(error.to_string()),
-    };
-    this.update(cx, |view, cx| {
-        view.settings_error = error;
-        cx.notify();
-    });
-}
-
-fn login_control(
-    status: crate::login::LoginStatus,
-    dark: bool,
-    this: Entity<TideGaugeView>,
-) -> AnyElement {
-    if !status.can_change() {
-        return div()
-            .text_sm()
-            .text_color(t::ink_dim(dark))
-            .child(l("Unavailable", "Utilgjengelig"))
-            .into_any_element();
-    }
-    let active = status.is_registered();
-    crate::controls::control(
-        crate::controls::ControlSpec {
-            id: "launch-at-login".into(),
-            label: status.control_label().into(),
-            aria: Some(l("Launch at login", "Start ved pålogging").into()),
-            role: Role::Switch,
-            tab_index: 3,
-            selected: active,
-            accent: t::accent(dark),
-            dark,
-            framed: true,
-        },
-        move |_, cx| set_launch_at_login(!active, &this, cx),
-    )
-    .into_any_element()
-}
-
-fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) -> Div {
-    use crate::settings::{
-        localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
-    };
-    let settings = Settings::load();
-    let mut panel = div().flex().flex_col().gap(t::SECTION_GAP);
-    if let Some(error) = error {
-        panel = panel.child(
-            div()
-                .text_sm()
-                .text_color(t::warn(dark))
-                .child(error.to_string()),
-        );
-    }
-    let login = crate::login::status();
-    panel = panel
-        .child(card(dark).flex_row().items_center().justify_between().gap_4()
-            .child(div().flex_1()
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Appearance", "Utseende")))
-                .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
-                    "Choose a theme, or follow your Mac.", "Velg et tema, eller følg Macens utseende.",
-                ))))
-            .child(crate::controls::segment_group("appearance-options", l("Appearance", "Utseende"), dark)
-                .children([(None, l("System", "System")), (Some(false), l("Light", "Lyst")), (Some(true), l("Dark", "Mørkt"))]
-                    .into_iter().enumerate().map(|(i, (value, label))| {
-                        settings_choice(format!("appearance-{i}"), label, format!("{}: {label}", l("Appearance", "Utseende")),
-                            settings.dark == value, i as isize, dark, this.clone(), move |settings| settings.dark = value)
-                    }))))
-        .child(card(dark).flex_row().items_center().justify_between().gap_4()
-            .child(div().flex_1()
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Launch at login", "Start ved pålogging")))
-                .child(div().text_xs().text_color(t::ink_dim(dark)).child(login.message())))
-            .child(login_control(login, dark, this.clone())))
-        .child(crate::controls::settings(dark, this.clone()))
-        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Menu bar", "Menylinje")))
-        .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
-            "One compact menu-bar item. Add readings below, or keep just the Tidegauge icon.",
-            "Ett kompakt menylinjeelement. Legg til målinger nedenfor, eller behold bare Tidegauge-ikonet.",
-        )));
-    let icon_name = l("Tidegauge icon", "Tidegauge-ikon");
-    panel = panel.child(
-        card(dark)
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .flex_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(icon_name),
-                    )
-                    .child(div().text_xs().text_color(t::ink_dim(dark)).child(l(
-                        "Open the app menu with one click.",
-                        "Åpne appmenyen med ett klikk.",
-                    ))),
-            )
-            .child(
-                crate::controls::segment_group(
-                    "launcher-options",
-                    l("Tidegauge icon", "Tidegauge-ikon"),
-                    dark,
-                )
-                .children(
-                    [(true, l("Shown", "Vist")), (false, l("Hidden", "Skjult"))]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, (shown, label))| {
-                            settings_choice(
-                                format!("launcher-{shown}"),
-                                label,
-                                format!("{icon_name}: {label}"),
-                                settings.show_app_icon == shown,
-                                i as isize,
-                                dark,
-                                this.clone(),
-                                move |settings| settings.show_app_icon = shown,
-                            )
-                        }),
-                ),
-            ),
-    );
-    let rows = MENU_METRICS
-        .iter()
-        .enumerate()
-        .map(|(row, &(key, _))| {
-            let name = localized_metric_label(key).expect("menu metric has a localized label");
-            let selected = settings
-                .menu_items
-                .iter()
-                .find(|item| item.metric == key)
-                .map(|item| item.style.as_str())
-                .unwrap_or("off");
-            let choices = std::iter::once(("off", l("Off", "Av"))).chain(MENU_STYLES.iter().map(
-                |(style, _)| {
-                    (
-                        *style,
-                        localized_style_label(style).expect("menu style has a localized label"),
-                    )
-                },
-            ));
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_4()
-                .py_2()
-                .when(row > 0, |d| d.border_t_1().border_color(t::line(dark)))
-                .child(
-                    div()
-                        .w(px(140.))
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(name),
-                )
-                .child(
-                    crate::controls::segment_group(format!("settings-{key}"), name, dark).children(
-                        choices.enumerate().map(|(i, (style, label))| {
-                            settings_choice(
-                                format!("{key}-{style}"),
-                                label,
-                                format!("{name}: {label}"),
-                                selected == style,
-                                i as isize,
-                                dark,
-                                this.clone(),
-                                move |settings| {
-                                    settings.set_menu_style(
-                                        key,
-                                        if style == "off" { None } else { Some(style) },
-                                    )
-                                },
-                            )
-                        }),
-                    ),
-                )
-        })
-        .collect::<Vec<_>>();
-    panel.child(card(dark).gap_0().py_1().children(rows))
-        .child(div().flex().justify_end().gap_3()
-            .child({
-                let target = this.clone();
-                crate::controls::button_indexed(
-                    "settings-icon-only",
-                    l("Reset to icon only", "Tilbakestill til bare ikon"),
-                    false,
-                    dark,
-                    29,
-                    move |window, cx| {
-                        update_preference(&target, |settings| {
-                            settings.show_app_icon = true;
-                            settings.menu_items.clear();
-                        }, window, cx)
-                    },
-                )
-            })
-            .child(crate::controls::button_indexed(
-                "settings-app-menu",
-                l("App menu", "Appmeny"),
-                false,
-                dark,
-                30,
-                |_, _| {
-                    crate::statusbar::SHOW_CONTEXT_MENU
-                        .store(true, std::sync::atomic::Ordering::SeqCst)
-                },
-            ))
-            .child(crate::controls::button_indexed(
-                "settings-quit",
-                l("Quit Tidegauge", "Avslutt Tidegauge"),
-                false,
-                dark,
-                31,
-                |_, cx| cx.quit(),
-            )))
 }
 
 fn metric_heading(tab: Tab, dark: bool) -> Div {
@@ -3195,7 +3058,13 @@ fn level_meter(frac: f32, color: Hsla, dark: bool, bars: usize) -> Div {
     row
 }
 
-fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: bool) -> Div {
+fn sound_tab(
+    s: &Snapshot,
+    volume_slider: &Entity<gpui_kit::component::slider::SliderState>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    pending: bool,
+) -> Div {
     let m = Metric::Sound;
     let vol = s.audio.device_volume;
     let accent = m.accent(dark);
@@ -3286,7 +3155,7 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
                             d.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(text))
                         }),
                 )
-                .child(crate::controls::audio_output(&s.audio, dark, this, pending)),
+                .child(crate::controls::audio_output(&s.audio, volume_slider, dark, this, pending)),
         )
         .child(section_header(
             l("Apps using audio", "Apper som bruker lyd"),

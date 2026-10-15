@@ -110,10 +110,27 @@ pub fn icon_file_for_bundle(_: &str) -> Option<PathBuf> {
     None
 }
 
+/// Whether a bundle names its own icon. Without one, macOS hands back a
+/// grey placeholder that reads as a broken image, so the row shows a quiet
+/// glyph instead.
+#[cfg(target_os = "macos")]
+fn bundle_has_icon(bundle_path: &str) -> bool {
+    use objc2_foundation::{NSBundle, NSString};
+    let Some(bundle) = NSBundle::bundleWithPath(&NSString::from_str(bundle_path)) else {
+        return false;
+    };
+    ["CFBundleIconFile", "CFBundleIconName", "CFBundleIcons"]
+        .iter()
+        .any(|key| bundle.objectForInfoDictionaryKey(&NSString::from_str(key)).is_some())
+}
+
 #[cfg(target_os = "macos")]
 fn extract_icon_png(bundle_path: &str) -> Option<Vec<u8>> {
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWorkspace};
     use objc2_foundation::{NSDictionary, NSString};
+    if !bundle_has_icon(bundle_path) {
+        return None;
+    }
     unsafe {
         let ws = NSWorkspace::sharedWorkspace();
         let path = NSString::from_str(bundle_path);

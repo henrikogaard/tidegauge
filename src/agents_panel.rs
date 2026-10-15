@@ -292,14 +292,17 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                             d.child(div().text_xs().text_color(t::ink_dim(dark)).child(name))
                         }),
                 )
+                // Three lines at most, none wrapping: which window, how it is
+                // going, and everything else in one quiet line.
                 .child(sub(match tight {
-                    Some(w) => format!("{} · {} {}", window_title(&w.label), l("left", "igjen"), left.map(percent).unwrap_or_default()),
+                    Some(w) => window_title(&w.label),
                     None => l("No usage window reported", "Ingen bruksperiode rapportert").into(),
-                }).text_color(t::ink_dim(dark)))
-                .when_some(status, |d, (text, color)| d.child(sub(text).text_color(color)))
-                .when(!others.is_empty(), |d| d.child(sub(others.join(" · ")).text_color(t::ink_dim(dark))))
-                .when_some(plan.credits.clone(), |d, (amount, unit)| {
-                    d.child(sub(credits_left(amount, &unit)).text_color(t::ink_dim(dark)))
+                }).truncate().text_color(t::ink_dim(dark)))
+                .when_some(status, |d, (text, color)| d.child(sub(text).truncate().text_color(color)))
+                .map(|d| {
+                    let mut rest = others.clone();
+                    rest.extend(plan.credits.clone().map(|(amount, unit)| credits_left(amount, &unit)));
+                    d.when(!rest.is_empty(), |d| d.child(sub(rest.join(" · ")).truncate().text_color(t::ink_dim(dark))))
                 })
                 .when(plan.failed, |d| {
                     d.child(sub(l("OpenQuota's last refresh failed", "OpenQuotas siste oppdatering mislyktes")).text_color(t::caution(dark)))
@@ -381,7 +384,6 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
             cx.notify();
         });
     };
-    let initial = session.agent.name().chars().next().unwrap_or('?').to_string();
     let row = div()
         .id(SharedString::from(format!("agent-row-{pid}")))
         .role(gpui_kit::Role::Button)
@@ -408,18 +410,31 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 cx.stop_propagation();
             }
         })
+        // A bot glyph; a green dot on its corner while the session works.
         .child(
             div()
+                .relative()
                 .size(px(24.))
                 .flex_shrink_0()
                 .rounded(t::RADIUS_CHIP)
-                .bg(if working { t::ok(dark).opacity(0.16) } else { t::card_hi(dark) })
+                .bg(t::card_hi(dark))
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(initial),
+                .child(svg().path("icons/bot.svg").size(px(14.)).text_color(if working { t::ink(dark) } else { t::ink_dim(dark) }))
+                .when(working, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .right(px(-2.))
+                            .bottom(px(-2.))
+                            .size(px(9.))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(t::card(dark))
+                            .bg(t::ok(dark)),
+                    )
+                }),
         )
         .child(
             div()
@@ -437,12 +452,13 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 )
                 .child(div().truncate().text_xs().text_color(t::ink_dim(dark)).child(meta.join(" · "))),
         )
+        // Working stands out as a chip; idle is plain text.
         .child(
             div()
                 .flex_shrink_0()
                 .px_2()
                 .rounded(t::RADIUS_CHIP)
-                .bg(chip_color.opacity(0.14))
+                .when(working, |d| d.bg(chip_color.opacity(0.14)))
                 .text_color(chip_color)
                 .text_xs()
                 .child(chip),
