@@ -394,7 +394,7 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
                     format!("app-{}-{force:?}", main.pid),
                     match force {
                         Force::Quit => format!("{} {}…", l("Quit", "Avslutt"), app.name),
-                        Force::ForceQuit => l("Force Quit…", "Tving avslutning…").to_string(),
+                        Force::ForceQuit => format!("{} {}…", l("Force quit", "Tving avslutning av"), app.name),
                     },
                     false,
                     dark,
@@ -426,6 +426,8 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
         actions = actions.child(button(format!("app-reveal-{}", app.key), l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| crate::storage::reveal(&path)));
     }
 
+    let all = view.process_all_helpers.as_deref() == Some(app.key.as_str());
+    let total = procs.len();
     let mut detail = div()
         .ml(px(38.))
         .mr(px(8.))
@@ -436,14 +438,56 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
         .flex()
         .flex_col()
         .gap_1()
-        .when_some(app.icon_path.clone(), |d, path| d.child(mono(path, dark).pt_1()));
-    for p in procs {
-        detail = detail.child(process_row(view, p, remaining.contains(&p.pid), dark, this.clone()));
+        .child(div().pt_1().pb_1().child(actions))
+        .when_some(app.icon_path.clone(), |d, path| d.child(mono(path, dark)));
+    for p in procs.iter().take(if all { total } else { HELPERS_SHOWN }) {
+        detail = detail.child(process_row(view, p, app.icon_path.as_deref(), remaining.contains(&p.pid), dark, this.clone()));
     }
-    detail.child(div().pt_1().child(actions))
+    if total > HELPERS_SHOWN {
+        let key = app.key.clone();
+        let target = this.clone();
+        detail = detail.child(div().pt_1().child(button(
+            format!("app-helpers-{}", app.key),
+            if all {
+                l("Show fewer processes", "Vis færre prosesser").to_string()
+            } else {
+                format!("{} {}", l("Show all", "Vis alle"), count_label(total))
+            },
+            false,
+            dark,
+            move |_, cx| {
+                target.update(cx, |v, cx| {
+                    v.process_all_helpers = if all { None } else { Some(key.clone()) };
+                    cx.notify();
+                });
+            },
+        )));
+    }
+    detail
 }
 
-fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+/// Processes listed under an expanded app before "Show all".
+const HELPERS_SHOWN: usize = 12;
+
+/// The program's own name: macOS truncates `comm` to 16 characters.
+fn program_name(p: &ProcInfo) -> String {
+    std::path::Path::new(&p.exe_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| p.comm.clone())
+}
+
+/// Path inside the app's bundle when it has one, so helpers do not repeat
+/// the whole bundle path on every row.
+fn short_path(p: &ProcInfo, bundle: Option<&str>) -> String {
+    match bundle.and_then(|b| p.exe_path.strip_prefix(b)) {
+        Some(rest) => format!("…{rest}"),
+        None => p.exe_path.clone(),
+    }
+}
+
+fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_running: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let id = Identity::of(p);
     let showing = view.process_detail == Some(id);
     let blocked = control::blocked(p);
@@ -452,7 +496,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: boo
         Some(block) => controls = controls.child(sub(block.reason()).text_color(t::ink_dim(dark))),
         None if !view.process_pending => {
             for force in [Force::Quit, Force::ForceQuit] {
-                let action = Action::Processes { name: p.comm.clone(), targets: vec![p.clone()], force };
+                let action = Action::Processes { name: program_name(p), targets: vec![p.clone()], force };
                 let target = this.clone();
                 controls = controls.child(button(
                     format!("proc-{}-{force:?}", p.pid),
@@ -498,7 +542,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: boo
                             .items_center()
                             .gap_2()
                             .text_size(px(12.))
-                            .child(div().truncate().child(p.comm.clone()))
+                            .child(div().truncate().child(program_name(p)))
                             .child(div().text_color(t::ink_dim(dark)).child(format!("PID {}", p.pid)))
                             .when(left_running, |d| {
                                 d.child(
@@ -511,7 +555,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, left_running: bool, dark: boo
                                 )
                             }),
                     )
-                    .child(mono(p.exe_path.clone(), dark)),
+                    .child(mono(short_path(p, bundle), dark)),
             )
             .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(crate::locale::percent(p.cpu_pct, 1)))
             .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(px(12.)).child(fmt_bytes(p.mem_bytes as f64)))

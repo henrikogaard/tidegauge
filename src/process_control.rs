@@ -134,9 +134,16 @@ fn outcome(name: &str, total: usize, exited: usize, force: Force) -> Result<Stri
     ))
 }
 
+fn already_quit(name: &str) -> String {
+    format!("{name} {}", l("had already quit.", "var allerede avsluttet."))
+}
+
 /// Quit or force quit a running app through AppKit, like the Dock does.
 pub fn quit_app(main: &ProcInfo, name: &str, force: Force) -> Result<String, String> {
     use objc2_app_kit::NSRunningApplication;
+    if confirmed_exit(Identity::of(main)) {
+        return Ok(already_quit(name));
+    }
     verify(main)?;
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(main.pid)
         .ok_or_else(|| l("The app is no longer running.", "Appen kjører ikke lenger.").to_string())?;
@@ -175,8 +182,15 @@ pub fn signal(targets: &[ProcInfo], name: &str, force: Force) -> Result<String, 
         Force::ForceQuit => libc::SIGKILL,
     };
     let mut sent = Vec::new();
+    let mut gone = 0;
     let mut first_error = None;
     for target in targets {
+        // Already gone (or its PID now belongs to another process): nothing
+        // to do, and never a reason to signal whatever holds the PID now.
+        if confirmed_exit(Identity::of(target)) {
+            gone += 1;
+            continue;
+        }
         match verify(target) {
             Ok(()) if unsafe { libc::kill(target.pid, sig) } == 0 => sent.push(Identity::of(target)),
             Ok(()) => {
@@ -193,6 +207,9 @@ pub fn signal(targets: &[ProcInfo], name: &str, force: Force) -> Result<String, 
                 first_error.get_or_insert(error);
             }
         }
+    }
+    if sent.is_empty() && gone > 0 && first_error.is_none() {
+        return Ok(already_quit(name));
     }
     if sent.is_empty() {
         return Err(first_error.unwrap_or_else(|| {
@@ -251,8 +268,25 @@ mod tests {
         let mut target = proc(parent, unsafe { libc::getuid() }, "/nonexistent/changed", "changed");
         target.start_unix = 1.;
         let result = signal(&[target], "changed", Force::Quit);
-        assert!(result.is_err());
+        assert_eq!(result, Ok(already_quit("changed")), "a reused PID counts as already quit");
         assert!(unsafe { libc::kill(parent, 0) } == 0, "parent must still be running");
+    }
+
+    #[test]
+    fn a_refused_target_is_not_signalled() {
+        // Same PID and start time but a different executable (and our own
+        // process, which is refused anyway): an error, never a signal.
+        let me = std::process::id() as i32;
+        let bsd = proc_bsd(me).unwrap();
+        let target = ProcInfo {
+            pid: me,
+            uid: bsd.pbi_uid,
+            exe_path: "/nonexistent/other".into(),
+            comm: "other".into(),
+            start_unix: bsd.pbi_start_tvsec as f64 + bsd.pbi_start_tvusec as f64 / 1_000_000.,
+            ..Default::default()
+        };
+        assert!(signal(&[target], "other", Force::Quit).is_err());
     }
 
     #[test]
