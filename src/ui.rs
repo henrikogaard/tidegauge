@@ -124,6 +124,7 @@ pub struct TideGaugeView {
     pub show_processes: bool,
     pub show_tools: bool,
     pub show_agents: bool,
+    pub agent_expanded: Option<i32>,
     agents_scroll: ScrollHandle,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
@@ -140,8 +141,8 @@ pub struct TideGaugeView {
     pub process_filter: Entity<gpui_kit::base::input::InputState>,
     pub process_query: String,
     pub process_pending: bool,
-    pub process_message: Option<String>,
-    pub process_failed: bool,
+    pub toast: Option<Toast>,
+    pub process_selected: Option<crate::process_activity::Identity>,
     pub process_signing: crate::process_signing::State,
     pub settings_error: Option<String>,
     pub selected_disk: Option<String>,
@@ -190,6 +191,7 @@ impl TideGaugeView {
             show_processes: false,
             show_tools: false,
             show_agents: false,
+            agent_expanded: None,
             agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
@@ -206,8 +208,8 @@ impl TideGaugeView {
             process_filter,
             process_query: String::new(),
             process_pending: false,
-            process_message: None,
-            process_failed: false,
+            toast: None,
+            process_selected: None,
             process_signing: crate::process_signing::State::default(),
             settings_error: None,
             selected_disk: None,
@@ -233,6 +235,9 @@ impl TideGaugeView {
                         cx,
                         |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
                             v.snap = latest();
+                            if v.toast.as_ref().is_some_and(Toast::expired) {
+                                v.toast = None;
+                            }
                             crate::process_panel::refresh_order(v);
                             cx.notify();
                         },
@@ -243,6 +248,77 @@ impl TideGaugeView {
         .detach();
         v
     }
+}
+
+/// A short result note shown at the bottom of the window, then faded out.
+pub struct Toast {
+    pub text: String,
+    pub failed: bool,
+    shown: std::time::Instant,
+}
+
+impl Toast {
+    pub fn new(text: String, failed: bool) -> Self {
+        Self { text, failed, shown: std::time::Instant::now() }
+    }
+    fn expired(&self) -> bool {
+        // Failures stay a little longer so they can be read.
+        self.shown.elapsed().as_secs() >= if self.failed { 10 } else { 5 }
+    }
+}
+
+fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+    let color = if toast.failed { t::warn(dark) } else { t::ok(dark) };
+    div()
+        .absolute()
+        .bottom(px(18.))
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("toast")
+                .role(Role::Status)
+                .aria_label(SharedString::from(toast.text.clone()))
+                .max_w(px(560.))
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_3()
+                .pr_1()
+                .py_1()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(t::line(dark))
+                .bg(t::card_hi(dark))
+                .text_size(px(12.))
+                .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
+                .child(div().min_w_0().child(toast.text.clone()))
+                .child(
+                    div()
+                        .id("toast-close")
+                        .role(Role::Button)
+                        .aria_label(l("Dismiss", "Lukk"))
+                        .tab_index(0)
+                        .size(px(22.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_color(t::ink_dim(dark))
+                        .hover(|d| d.bg(t::card(dark)))
+                        .child("×")
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |v, cx| {
+                                v.toast = None;
+                                cx.notify();
+                            });
+                        }),
+                ),
+        )
 }
 
 // ---------- small builders ----------
@@ -1078,8 +1154,10 @@ impl Render for TideGaugeView {
                     .h_full()
                     .flex()
                     .flex_col()
+                    .relative()
                     .child(header)
-                    .child(content),
+                    .child(content)
+                    .when_some(self.toast.as_ref(), |d, toast| d.child(toast_view(toast, dark, this.clone()))),
             )
     }
 }
@@ -1721,6 +1799,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .flex()
         .flex_col()
         .gap(px(if settings.compact_dashboard { 10. } else { 16. }))
+        .when_some(crate::agents_panel::plan_strip(&s.plans, dark, this.clone()), |d, strip| d.child(strip))
         .when(crate::keepawake::status().active, |d| {
             d.child(crate::controls::keep_awake(dark, this.clone()))
         })
@@ -1784,7 +1863,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         dark,
                     ))
                     .child(top_apps_donut(s, dark)))
-                    .when(favorites.iter().any(|key| key == "battery"), |row| row.child(power_donut(s, dark))),
+                    .when(favorites.iter().any(|key| key == "battery") && s.apps.iter().any(|a| a.power_w > 0.), |row| row.child(power_donut(s, dark))),
             )
         })
         .child(

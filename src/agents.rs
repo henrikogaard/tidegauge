@@ -313,6 +313,8 @@ pub struct Session {
     pub root: ProcInfo,
     pub title: Option<String>,
     pub folder: Option<String>,
+    /// The app the session runs inside (Claude, Terminal, ChatGPT…), if any.
+    pub host: Option<String>,
     pub activity: Activity,
     pub started: Vec<Started>,
     pub mem_bytes: u64,
@@ -513,8 +515,26 @@ pub fn detect(
             let folder = file
                 .and_then(|f| f.cwd.clone())
                 .or_else(|| Some(proc_cwd(root.pid)).filter(|cwd| !cwd.is_empty()));
+            // Nearest ancestor inside an app bundle: where the session lives.
+            let host = {
+                let mut current = root.ppid;
+                let mut found = None;
+                for _ in 0..32 {
+                    let Some(parent) = by_pid.get(&current) else { break };
+                    if let Some(bundle) = bundle_root(&parent.exe_path) {
+                        found = Path::new(&bundle).file_stem().map(|s| s.to_string_lossy().into_owned());
+                        break;
+                    }
+                    if parent.ppid <= 1 || parent.ppid == current {
+                        break;
+                    }
+                    current = parent.ppid;
+                }
+                found
+            };
             Session {
                 agent,
+                host,
                 title: file.and_then(|f| f.name.clone()).filter(|name| !name.trim().is_empty()),
                 folder,
                 activity,
@@ -657,6 +677,22 @@ mod tests {
     }
 
     #[test]
+    fn a_session_knows_the_app_it_runs_in() {
+        let procs = vec![
+            proc(50, 1, "/Applications/Claude.app/Contents/MacOS/Claude"),
+            proc(51, 50, "/Applications/Claude.app/Contents/Helpers/disclaimer"),
+            proc(52, 51, "/Users/x/Library/Application Support/Claude/claude-code/2.1/claude.app/Contents/MacOS/claude"),
+            proc(60, 1, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"),
+            proc(61, 60, "/bin/zsh"),
+            proc(62, 61, "/Users/x/.local/bin/claude"),
+        ];
+        let sessions = detect(&procs, &[], &|_| None, &HashMap::new());
+        let host = |pid: i32| sessions.iter().find(|s| s.root.pid == pid).and_then(|s| s.host.clone());
+        assert_eq!(host(52).as_deref(), Some("Claude"), "nearest ancestor bundle, not the session's own");
+        assert_eq!(host(62).as_deref(), Some("Terminal"));
+    }
+
+    #[test]
     fn sessions_group_what_they_started() {
         let mut procs = vec![
             proc(100, 1, "/Users/x/.local/bin/claude"),
@@ -677,6 +713,7 @@ mod tests {
         assert_eq!(sessions.len(), 1, "the nested claude is part of the first session");
         let s = &sessions[0];
         assert_eq!(s.root.pid, 100);
+        assert_eq!(s.host, None, "launchd parent: no host app");
         assert_eq!(s.tree.len(), 6);
         assert_eq!(s.activity, Activity::Working, "child CPU counts toward the session");
         let server = s.started.iter().find(|g| g.role == Role::Server).unwrap();

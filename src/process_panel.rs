@@ -183,14 +183,6 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             .child(sort),
     );
 
-    if let Some(message) = &view.process_message {
-        page = page.child(card(dark).child(sub(message.clone()).text_color(if view.process_failed {
-            t::warn(dark)
-        } else {
-            t::ink(dark)
-        })));
-    }
-
     let query = view.process_query.as_str();
     let by_pid: HashMap<i32, &ProcInfo> = s.procs.iter().map(|p| (p.pid, p)).collect();
     let matches = |app: &AppGroup| {
@@ -383,9 +375,38 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
     } else {
         procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
     }
+    // Left-running helpers first, so the row cutoff never hides them; in the
+    // Left running view they are the only rows.
+    procs.sort_by_key(|p| !remaining.contains(&p.pid));
+    if view.only_remaining {
+        procs.retain(|p| remaining.contains(&p.pid));
+    }
     let pending = view.process_pending;
     let mut actions = div().flex().items_center().gap_2().flex_wrap();
-    if let Some(main) = registered_main(s, app) {
+    let left_running: Vec<ProcInfo> = if view.only_remaining {
+        procs.iter().filter(|p| control::blocked(p).is_none()).map(|p| (*p).clone()).collect()
+    } else {
+        Vec::new()
+    };
+    if view.only_remaining {
+        // Only the leftovers: never offer to quit a relaunched app from here.
+        if !left_running.is_empty() && !pending {
+            for force in [Force::Quit, Force::ForceQuit] {
+                let action = Action::Processes { name: app.name.clone(), targets: left_running.clone(), force };
+                let target = this.clone();
+                actions = actions.child(button(
+                    format!("leftover-{}-{force:?}", app.key),
+                    match force {
+                        Force::Quit => format!("{} ({})…", l("Quit all", "Avslutt alle"), left_running.len()),
+                        Force::ForceQuit => format!("{} ({})…", l("Force quit all", "Tving avslutning av alle"), left_running.len()),
+                    },
+                    false,
+                    dark,
+                    move |window, cx| request(action.clone(), target.clone(), window, cx),
+                ));
+            }
+        }
+    } else if let Some(main) = registered_main(s, app) {
         if control::blocked(main).is_none() && !pending {
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::App { main: main.clone(), name: app.name.clone(), helpers: procs.len(), memory: app.mem_bytes, force };
@@ -490,9 +511,19 @@ fn short_path(p: &ProcInfo, bundle: Option<&str>) -> String {
 fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_running: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let id = Identity::of(p);
     let showing = view.process_detail == Some(id);
+    let selected = view.process_selected == Some(id) || showing;
     let blocked = control::blocked(p);
-    let mut controls = div().flex().items_center().gap_1().flex_shrink_0();
+    // Clicks on the row's buttons must not also toggle the row.
+    let mut controls = div()
+        .id(SharedString::from(format!("proc-controls-{}", p.pid)))
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .flex()
+        .items_center()
+        .gap_1()
+        .flex_shrink_0();
     match blocked {
+        // Unselected rows stay quiet: actions appear on the row you pick.
+        _ if !selected => {}
         Some(block) => controls = controls.child(sub(block.reason()).text_color(t::ink_dim(dark))),
         None if !view.process_pending => {
             for force in [Force::Quit, Force::ForceQuit] {
@@ -513,6 +544,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
         None => {}
     }
     let target = this.clone();
+    if selected {
     controls = controls.child(button(
         format!("proc-detail-{}", p.pid),
         if showing { l("Hide details", "Skjul detaljer") } else { l("Details", "Detaljer") },
@@ -525,8 +557,42 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
             });
         },
     ));
+    }
+    let select = this.clone();
+    let keyboard = this.clone();
+    let toggle = move |this: &Entity<TideGaugeView>, cx: &mut App| {
+        this.update(cx, |v, cx| {
+            v.process_selected = if selected { None } else { Some(id) };
+            if selected {
+                v.process_detail = None;
+            }
+            cx.notify();
+        });
+    };
     let mut row = div().flex().flex_col().gap_1().py_1().child(
         div()
+            .id(SharedString::from(format!("proc-row-{}", p.pid)))
+            .role(Role::Button)
+            .aria_label(SharedString::from(format!("{} PID {}", program_name(p), p.pid)))
+            .aria_selected(selected)
+            .tab_index(0)
+            .min_h(px(36.))
+            .px_2()
+            .rounded(px(7.))
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .cursor_pointer()
+            .when(selected, |d| d.bg(t::card_hi(dark)))
+            .when(!selected, |d| d.hover(|h| h.bg(t::card_hi(dark).opacity(0.5))))
+            .focus_visible(move |d| d.border_color(t::accent(dark)))
+            .on_click(move |_, _, cx| toggle(&select, cx))
+            .capture_key_down(move |event, window, cx| {
+                if crate::controls::is_activation_key(&event.keystroke) {
+                    window.prevent_default();
+                    toggle(&keyboard, cx);
+                    cx.stop_propagation();
+                }
+            })
             .flex()
             .items_center()
             .gap_2()
@@ -800,10 +866,13 @@ pub(crate) fn request(action: Action, this: Entity<TideGaugeView>, window: &mut 
         .await;
         this.update(cx, |v, cx| {
             v.process_pending = false;
-            v.process_failed = result.is_err();
-            v.process_message = Some(match result {
-                Ok(s) | Err(s) => s,
-            });
+            v.process_selected = None;
+            v.toast = Some(crate::ui::Toast::new(
+                match &result {
+                    Ok(s) | Err(s) => s.clone(),
+                },
+                result.is_err(),
+            ));
             cx.notify();
         });
     })
