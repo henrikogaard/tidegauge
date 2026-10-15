@@ -82,6 +82,82 @@ fn percent(fraction: f64) -> String {
     format!("{:.0}%", (fraction * 100.).round())
 }
 
+/// Plan rings for the Overview: one compact chip per provider, opening Agents.
+pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
+    let Plans::Loaded(plans) = plans else { return None };
+    if plans.is_empty() {
+        return None;
+    }
+    let now = now();
+    let mut strip = div().flex().flex_wrap().gap_2();
+    for plan in plans {
+        let tight = plan.tightest();
+        let left = tight.map(|w| 1. - w.used);
+        let old = plan.stale || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS);
+        let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
+        let color = if old {
+            t::ink_dim(dark)
+        } else {
+            match (&pace, left) {
+                (Pace::UsedUp, _) => t::warn(dark),
+                (Pace::RunsOut { .. }, _) => t::caution(dark),
+                (_, Some(left)) if left < 0.15 => t::caution(dark),
+                _ => t::ok(dark),
+            }
+        };
+        let ring: Vec<(f64, Hsla)> = left.map(|left| vec![(left, color), (1. - left, t::card_hi(dark))]).unwrap_or_default();
+        let note = match (old, &pace) {
+            (true, _) => l("not updating", "oppdateres ikke").to_string(),
+            (false, Pace::RunsOut { in_secs }) => format!("{} {}", l("out in", "tom om"), duration(*in_secs)),
+            (false, Pace::UsedUp) => l("used up", "brukt opp").to_string(),
+            (false, Pace::OnPace { .. }) => l("on pace", "i rute").to_string(),
+            (false, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
+        };
+        let target = this.clone();
+        let provider = plan.provider.clone();
+        strip = strip.child(
+            div()
+                .id(SharedString::from(format!("plan-chip-{provider}")))
+                .role(gpui_kit::Role::Button)
+                .aria_label(SharedString::from(format!("{} {}", provider_name(&provider), left.map(percent).unwrap_or_default())))
+                .tab_index(0)
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_1()
+                .pr_3()
+                .py_1()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(t::line(dark))
+                .bg(t::card(dark))
+                .cursor_pointer()
+                .hover(|d| d.bg(t::card_hi(dark)))
+                .child(div().size(px(28.)).flex_shrink_0().child(donut(&ring, 28., t::card_hi(dark))))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .text_size(px(12.))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(provider_name(&plan.provider)))
+                                .child(div().text_color(color).child(format!(
+                                    "{} {}",
+                                    left.map(percent).unwrap_or_else(|| "–".into()),
+                                    l("left", "igjen")
+                                ))),
+                        )
+                        .child(div().text_size(px(11.)).text_color(if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) }).child(note)),
+                )
+                .on_click(move |_, _, cx| open(&target, cx)),
+        );
+    }
+    Some(strip)
+}
+
 fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
     let tight = plan.tightest();
     let left = tight.map(|w| 1. - w.used);
@@ -203,129 +279,207 @@ fn role_label(role: Role) -> &'static str {
     }
 }
 
-fn session_card(session: &Session, now: f64, pending: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+fn session_title(session: &Session) -> String {
     let folder_name = session
         .folder
         .as_deref()
         .and_then(|f| std::path::Path::new(f).file_name())
         .map(|n| n.to_string_lossy().into_owned());
-    let title = session
+    session
         .title
         .clone()
-        .or_else(|| folder_name.clone())
-        .unwrap_or_else(|| session.agent.name().into());
+        .or(folder_name)
+        .unwrap_or_else(|| session.agent.name().into())
+}
+
+/// One line per session; selecting it shows what it started and Quit.
+fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let title = session_title(&session);
+    let working = session.activity == Activity::Working;
     let (chip, chip_color) = match session.activity {
-        Activity::Working => (l("Working", "Jobber").to_string(), t::ok(dark)),
+        Activity::Working => (l("Working", "Arbeider").to_string(), t::ok(dark)),
         Activity::Idle { since: Some(since) } if since < now => (
             format!("{} {}", l("idle", "inaktiv i"), duration(now - since)),
             t::ink_dim(dark),
         ),
         Activity::Idle { .. } => (l("Idle", "Inaktiv").to_string(), t::ink_dim(dark)),
     };
+    let folder_name = session
+        .folder
+        .as_deref()
+        .and_then(|f| std::path::Path::new(f).file_name())
+        .map(|n| n.to_string_lossy().into_owned());
     let mut meta = vec![session.agent.name().to_string()];
-    meta.extend(folder_name.filter(|name| Some(name) != session.title.as_ref()));
+    if let Some(host) = &session.host {
+        meta.push(format!("{} {host}", l("in", "i")));
+    }
+    meta.extend(folder_name.filter(|name| *name != title));
     if session.root.start_unix > 0. {
         meta.push(format!("{} {}", l("running", "har kjørt"), duration(now - session.root.start_unix)));
     }
+    let pid = session.root.pid;
+    let toggle_target = this.clone();
+    let keyboard = this.clone();
+    let toggle = move |this: &Entity<TideGaugeView>, cx: &mut App| {
+        this.update(cx, |v, cx| {
+            v.agent_expanded = if expanded { None } else { Some(pid) };
+            cx.notify();
+        });
+    };
     let initial = session.agent.name().chars().next().unwrap_or('?').to_string();
-    let mut body = card(dark)
-        .gap_2()
+    let row = div()
+        .id(SharedString::from(format!("agent-row-{pid}")))
+        .role(gpui_kit::Role::Button)
+        .aria_label(SharedString::from(title.clone()))
+        .aria_expanded(expanded)
+        .tab_index(0)
+        .h(px(44.))
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_3()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .cursor_pointer()
+        .when(expanded, |d| d.bg(t::card_hi(dark)))
+        .when(!expanded, |d| d.hover(|h| h.bg(t::card_hi(dark).opacity(0.5))))
+        .focus_visible(move |d| d.border_color(t::accent(dark)))
+        .on_click(move |_, _, cx| toggle(&toggle_target, cx))
+        .capture_key_down(move |event, window, cx| {
+            if crate::controls::is_activation_key(&event.keystroke) {
+                window.prevent_default();
+                toggle(&keyboard, cx);
+                cx.stop_propagation();
+            }
+        })
         .child(
+            div()
+                .size(px(24.))
+                .flex_shrink_0()
+                .rounded(px(6.))
+                .bg(if working { t::ok(dark).opacity(0.16) } else { t::card_hi(dark) })
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(initial),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if working { t::ink(dark) } else { t::ink(dark).opacity(0.75) })
+                        .child(title),
+                )
+                .child(div().truncate().text_xs().text_color(t::ink_dim(dark)).child(meta.join(" · "))),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .px_2()
+                .rounded(px(6.))
+                .bg(chip_color.opacity(0.14))
+                .text_color(chip_color)
+                .text_xs()
+                .child(chip),
+        )
+        .child(
+            div()
+                .w(px(64.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_size(px(12.))
+                .text_color(t::ink_dim(dark))
+                .child(if session.cpu_pct >= 1. { crate::locale::percent(session.cpu_pct, 0) } else { String::new() }),
+        )
+        .child(
+            div()
+                .w(px(80.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(fmt_bytes(session.mem_bytes as f64)),
+        )
+        .child(div().w(px(12.)).flex_shrink_0().text_size(px(10.)).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }));
+    let mut block = div().flex().flex_col().child(row);
+    if !expanded {
+        return block;
+    }
+    let mut detail = div()
+        .ml(px(48.))
+        .mr_3()
+        .mb_2()
+        .pl_3()
+        .border_l_1()
+        .border_color(t::line(dark))
+        .flex()
+        .flex_col()
+        .gap_1();
+    let targets: Vec<_> = session.tree.iter().filter(|p| control::blocked(p).is_none()).cloned().collect();
+    let mut actions = div().flex().items_center().gap_2().pt_1().pb_1();
+    if !targets.is_empty() && !pending {
+        let action = Action::Processes { name: session_title(session), targets, force: Force::Quit };
+        let target = this.clone();
+        actions = actions.child(button(
+            format!("quit-session-{pid}"),
+            l("Quit session…", "Avslutt økten…"),
+            false,
+            dark,
+            move |window, cx| crate::process_panel::request(action.clone(), target.clone(), window, cx),
+        ));
+    }
+    if let Some(folder) = session.folder.clone() {
+        let path = std::path::PathBuf::from(folder);
+        actions = actions.child(button(format!("agent-folder-{pid}"), l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| crate::storage::reveal(&path)));
+    }
+    detail = detail.child(actions);
+    if session.started.is_empty() {
+        detail = detail.child(sub(l("Nothing started", "Ingenting startet")).text_color(t::ink_dim(dark)));
+    }
+    for started in session.started.iter().take(12) {
+        let mut what = role_label(started.role).to_string();
+        if let Some(port) = started.port {
+            what = format!("{what} · {} {port}", l("port", "port"));
+        }
+        if started.cpu_pct >= 1. {
+            what = format!("{what} · {} CPU", crate::locale::percent(started.cpu_pct, 0));
+        }
+        detail = detail.child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(
-                    div()
-                        .size(px(22.))
-                        .flex_shrink_0()
-                        .rounded(px(6.))
-                        .bg(t::card_hi(dark))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(initial),
-                )
-                .child(div().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title.clone()))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .px_2()
-                        .rounded(px(6.))
-                        .bg(chip_color.opacity(0.14))
-                        .text_color(chip_color)
-                        .text_xs()
-                        .child(chip),
-                )
+                .text_size(px(12.))
+                .child(div().truncate().child(if started.count > 1 {
+                    format!("{} ×{}", started.name, started.count)
+                } else {
+                    started.name.clone()
+                }))
+                .child(div().flex_shrink_0().text_color(t::ink_dim(dark)).child(what))
                 .child(div().flex_1())
-                .when(session.cpu_pct >= 1., |d| {
-                    d.child(div().text_size(px(12.)).text_color(t::ink_dim(dark)).child(format!("{:.0}% CPU", session.cpu_pct)))
-                })
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(fmt_bytes(session.mem_bytes as f64))),
-        )
-        .child(sub(meta.join(" · ")).text_color(t::ink_dim(dark)));
-    if !session.started.is_empty() {
-        body = body.child(
-            div()
-                .pt_1()
-                .text_size(px(10.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t::ink_dim(dark))
-                .child(format!("{} · {}", l("STARTED", "STARTET"), session.started.len())),
+                .child(div().flex_shrink_0().text_color(t::ink_dim(dark)).child(fmt_bytes(started.mem_bytes as f64))),
         );
-        for started in session.started.iter().take(12) {
-            let mut what = role_label(started.role).to_string();
-            if let Some(port) = started.port {
-                what = format!("{what} · {} {port}", l("port", "port"));
-            }
-            if started.cpu_pct >= 1. {
-                what = format!("{what} · {:.0}% CPU", started.cpu_pct);
-            }
-            body = body.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(12.))
-                    .child(div().truncate().child(if started.count > 1 {
-                        format!("{} ×{}", started.name, started.count)
-                    } else {
-                        started.name.clone()
-                    }))
-                    .child(div().flex_shrink_0().text_color(t::ink_dim(dark)).child(what))
-                    .child(div().flex_1())
-                    .child(div().flex_shrink_0().text_color(t::ink_dim(dark)).child(fmt_bytes(started.mem_bytes as f64))),
-            );
-        }
     }
-    let targets: Vec<_> = session.tree.iter().filter(|p| control::blocked(p).is_none()).cloned().collect();
-    if !targets.is_empty() && !pending {
-        let action = Action::Processes { name: title, targets, force: Force::Quit };
-        body = body.child(div().pt_1().flex().justify_end().child(button(
-            format!("quit-session-{}", session.root.pid),
-            l("Quit session…", "Avslutt økten…"),
-            false,
-            dark,
-            move |window, cx| crate::process_panel::request(action.clone(), this.clone(), window, cx),
-        )));
-    }
-    body
+    block = block.child(detail);
+    block
 }
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let s = &view.snap;
     let now = now();
     let mut page = div().flex().flex_col().gap_3();
-    if let Some(message) = &view.process_message {
-        page = page.child(card(dark).child(sub(message.clone()).text_color(if view.process_failed {
-            t::warn(dark)
-        } else {
-            t::ink(dark)
-        })));
-    }
-
     page = page.child(section_header(l("AI plans", "AI-abonnementer"), l("From OpenQuota", "Fra OpenQuota"), dark));
     page = match &s.plans {
         Plans::Loaded(plans) if !plans.is_empty() => page.child(
@@ -360,9 +514,20 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     };
 
     let total: u64 = s.agents.iter().map(|session| session.mem_bytes).sum();
+    let working = s.agents.iter().filter(|a| a.activity == Activity::Working).count();
     page = page.child(section_header(
         l("Running agents", "Agenter som kjører"),
-        &if s.agents.is_empty() { String::new() } else { format!("{} · {}", s.agents.len(), fmt_bytes(total as f64)) },
+        &if s.agents.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{} · {} {} · {}",
+                s.agents.len(),
+                working,
+                l("working", "arbeider"),
+                fmt_bytes(total as f64)
+            )
+        },
         dark,
     ));
     if s.agents.is_empty() {
@@ -378,8 +543,32 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             dark,
         ));
     }
-    for session in &s.agents {
-        page = page.child(session_card(session, now, view.process_pending, dark, this.clone()));
+    let idle: Vec<&Session> = s.agents.iter().filter(|a| a.activity != Activity::Working).collect();
+    let idle_targets: Vec<_> = idle
+        .iter()
+        .flat_map(|session| session.tree.iter())
+        .filter(|p| control::blocked(p).is_none())
+        .cloned()
+        .collect();
+    if idle.len() > 1 && !idle_targets.is_empty() && !view.process_pending {
+        let action = Action::Processes {
+            name: crate::locale::count(idle.len() as u64, "idle session", "idle sessions", "inaktiv økt", "inaktive økter"),
+            targets: idle_targets,
+            force: Force::Quit,
+        };
+        let target = this.clone();
+        page = page.child(div().flex().justify_end().child(button(
+            "quit-idle-sessions",
+            format!("{} ({})…", l("Quit idle sessions", "Avslutt inaktive økter"), idle.len()),
+            false,
+            dark,
+            move |window, cx| crate::process_panel::request(action.clone(), target.clone(), window, cx),
+        )));
     }
-    page
+    let mut list = card(dark).p_1().gap(px(2.));
+    for session in &s.agents {
+        let expanded = view.agent_expanded == Some(session.root.pid);
+        list = list.child(session_row(session, now, expanded, view.process_pending, dark, this.clone()));
+    }
+    page.child(list)
 }
