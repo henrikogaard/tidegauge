@@ -1926,10 +1926,13 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
     let color = Metric::Power.accent(dark);
     let mut top: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w > 0.).collect();
     if top.is_empty() {
-        return card(dark)
-            .child(metric_heading(Tab::Battery, dark))
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(l("App energy unavailable", "Appenergi utilgjengelig")))
-            .child(sub(l("No per-app energy estimates are currently available. This does not mean zero power consumption.", "Ingen energianslag per app er tilgjengelige nå. Dette betyr ikke null strømforbruk.")).text_color(t::ink_dim(dark)));
+        return empty_state(
+            Tab::Battery.icon(),
+            color,
+            l("App energy unavailable", "Appenergi utilgjengelig").into(),
+            l("No per-app energy estimates are currently available. This does not mean zero power consumption.", "Ingen energianslag per app er tilgjengelige nå. Dette betyr ikke null strømforbruk.").into(),
+            dark,
+        );
     }
     top.sort_by(|a, b| b.power_w.total_cmp(&a.power_w));
     let total: f64 = top.iter().map(|a| a.power_w).sum();
@@ -2239,12 +2242,22 @@ fn disk_tab(
                 }))
                 .on_click(cx.listener(move |view, _, _, cx| { view.selected_disk = Some(id.clone()); cx.notify(); }))
         })))
-        .when(!inventory.fresh(), |d| d.child(card(dark).child(sub(if inventory.collected_at.is_none() {
-            l("Discovering storage devices…", "Finner lagringsenheter…")
-        } else { l("Disk inventory unavailable or stale. No capacity or health is assumed.", "Diskoversikten er utilgjengelig eller utdatert. Ingen kapasitet eller helsetilstand antas.") }).text_color(t::ink_dim(dark)))))
+        .when(!inventory.fresh(), |d| d.child(if inventory.collected_at.is_none() {
+            empty_state(Tab::Disk.icon(), m.accent(dark),
+                l("Discovering storage devices…", "Finner lagringsenheter…").into(),
+                l("Capacity and health appear once the inventory has been read.", "Kapasitet og helsetilstand vises når oversikten er lest.").into(), dark)
+        } else {
+            empty_state(Tab::Disk.icon(), m.accent(dark),
+                l("Disk inventory unavailable or stale", "Diskoversikten er utilgjengelig eller utdatert").into(),
+                l("No capacity or health is assumed.", "Ingen kapasitet eller helsetilstand antas.").into(), dark)
+        }))
         .when(inventory.partial, |d| d.child(sub(l("Partial inventory · some device information could not be read.", "Delvis oversikt · enkelte enhetsopplysninger kunne ikke leses.")).text_color(t::ink_dim(dark))))
-        .when(inventory.fresh() && device.is_none(), |d| d.child(card(dark).child(sub(l("Selected device unavailable, or no supported devices found.", "Valgt enhet er utilgjengelig, eller ingen støttede enheter ble funnet.")).text_color(t::ink_dim(dark)))))
-        .when(device.is_some_and(|device| !device.identity_matches(&io)), |d| d.child(card(dark).child(sub(l("Device disconnected, replaced, or temporarily unavailable. Waiting for a fresh inventory.", "Enheten er frakoblet, erstattet eller midlertidig utilgjengelig. Venter på en ny oversikt.")).text_color(t::ink_dim(dark)))))
+        .when(inventory.fresh() && device.is_none(), |d| d.child(empty_state(Tab::Disk.icon(), m.accent(dark),
+            l("Storage device unavailable", "Lagringsenhet utilgjengelig").into(),
+            l("Selected device unavailable, or no supported devices found.", "Valgt enhet er utilgjengelig, eller ingen støttede enheter ble funnet.").into(), dark)))
+        .when(device.is_some_and(|device| !device.identity_matches(&io)), |d| d.child(empty_state(Tab::Disk.icon(), m.accent(dark),
+            l("Device unavailable", "Enheten er utilgjengelig").into(),
+            l("Device disconnected, replaced, or temporarily unavailable. Waiting for a fresh inventory.", "Enheten er frakoblet, erstattet eller midlertidig utilgjengelig. Venter på en ny oversikt.").into(), dark)))
         .when_some(device.filter(|device| inventory.fresh() && device.identity_matches(&io)), |d, device| d.child(disk_detail(device, io.get(&device.id).filter(|sample| sample.fresh()), dark)))
         .child(sub(l("Inventory refreshes every 30 seconds. Virtual disk images are omitted. No mount, eject, erase, or SMART-setting operations are performed.", "Oversikten oppdateres hvert 30. sekund. Virtuelle diskbilder utelates. Ingen montering, utmating, sletting eller endring av SMART-innstillinger utføres.")).text_color(t::ink_dim(dark)))
         .child(section_header(l("All apps · all devices", "Alle apper · alle enheter"), l("Disk activity", "Diskaktivitet"), dark))
@@ -2718,23 +2731,30 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             else { l("macOS did not provide battery information. No charge or health values are assumed.", "macOS ga ingen batteriinformasjon. Ingen verdier for ladenivå eller helse blir antatt.").into() },
             dark,
         )))
-        .child(section_header(l("App", "App"), l("Estimated power usage", "Anslått strømforbruk"), dark))
-        .when(s.apps.iter().any(|a| a.power_w > 0.0), |d| d.child(list_card(
-            {
-                let mut rows: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w > 0.0).collect();
-                rows.sort_by(|a, b| b.power_w.partial_cmp(&a.power_w).unwrap());
-                let max = rows.first().map(|a| a.power_w).unwrap_or(1.0).max(0.01);
-                rows.iter()
-                    .take(10)
-                    .map(|a| app_row(a, fmt_watts(a.power_w), a.power_w / max, m.accent(dark), dark))
-                    .collect()
-            },
-            dark,
-        )))
-        .when(!s.apps.iter().any(|a| a.power_w > 0.0), |d| d.child(card(dark).child(sub(l(
-            "No per-app energy estimates are currently available.",
-            "Ingen energianslag per app er tilgjengelige nå.",
-        )).text_color(t::ink_dim(dark)))))
+        .when(b.present, |d| d
+            .child(section_header(l("App", "App"), l("Estimated power usage", "Anslått strømforbruk"), dark))
+            .child(if s.apps.iter().any(|a| a.power_w > 0.0) {
+                list_card(
+                    {
+                        let mut rows: Vec<&AppGroup> = s.apps.iter().filter(|a| a.power_w > 0.0).collect();
+                        rows.sort_by(|a, b| b.power_w.partial_cmp(&a.power_w).unwrap());
+                        let max = rows.first().map(|a| a.power_w).unwrap_or(1.0).max(0.01);
+                        rows.iter()
+                            .take(10)
+                            .map(|a| app_row(a, fmt_watts(a.power_w), a.power_w / max, m.accent(dark), dark))
+                            .collect()
+                    },
+                    dark,
+                )
+            } else {
+                empty_state(
+                    "icons/battery-charging.svg",
+                    m.accent(dark),
+                    l("No per-app energy estimates", "Ingen energianslag per app").into(),
+                    l("No per-app energy estimates are currently available.", "Ingen energianslag per app er tilgjengelige nå.").into(),
+                    dark,
+                )
+            }))
         .when(b.present, |d| d
             .child(section_header(l("Battery health", "Batterihelse"), l("Read-only", "Kun avlesning"), dark))
             .child(div().grid().grid_cols(3).gap_3()
@@ -2774,17 +2794,20 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
     let vol = s.audio.device_volume;
     let accent = m.accent(dark);
     let mut rows = Vec::new();
-    let mut apps: Vec<_> = s.audio.apps.iter().collect();
-    apps.sort_by_key(|a| !(a.running_output || a.running_input));
-    for (i, a) in apps.iter().enumerate() {
+    let active: Vec<_> = s
+        .audio
+        .apps
+        .iter()
+        .filter(|a| a.running_output || a.running_input)
+        .collect();
+    let idle = s.audio.apps.len() - active.len();
+    for a in active.iter() {
         let status = if a.running_output && a.running_input {
             l("Output + input active", "Utgang + inngang aktiv")
         } else if a.running_output {
             l("Output active", "Utgang aktiv")
-        } else if a.running_input {
-            l("Input active", "Inngang aktiv")
         } else {
-            l("Idle", "Inaktiv")
+            l("Input active", "Inngang aktiv")
         };
         let fake = AppGroup {
             name: a.name.clone(),
@@ -2799,13 +2822,6 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
                 .gap_2()
                 .py(px(5.))
                 .px_4()
-                .child(
-                    div()
-                        .w(px(16.))
-                        .text_xs()
-                        .text_color(t::ink_dim(dark))
-                        .child(format!("{}", i + 1)),
-                )
                 .child(app_icon(&fake, dark))
                 .child(
                     div()
@@ -2821,12 +2837,20 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
                 ),
         );
     }
-    if rows.is_empty() {
-        rows.push(div().p_4().text_sm().text_color(t::ink_dim(dark)).child(l(
-            "No app audio activity is reported. Process activity may be unavailable on this Mac.",
-            "Ingen lydaktivitet fra apper er rapportert. Prosessaktivitet kan være utilgjengelig på denne Macen.",
-        )));
-    }
+    let idle_line = (idle > 0).then(|| {
+        sub(crate::locale::count(idle as u64, "app idle", "apps idle", "app inaktiv", "apper inaktive"))
+            .text_color(t::ink_dim(dark))
+    });
+    // The volume shows once: in the stepper when it can be changed, otherwise
+    // as plain text beside the device name.
+    let stepper_shows_volume = !pending && s.audio.can_volume && vol.is_some();
+    let volume_text: Option<String> = if s.audio.device_muted == Some(true) {
+        Some(l("Muted", "Dempet").into())
+    } else if stepper_shows_volume {
+        None
+    } else {
+        Some(vol.map(|v| fmt_pct(v as f64 * 100.)).unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()))
+    };
     div()
         .flex()
         .flex_col()
@@ -2852,13 +2876,9 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
                                     sub(s.audio.device_name.clone()).text_color(t::ink_dim(dark)),
                                 ),
                         )
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                            if s.audio.device_muted == Some(true) {
-                                l("Muted", "Dempet").into()
-                            } else {
-                                vol.map(|v|fmt_pct(v as f64 * 100.)).unwrap_or_else(||l("Unavailable", "Utilgjengelig").into())
-                            },
-                        )),
+                        .when_some(volume_text, |d, text| {
+                            d.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(text))
+                        }),
                 )
                 .child(crate::controls::audio_output(&s.audio, dark, this, pending)),
         )
@@ -2870,7 +2890,22 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
             ),
             dark,
         ))
-        .child(list_card(rows, dark))
+        .child(if active.is_empty() {
+            empty_state(
+                "icons/volume-2.svg",
+                accent,
+                l("No apps are using audio", "Ingen apper bruker lyd").into(),
+                if s.audio.apps.is_empty() {
+                    l("No app audio activity is reported. Process activity may be unavailable on this Mac.", "Ingen lydaktivitet fra apper er rapportert. Prosessaktivitet kan være utilgjengelig på denne Macen.").to_string()
+                } else {
+                    l("Apps that play or record sound are listed here while they do.", "Apper som spiller av eller tar opp lyd vises her mens de gjør det.").to_string()
+                },
+                dark,
+            )
+        } else {
+            list_card(rows, dark)
+        })
+        .children(idle_line)
         .child(sub(l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd.")))
 }
 
@@ -2880,14 +2915,18 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
     let m = Metric::Bluetooth;
     let n = s.bt.devices.len();
     if n == 0 {
-        return card(dark)
-            .child(metric_heading(Tab::Bluetooth, dark))
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(l("No connected devices reported", "Ingen tilkoblede enheter rapportert")))
-            .child(sub(if s.bt.enabled {
+        return empty_state(
+            "icons/bluetooth.svg",
+            m.accent(dark),
+            l("No connected devices reported", "Ingen tilkoblede enheter rapportert").into(),
+            if s.bt.enabled {
                 l("Connected devices and supported battery readings appear here. Pair devices in macOS Bluetooth settings.", "Tilkoblede enheter og støttede batterimålinger vises her. Koble sammen enheter i Bluetooth-innstillingene i macOS.")
             } else {
                 l("Bluetooth is off or unavailable. Check Bluetooth in macOS System Settings.", "Bluetooth er av eller utilgjengelig. Sjekk Bluetooth i Systeminnstillinger i macOS.")
-            }).text_color(t::ink_dim(dark)));
+            }
+            .into(),
+            dark,
+        );
     }
     let lowest = s
         .bt

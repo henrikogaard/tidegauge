@@ -25,6 +25,17 @@ pub(crate) fn control(
     spec: ControlSpec,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let label = spec.label.clone();
+    control_with(spec, label, action)
+}
+
+/// Like `control`, with `content` (an icon, say) in place of the text label.
+/// `spec.label` still names the control for assistive technology.
+fn control_with(
+    spec: ControlSpec,
+    content: impl IntoElement,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
     let toggled = matches!(spec.role, Role::RadioButton | Role::Switch);
@@ -76,7 +87,7 @@ pub(crate) fn control(
     if spec.selected {
         base = base.bg(spec.accent.opacity(0.12));
     }
-    base.child(spec.label)
+    base.child(content)
         .on_click(move |_, window, cx| action(window, cx))
         .capture_key_down(move |event, window, cx| {
             if is_activation_key(&event.keystroke) {
@@ -225,6 +236,45 @@ pub fn step_value(value: String, dark: bool) -> Div {
         .child(value)
 }
 
+/// A framed, icon-only action button (the label is its accessible name).
+fn icon_button(
+    id: impl Into<String>,
+    icon: &'static str,
+    aria: impl Into<String>,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let content = svg().path(icon).size(px(14.)).text_color(t::ink(dark));
+    control_with(spec(id, aria, false, dark, t::accent(dark)), content, action)
+}
+
+/// A compact two-choice switch for a boolean preference: the segment that
+/// matches the current value carries the accent tint.
+fn on_off(
+    id: &str,
+    name: &str,
+    value: bool,
+    labels: (&'static str, &'static str),
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    set: impl Fn(&mut Settings, bool) + Clone + 'static,
+) -> impl IntoElement {
+    let mut group = segment_group(format!("{id}-group"), name, dark);
+    for (choice, label) in [(true, labels.0), (false, labels.1)] {
+        let this = this.clone();
+        let set = set.clone();
+        group = group.child(segment(
+            format!("{id}-{}", if choice { "on" } else { "off" }),
+            label,
+            value == choice,
+            dark,
+            t::accent(dark),
+            move |window, cx| update_preference(&this, |s| set(s, choice), window, cx),
+        ));
+    }
+    group
+}
+
 fn preference(
     id: String,
     label: impl Into<String>,
@@ -234,20 +284,6 @@ fn preference(
     change: impl Fn(&mut Settings) + 'static,
 ) -> impl IntoElement {
     button(id, label, selected, dark, move |window, cx| {
-        update_preference(&this, |s| change(s), window, cx)
-    })
-}
-
-fn preference_labeled(
-    id: String,
-    label: impl Into<String>,
-    aria: impl Into<String>,
-    selected: bool,
-    dark: bool,
-    this: Entity<TideGaugeView>,
-    change: impl Fn(&mut Settings) + 'static,
-) -> impl IntoElement {
-    button_labeled(id, label, aria, selected, dark, move |window, cx| {
         update_preference(&this, |s| change(s), window, cx)
     })
 }
@@ -380,79 +416,88 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
             .font_weight(FontWeight::SEMIBOLD)
             .child(l("Tab order", "Fanerekkefølge")),
     );
+    let enabled_count = s.dashboard_tabs.len();
     for key in order {
         let Some(tab) = Tab::from_key(&key) else {
             continue;
         };
-        let enabled = s.dashboard_tabs.contains(&key);
+        let position = s.dashboard_tabs.iter().position(|x| x == &key);
         let toggle_key = key.clone();
         let up_key = key.clone();
         let down_key = key.clone();
-        let mut row = div()
-            .id(SharedString::from(format!("tab-row-{key}")))
-            .role(Role::Group)
-            .aria_label(tab.label())
-            .flex()
-            .gap_2()
-            .items_center()
-            .child(div().flex_1().text_sm().child(tab.label()))
-            .child(preference(
-                format!("show-{key}"),
-                if enabled {
-                    l("Shown", "Vist")
-                } else {
-                    l("Hidden", "Skjult")
-                },
-                enabled,
-                dark,
-                this.clone(),
-                move |s| {
-                    if enabled {
-                        s.dashboard_tabs.retain(|x| x != &toggle_key);
-                    } else {
-                        s.dashboard_tabs.push(toggle_key.clone());
-                    }
-                },
-            ));
-        if enabled {
-            row = row
-                .child(preference_labeled(
+        // Arrows sit in a fixed-width slot so the switches line up; the first
+        // row has no up arrow and the last no down arrow.
+        let mut arrows = div().w(px(88.)).flex_shrink_0().flex().justify_end().gap_2();
+        if let Some(i) = position {
+            if i > 0 {
+                arrows = arrows.child(icon_button(
                     format!("up-{key}"),
-                    "↑",
+                    "icons/arrow-up.svg",
                     format!("{} {} {}", l("Move", "Flytt"), tab.label(), l("up", "opp")),
-                    false,
                     dark,
-                    this.clone(),
-                    move |s| {
-                        if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &up_key) {
-                            if i > 0 {
-                                s.dashboard_tabs.swap(i, i - 1);
-                            }
-                        }
-                    },
-                ))
-                .child(preference_labeled(
-                    format!("down-{key}"),
-                    "↓",
-                    format!(
-                        "{} {} {}",
-                        l("Move", "Flytt"),
-                        tab.label(),
-                        l("down", "ned")
-                    ),
-                    false,
-                    dark,
-                    this.clone(),
-                    move |s| {
-                        if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &down_key) {
-                            if i + 1 < s.dashboard_tabs.len() {
-                                s.dashboard_tabs.swap(i, i + 1);
-                            }
+                    {
+                        let this = this.clone();
+                        move |window, cx| {
+                            let up_key = up_key.clone();
+                            update_preference(&this, move |s| {
+                                if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &up_key) {
+                                    if i > 0 {
+                                        s.dashboard_tabs.swap(i, i - 1);
+                                    }
+                                }
+                            }, window, cx)
                         }
                     },
                 ));
+            }
+            if i + 1 < enabled_count {
+                arrows = arrows.child(icon_button(
+                    format!("down-{key}"),
+                    "icons/arrow-down.svg",
+                    format!("{} {} {}", l("Move", "Flytt"), tab.label(), l("down", "ned")),
+                    dark,
+                    {
+                        let this = this.clone();
+                        move |window, cx| {
+                            let down_key = down_key.clone();
+                            update_preference(&this, move |s| {
+                                if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &down_key) {
+                                    if i + 1 < s.dashboard_tabs.len() {
+                                        s.dashboard_tabs.swap(i, i + 1);
+                                    }
+                                }
+                            }, window, cx)
+                        }
+                    },
+                ));
+            }
         }
-        tabs = tabs.child(row);
+        tabs = tabs.child(
+            div()
+                .id(SharedString::from(format!("tab-row-{key}")))
+                .role(Role::Group)
+                .aria_label(tab.label())
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().text_sm().child(tab.label()))
+                .child(arrows)
+                .child(on_off(
+                    &format!("show-{key}"),
+                    tab.label(),
+                    position.is_some(),
+                    (l("Shown", "Vist"), l("Hidden", "Skjult")),
+                    dark,
+                    this.clone(),
+                    move |s, on| {
+                        if !on {
+                            s.dashboard_tabs.retain(|x| x != &toggle_key);
+                        } else if !s.dashboard_tabs.contains(&toggle_key) {
+                            s.dashboard_tabs.push(toggle_key.clone());
+                        }
+                    },
+                )),
+        );
     }
     let mut favorites = div().flex().flex_col().gap_2().child(
         div()
@@ -463,46 +508,46 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
     for key in crate::settings::FAVORITE_METRICS {
         let enabled = s.favorite_metrics.iter().any(|x| x == key);
         let label = Tab::from_key(key).unwrap().label();
-        favorites = favorites.child(preference(
-            format!("favorite-{key}"),
-            format!(
-                "{} · {}",
-                label,
-                if enabled {
-                    l("Shown", "Vist")
-                } else {
-                    l("Hidden", "Skjult")
-                }
-            ),
-            enabled,
-            dark,
-            this.clone(),
-            move |s| {
-                if enabled {
-                    s.favorite_metrics.retain(|x| x != key);
-                } else {
-                    s.favorite_metrics.push(key.into());
-                }
-            },
-        ));
+        favorites = favorites.child(
+            div()
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().text_sm().child(label))
+                .child(on_off(
+                    &format!("favorite-{key}"),
+                    label,
+                    enabled,
+                    (l("Shown", "Vist"), l("Hidden", "Skjult")),
+                    dark,
+                    this.clone(),
+                    move |s, on| {
+                        if !on {
+                            s.favorite_metrics.retain(|x| x != key);
+                        } else if !s.favorite_metrics.iter().any(|x| x == key) {
+                            s.favorite_metrics.push(key.into());
+                        }
+                    },
+                )),
+        );
     }
     favorites = favorites
-        .child(preference(
-            "compact-dashboard".into(),
-            format!(
-                "{} · {}",
-                l("Compact layout", "Kompakt oppsett"),
-                if s.compact_dashboard {
-                    l("On", "På")
-                } else {
-                    l("Off", "Av")
-                }
-            ),
-            s.compact_dashboard,
-            dark,
-            this.clone(),
-            |s| s.compact_dashboard = !s.compact_dashboard,
-        ))
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().text_sm().child(l("Compact layout", "Kompakt oppsett")))
+                .child(on_off(
+                    "compact-dashboard",
+                    l("Compact layout", "Kompakt oppsett"),
+                    s.compact_dashboard,
+                    (l("On", "På"), l("Off", "Av")),
+                    dark,
+                    this.clone(),
+                    |s, on| s.compact_dashboard = on,
+                )),
+        )
         .child(sub(l(
             "Overview and Settings stay available. Menu-bar readings are independent.",
             "Oversikt og Innstillinger er alltid tilgjengelige. Menylinjemålinger er uavhengige.",
