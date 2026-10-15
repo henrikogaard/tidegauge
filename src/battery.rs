@@ -29,6 +29,12 @@ pub struct BatteryStats {
 }
 
 impl BatteryStats {
+    /// macOS answered and said this Mac has no battery. A failed reading is
+    /// not proof of absence.
+    pub fn confirmed_absent(&self) -> bool {
+        self.available && !self.present
+    }
+
     pub fn status(&self) -> &'static str {
         if !self.available {
             l(
@@ -284,6 +290,14 @@ pub fn preview() -> Option<BatteryStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_confirmed_missing_battery_counts_as_absent() {
+        let stats = |available, present| BatteryStats { available, present, ..Default::default() };
+        assert!(stats(true, false).confirmed_absent());
+        assert!(!stats(false, false).confirmed_absent(), "a failed reading is not absence");
+        assert!(!stats(true, true).confirmed_absent());
+    }
 
     #[test]
     fn battery_health_uses_physical_capacity_not_charge_percent() {

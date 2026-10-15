@@ -132,6 +132,8 @@ pub struct TideGaugeView {
     pub(crate) sliders: crate::settings_page::Sliders,
     /// How long Keep awake lasts when switched on; `None` until stopped.
     pub(crate) awake_choice: Option<u64>,
+    /// Where the window was last drawn, to close notes when that changes.
+    last_here: Option<Destination>,
     agents_scroll: ScrollHandle,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
@@ -218,6 +220,7 @@ impl TideGaugeView {
             info_for: None,
             sliders,
             awake_choice: Some(60),
+            last_here: None,
             agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
@@ -1048,7 +1051,9 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
         .copied()
         .filter(|tab| !matches!(tab, Tab::Overview | Tab::Projects | Tab::History))
         // Battery only where there is one (or a preview of one).
-        .filter(|tab| *tab != Tab::Battery || s.battery.present || crate::battery::preview().is_some())
+        // Hidden only when macOS confirmed there is none; a failed reading
+        // keeps the entry so its page can say so.
+        .filter(|tab| *tab != Tab::Battery || !s.battery.confirmed_absent() || crate::battery::preview().is_some())
     {
         let reading = sidebar_reading(tab, s);
         let available = reading.is_some();
@@ -1447,6 +1452,14 @@ impl Render for TideGaugeView {
         };
 
         let here = self.destination();
+        // Every page opens with its notes closed: moving elsewhere drops
+        // notes opened for another page.
+        if self.last_here != Some(here) {
+            self.last_here = Some(here);
+            if self.info_for != Some(here) {
+                self.info_for = None;
+            }
+        }
         let accent = here.accent(dark);
         let chrome = self.chrome(here, dark, this.clone(), cx);
         let notes = chrome.notes.clone();
@@ -1906,11 +1919,13 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .into_iter()
         .filter(|(tab, ..)| favorites.iter().any(|k| k == tab.key()))
         // A Mac without a battery gets no battery card.
-        .filter(|(tab, ..)| *tab != Tab::Battery || s.battery.present)
+        .filter(|(tab, ..)| *tab != Tab::Battery || !s.battery.confirmed_absent())
         .collect();
     // A short last row takes the busiest-apps card instead of leaving a
     // hole; otherwise it sits beside the donuts below.
     let fill_grid = cards.len() % 3 != 0;
+    // The filler spans whatever the short row has left: one or two columns.
+    let fill_span = (3 - cards.len() % 3) as u16;
     let show_power = favorites.iter().any(|key| key == "battery") && s.apps.iter().any(|a| a.power_w > 0.);
     let show_memory = favorites.iter().any(|key| key == "memory");
     let bottom_count = 2 * show_memory as usize + show_power as usize + (!fill_grid) as usize;
@@ -1948,7 +1963,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 }))
                 .when(fill_grid && !favorites.is_empty(), |d| {
                     let compact = settings.compact_dashboard;
-                    d.child(busiest_apps(s, if compact { 154. } else { 208. }, if compact { 4 } else { 6 }, dark, this.clone()))
+                    d.child(div().col_span(fill_span).child(busiest_apps(s, if compact { 154. } else { 208. }, if compact { 4 } else { 6 }, dark, this.clone())))
                 }),
         )
         .when(!settings.compact_dashboard && bottom_count > 0, |d| {
