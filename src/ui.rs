@@ -2351,8 +2351,10 @@ fn disk_tab(
         ))
         .child(section_header(l("Storage devices", "Lagringsenheter"), l("Read-only", "Kun avlesning"), dark))
         .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
-        // One drive needs no picker: its card below already names it.
-        .when(inventory.devices.len() > 1, |d| d.child(div().id("disk-device-picker").role(Role::RadioGroup).aria_label(l("Storage devices", "Lagringsenheter")).tab_group().flex().flex_wrap().gap_2().children(inventory.devices.iter().enumerate().map(|(index, device)| {
+        // One drive needs no picker: its card below already names it. A
+        // selection that has gone away keeps it, so the remaining drive can
+        // be picked again.
+        .when(inventory.devices.len() > 1 || device.is_none(), |d| d.child(div().id("disk-device-picker").role(Role::RadioGroup).aria_label(l("Storage devices", "Lagringsenheter")).tab_group().flex().flex_wrap().gap_2().children(inventory.devices.iter().enumerate().map(|(index, device)| {
             let id = device.id.clone();
             let key_id = id.clone();
             div().id(SharedString::from(format!("disk-{}", id)))

@@ -97,7 +97,7 @@ fn percent(fraction: f64) -> String {
 fn credits_left(amount: f64, unit: &str) -> String {
     let amount = amount.max(0.);
     let is_money = unit.len() == 3 && unit.chars().all(|c| c.is_ascii_uppercase());
-    let value = if is_money && amount < 100. {
+    let value = if is_money {
         crate::locale::number(amount, 2)
     } else {
         crate::locale::whole(amount)
@@ -627,6 +627,7 @@ mod tests {
         assert_eq!(credits_left(57602., "credits"), format!("{} credits {left}", whole(57602.)));
         assert_eq!(credits_left(-0.3, "USD"), format!("{} USD {left}", number(0., 2)), "never -0");
         assert_eq!(credits_left(12.5, "USD"), format!("{} USD {left}", number(12.5, 2)));
+        assert_eq!(credits_left(123.45, "USD"), format!("{} USD {left}", number(123.45, 2)), "cents at any size");
     }
 
     #[test]
