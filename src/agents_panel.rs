@@ -133,7 +133,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                 .pl_1()
                 .pr_3()
                 .py_1()
-                .rounded(px(10.))
+                .rounded(t::RADIUS_CONTROL)
                 .border_1()
                 .border_color(t::line(dark))
                 .bg(t::card(dark))
@@ -149,7 +149,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                             div()
                                 .flex()
                                 .gap_1()
-                                .text_size(px(12.))
+                                .text_size(t::TEXT_BODY)
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(provider_name(&plan.provider)))
                                 .child(div().text_color(color).child(format!(
                                     "{} {}",
@@ -157,7 +157,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                                     l("left", "igjen")
                                 ))),
                         )
-                        .child(div().text_size(px(11.)).text_color(if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) }).child(note)),
+                        .child(div().text_size(t::TEXT_SMALL).text_color(if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) }).child(note)),
                 )
                 .on_click(move |_, _, cx| open(&target, cx))
                 .capture_key_down(move |event, window, cx| {
@@ -246,7 +246,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(13.))
+                        .text_size(t::TEXT_ROW)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(color)
                         .child(left.map(percent).unwrap_or_else(|| "–".into())),
@@ -264,7 +264,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                         .flex()
                         .items_baseline()
                         .gap_2()
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(provider_name(&plan.provider)))
+                        .child(div().text_size(t::TEXT_ROW).font_weight(FontWeight::SEMIBOLD).child(provider_name(&plan.provider)))
                         .when_some(plan.plan.clone(), |d, name| {
                             d.child(div().text_xs().text_color(t::ink_dim(dark)).child(name))
                         }),
@@ -352,7 +352,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
         .flex()
         .items_center()
         .gap_3()
-        .rounded(px(8.))
+        .rounded(t::RADIUS_CONTROL)
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .cursor_pointer()
@@ -371,7 +371,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
             div()
                 .size(px(24.))
                 .flex_shrink_0()
-                .rounded(px(6.))
+                .rounded(t::RADIUS_CHIP)
                 .bg(if working { t::ok(dark).opacity(0.16) } else { t::card_hi(dark) })
                 .flex()
                 .items_center()
@@ -389,7 +389,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 .child(
                     div()
                         .truncate()
-                        .text_size(px(13.))
+                        .text_size(t::TEXT_ROW)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(if working { t::ink(dark) } else { t::ink(dark).opacity(0.75) })
                         .child(title),
@@ -400,7 +400,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
             div()
                 .flex_shrink_0()
                 .px_2()
-                .rounded(px(6.))
+                .rounded(t::RADIUS_CHIP)
                 .bg(chip_color.opacity(0.14))
                 .text_color(chip_color)
                 .text_xs()
@@ -412,7 +412,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 .flex_shrink_0()
                 .flex()
                 .justify_end()
-                .text_size(px(12.))
+                .text_size(t::TEXT_BODY)
                 .text_color(t::ink_dim(dark))
                 .child(if session.cpu_pct >= 1. { crate::locale::percent(session.cpu_pct, 0) } else { String::new() }),
         )
@@ -422,11 +422,11 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 .flex_shrink_0()
                 .flex()
                 .justify_end()
-                .text_size(px(13.))
+                .text_size(t::TEXT_ROW)
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(fmt_bytes(session.mem_bytes as f64)),
         )
-        .child(div().w(px(12.)).flex_shrink_0().text_size(px(10.)).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }));
+        .child(div().w(px(12.)).flex_shrink_0().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }));
     let mut block = div().flex().flex_col().child(row);
     if !expanded {
         return block;
@@ -475,7 +475,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 .flex()
                 .items_center()
                 .gap_2()
-                .text_size(px(12.))
+                .text_size(t::TEXT_BODY)
                 .child(div().truncate().child(if started.count > 1 {
                     format!("{} ×{}", started.name, started.count)
                 } else {
@@ -493,7 +493,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let s = &view.snap;
     let now = now();
-    let mut page = div().flex().flex_col().gap_3();
+    let mut page = div().flex().flex_col().gap(t::SECTION_GAP);
     page = page.child(section_header(l("AI plans", "AI-abonnementer"), l("From OpenQuota", "Fra OpenQuota"), dark));
     page = match &s.plans {
         Plans::Loaded(plans) if !plans.is_empty() => page.child(
@@ -529,23 +529,8 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
 
     let total: u64 = s.agents.iter().map(|session| session.mem_bytes).sum();
     let working = s.agents.iter().filter(|a| a.activity == Activity::Working).count();
-    page = page.child(section_header(
-        l("Running agents", "Agenter som kjører"),
-        &if s.agents.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "{} · {} {} · {}",
-                s.agents.len(),
-                working,
-                l("working", "arbeider"),
-                fmt_bytes(total as f64)
-            )
-        },
-        dark,
-    ));
     if s.agents.is_empty() {
-        return page.child(empty_state(
+        return page.child(section_header(l("Running agents", "Agenter som kjører"), "", dark)).child(empty_state(
             "icons/bot.svg",
             t::accent(dark),
             l("No coding agents running", "Ingen kodeagenter kjører").into(),
@@ -557,6 +542,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             dark,
         ));
     }
+    let summary = if working > 0 {
+        format!("{} · {} {} · {}", s.agents.len(), working, l("working", "arbeider"), fmt_bytes(total as f64))
+    } else {
+        format!("{} · {}", s.agents.len(), fmt_bytes(total as f64))
+    };
     let idle: Vec<&Session> = s.agents.iter().filter(|a| a.activity != Activity::Working).collect();
     let idle_targets: Vec<_> = idle
         .iter()
@@ -564,6 +554,12 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         .filter(|p| control::blocked(p).is_none())
         .cloned()
         .collect();
+    // Caption on the left; summary and the bulk action together on the right.
+    let mut right = div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(summary));
     if idle.len() > 1 && !idle_targets.is_empty() && !view.process_pending {
         let action = Action::Processes {
             name: crate::locale::count(idle.len() as u64, "idle session", "idle sessions", "inaktiv økt", "inaktive økter"),
@@ -571,14 +567,23 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             force: Force::Quit,
         };
         let target = this.clone();
-        page = page.child(div().flex().justify_end().child(button(
+        right = right.child(button(
             "quit-idle-sessions",
             format!("{} ({})…", l("Quit idle sessions", "Avslutt inaktive økter"), idle.len()),
             false,
             dark,
             move |window, cx| crate::process_panel::request(action.clone(), target.clone(), window, cx),
-        )));
+        ));
     }
+    page = page.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_4()
+            .child(crate::ui::caption(l("Running agents", "Agenter som kjører"), dark))
+            .child(right),
+    );
     let mut list = card(dark).p_1().gap(px(2.));
     for session in &s.agents {
         let expanded = view.agent_expanded == Some(session.root.pid);
