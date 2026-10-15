@@ -414,7 +414,7 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
         div()
             .text_sm()
             .font_weight(FontWeight::SEMIBOLD)
-            .child(l("Tab order", "Fanerekkefølge")),
+            .child(l("Sidebar order", "Rekkefølge i sidefeltet")),
     );
     let enabled_count = s.dashboard_tabs.len();
     for key in order {

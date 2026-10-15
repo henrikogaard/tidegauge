@@ -1108,6 +1108,7 @@ impl Render for TideGaugeView {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(t::SPACE_5)
+            .pt(t::SPACE_1)
             .pb(t::SPACE_4)
             .flex()
             .flex_col()

@@ -364,6 +364,7 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 }
                 body = body.child(paging);
             }
+            let mut list = card(dark).p_0().py_1().gap_0();
             for (i, entry) in inventory
                 .entries
                 .iter()
@@ -379,19 +380,59 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                         "Effektiv konfigurasjon ukjent",
                     ),
                 };
-                let mut row = card(dark)
+                // One table row per registration: label and program on the
+                // left, kind and state on the right; the plist path is the
+                // small line under the label.
+                let mut row = div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_2()
+                    .when(i > range.start, |d| d.border_t_1().border_color(t::line(dark)))
                     .child(
                         div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(entry.label.clone()),
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(t::TEXT_ROW)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(entry.label.clone()),
+                            )
+                            .child(mono(
+                                entry.executable.clone().unwrap_or_else(|| {
+                                    l("Executable unknown", "Ukjent kjørbar fil").into()
+                                }),
+                                dark,
+                            ).truncate())
+                            .child(mono(entry.path.display().to_string(), dark).truncate())
+                            .when(!entry.reason.is_empty(), |d| {
+                                d.child(sub(entry.reason.clone()).text_color(t::caution(dark)))
+                            }),
                     )
-                    .child(sub(format!("{} · {}", entry.source, state)))
-                    .child(sub(entry.path.display().to_string()))
-                    .child(sub(entry.executable.clone().unwrap_or_else(|| {
-                        l("Executable unknown", "Ukjent kjørbar fil").into()
-                    })))
-                    .when(!entry.reason.is_empty(), |d| d.child(sub(entry.reason.clone())));
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .px_2()
+                            .rounded(t::RADIUS_CHIP)
+                            .bg(t::card_hi(dark))
+                            .text_xs()
+                            .child(entry.source.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_end()
+                            .text_xs()
+                            .text_color(t::ink_dim(dark))
+                            .child(state),
+                    );
                 if entry.manageable && !view.tools.startup_busy {
                     if let Some(disabled) = entry.disabled {
                         let target = this.clone();
@@ -411,8 +452,9 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                         ));
                     }
                 }
-                body = body.child(row);
+                list = list.child(row);
             }
+            body = body.child(list);
         }
     }
     body
@@ -499,7 +541,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
     let wakeups_label = l("reported interrupt wakeups/s", "rapporterte avbruddsoppvåkninger/s");
     let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
         .child(sub(l("Recent CPU, disk and wakeup activity for each process.","Nylig CPU-, disk- og oppvåkningsaktivitet for hver prosess.")))
-        .child(actions));
+        .child(div().flex().child(actions)));
     let mut rows: Vec<_> = view.snap.resource_activity.iter().collect();
     let metric = |r: &crate::resource_activity::Activity| match view.tools.activity_sort {
         ActivitySort::Cpu => r.cpu,
@@ -563,15 +605,26 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(r.name.clone()))
-                    .child(mono(r.path.clone(), dark))
-                    .child(sub(format!(
-                        "{:.0} {} / {:.0} {}",
-                        r.covered,
-                        l("s CPU/I/O", "s CPU/I/O"),
-                        r.wakeups_covered,
-                        l("s wakeups", "s oppvåkninger")
-                    )).text_color(t::ink_dim(dark))),
+                    // The kernel's process name stops at 16 characters; the
+                    // executable's file name is the full name.
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(
+                        std::path::Path::new(&r.path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| r.name.clone()),
+                    ))
+                    .child(mono(r.path.clone(), dark).truncate())
+                    // Coverage only matters while it is short of the full minute.
+                    .when(r.covered < 59.5 || r.wakeups_covered < 59.5, |d| {
+                        d.child(sub(format!(
+                            "{:.0} {} / {:.0} {}",
+                            r.covered,
+                            l("s CPU/I/O", "s CPU/I/O"),
+                            r.wakeups_covered,
+                            l("s wakeups", "s oppvåkninger")
+                        )).text_color(t::ink_dim(dark)))
+                    }),
                 r.pid.to_string(),
                 r.cpu.map(|v| crate::locale::percent(v, 1)).unwrap_or_else(dash),
                 r.io.map(crate::engine::fmt_rate).unwrap_or_else(dash),
@@ -612,9 +665,9 @@ fn activity_row(name: Div, pid: String, cpu: String, io: String, wakeups: String
         .text_xs()
         .child(name.flex_1().min_w_0())
         .child(cell(56., pid))
-        .child(cell(56., cpu))
-        .child(cell(84., io))
-        .child(cell(84., wakeups))
+        .child(cell(64., cpu))
+        .child(cell(100., io))
+        .child(cell(116., wakeups))
 }
 
 fn load_baseline(this: &Entity<TideGaugeView>, cx: &mut App) {

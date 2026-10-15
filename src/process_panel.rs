@@ -159,7 +159,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             },
         ));
     }
-    let mut page = div().flex().flex_col().gap(t::SECTION_GAP).child(
+    let page = div().flex().flex_col().gap(t::SECTION_GAP).child(
         div()
             .flex()
             .items_center()
@@ -625,8 +625,14 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
             )
             .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(crate::locale::percent(p.cpu_pct, 1)))
             .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(fmt_bytes(p.mem_bytes as f64)))
-            .child(controls),
+            // Same trailing slot as the app row's chevron, so columns line up.
+            .child(div().w(px(16.)).flex_shrink_0()),
     );
+    // Actions sit on their own line under a selected row, so its numbers
+    // never move when the buttons appear.
+    if selected {
+        row = row.child(div().flex().justify_end().px_2().child(controls));
+    }
     if showing {
         row = row.child(process_details(view, p, dark, this));
     }

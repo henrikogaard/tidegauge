@@ -529,23 +529,8 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
 
     let total: u64 = s.agents.iter().map(|session| session.mem_bytes).sum();
     let working = s.agents.iter().filter(|a| a.activity == Activity::Working).count();
-    page = page.child(section_header(
-        l("Running agents", "Agenter som kjører"),
-        &if s.agents.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "{} · {} {} · {}",
-                s.agents.len(),
-                working,
-                l("working", "arbeider"),
-                fmt_bytes(total as f64)
-            )
-        },
-        dark,
-    ));
     if s.agents.is_empty() {
-        return page.child(empty_state(
+        return page.child(section_header(l("Running agents", "Agenter som kjører"), "", dark)).child(empty_state(
             "icons/bot.svg",
             t::accent(dark),
             l("No coding agents running", "Ingen kodeagenter kjører").into(),
@@ -557,6 +542,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             dark,
         ));
     }
+    let summary = if working > 0 {
+        format!("{} · {} {} · {}", s.agents.len(), working, l("working", "arbeider"), fmt_bytes(total as f64))
+    } else {
+        format!("{} · {}", s.agents.len(), fmt_bytes(total as f64))
+    };
     let idle: Vec<&Session> = s.agents.iter().filter(|a| a.activity != Activity::Working).collect();
     let idle_targets: Vec<_> = idle
         .iter()
@@ -564,6 +554,12 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         .filter(|p| control::blocked(p).is_none())
         .cloned()
         .collect();
+    // Caption on the left; summary and the bulk action together on the right.
+    let mut right = div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(summary));
     if idle.len() > 1 && !idle_targets.is_empty() && !view.process_pending {
         let action = Action::Processes {
             name: crate::locale::count(idle.len() as u64, "idle session", "idle sessions", "inaktiv økt", "inaktive økter"),
@@ -571,14 +567,23 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             force: Force::Quit,
         };
         let target = this.clone();
-        page = page.child(div().flex().justify_end().child(button(
+        right = right.child(button(
             "quit-idle-sessions",
             format!("{} ({})…", l("Quit idle sessions", "Avslutt inaktive økter"), idle.len()),
             false,
             dark,
             move |window, cx| crate::process_panel::request(action.clone(), target.clone(), window, cx),
-        )));
+        ));
     }
+    page = page.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_4()
+            .child(crate::ui::caption(l("Running agents", "Agenter som kjører"), dark))
+            .child(right),
+    );
     let mut list = card(dark).p_1().gap(px(2.));
     for session in &s.agents {
         let expanded = view.agent_expanded == Some(session.root.pid);
