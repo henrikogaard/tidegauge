@@ -513,7 +513,9 @@ pub fn fmt_bytes(n: f64) -> String {
     }
     let mut v = n;
     let mut i = 0;
-    while v >= 1024.0 && i < 4 {
+    // Divide by 1024 but move up a unit once the shown value would reach
+    // four digits ("1007 B", "1010 KB" become "0.98 KB", "0.99 MB").
+    while v >= if i == 0 { 1000.0 } else { 999.5 } && i < 4 {
         v /= 1024.0;
         i += 1;
     }
@@ -620,6 +622,17 @@ mod tests {
             };
             assert_eq!(fmt_up(secs), format!("{} {}", value, l(en, no)), "secs={secs}");
         }
+    }
+
+    #[test]
+    fn byte_values_never_show_four_digits() {
+        let point = if crate::locale::is_norwegian() { "," } else { "." };
+        assert_eq!(fmt_bytes(999.0), "999 B");
+        assert_eq!(fmt_bytes(1007.0), format!("0{point}98 KB"));
+        assert_eq!(fmt_rate(1007.0), format!("0{point}98 KB/s"));
+        assert_eq!(fmt_bytes(1010.0 * 1024.), format!("0{point}99 MB"));
+        assert_eq!(fmt_bytes(999.6 * 1024.), format!("0{point}98 MB"));
+        assert_eq!(fmt_bytes(1024.0), format!("1{point}00 KB"));
     }
 
     #[test]
