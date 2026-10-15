@@ -238,8 +238,11 @@ fn startup_name(label: &str, executable: Option<&str>) -> String {
 /// program lives in, else the maker named in its reverse-DNS label. The flag
 /// says whether it is part of macOS itself.
 fn startup_owner(label: &str, executable: Option<&str>) -> (String, bool) {
+    // Only the system's own folders count: /usr/local and /opt hold
+    // third-party tools.
+    const SYSTEM_DIRS: [&str; 6] = ["/System/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/"];
     let apple = label.starts_with("com.apple.")
-        || executable.is_some_and(|exe| exe.starts_with("/System/") || exe.starts_with("/usr/"));
+        || executable.is_some_and(|exe| SYSTEM_DIRS.iter().any(|dir| exe.starts_with(dir)));
     if apple {
         return ("Apple".into(), true);
     }
@@ -1458,5 +1461,10 @@ mod tests {
         assert_eq!(own("com.apple.AMPArtworkAgent", Some("/System/Library/x")), ("Apple".into(), true));
         assert_eq!(own("helper", Some("/usr/libexec/helper")), ("Apple".into(), true));
         assert_eq!(own("standalone", None), ("standalone".into(), false));
+        assert_eq!(
+            own("homebrew.mxcl.postgresql", Some("/usr/local/opt/postgresql/bin/postgres")),
+            ("Mxcl".into(), false),
+            "/usr/local is third-party"
+        );
     }
 }
