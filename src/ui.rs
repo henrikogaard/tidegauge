@@ -126,6 +126,9 @@ pub struct TideGaugeView {
     pub show_agents: bool,
     pub agent_expanded: Option<i32>,
     pub show_sensor_channels: bool,
+    /// The page whose "About this page" notes are open; any other page
+    /// opens with them closed.
+    pub(crate) info_for: Option<Destination>,
     agents_scroll: ScrollHandle,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
@@ -194,6 +197,7 @@ impl TideGaugeView {
             show_agents: false,
             agent_expanded: None,
             show_sensor_channels: false,
+            info_for: None,
             agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
             tools_scroll: ScrollHandle::new(),
@@ -248,6 +252,27 @@ impl TideGaugeView {
             },
         )
         .detach();
+        // Debug builds can open on a given page, so rendered checks need no
+        // clicks: TIDEGAUGE_START=cpu|apps|agents|settings|tool-startup…,
+        // and TIDEGAUGE_START_INFO=1 opens its notes.
+        #[cfg(debug_assertions)]
+        if let Some(to) = std::env::var("TIDEGAUGE_START").ok().as_deref().and_then(Destination::from_key) {
+            let info = std::env::var("TIDEGAUGE_START_INFO").as_deref() == Ok("1");
+            cx.spawn(async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| {
+                let _ = cx.update(|cx: &mut App| {
+                    if let Some(this) = this.upgrade() {
+                        navigate(&this, to, cx);
+                        if info {
+                            this.update(cx, |v, cx| {
+                                v.info_for = Some(to);
+                                cx.notify();
+                            });
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
         v
     }
 }
@@ -535,16 +560,20 @@ fn app_row(app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) ->
         .px_3()
         .mx_2()
         .rounded(t::RADIUS_CONTROL)
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top(t::SPACE_1)
-                .bottom(t::SPACE_1)
-                .rounded(t::RADIUS_CHIP)
-                .w(relative(frac.clamp(0.0, 1.0) as f32))
-                .bg(color.opacity(0.14)),
-        )
+        // Under 1% of the busiest app reads as nothing, so draw nothing
+        // rather than a sliver.
+        .when(frac >= 0.01, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(t::SPACE_1)
+                    .bottom(t::SPACE_1)
+                    .rounded(t::RADIUS_CHIP)
+                    .w(relative(frac.clamp(0.0, 1.0) as f32))
+                    .bg(color.opacity(0.14)),
+            )
+        })
         .child(app_icon(app, dark))
         .child(
             div()
@@ -775,6 +804,22 @@ pub(crate) enum Destination {
 }
 
 impl Destination {
+    #[cfg(debug_assertions)]
+    fn from_key(key: &str) -> Option<Self> {
+        use crate::tools_panel::Page;
+        match key {
+            "apps" => Some(Self::Apps),
+            "agents" => Some(Self::Agents),
+            "settings" => Some(Self::Settings),
+            _ => match key.strip_prefix("tool-") {
+                Some(page) => [Page::Startup, Page::Activity, Page::Baselines, Page::Storage, Page::Packages]
+                    .into_iter()
+                    .find(|p| p.key() == page)
+                    .map(Self::Tool),
+                None => Tab::from_key(key).map(Self::Tab),
+            },
+        }
+    }
     fn title(self) -> &'static str {
         match self {
             Self::Tab(tab) => tab.label(),
@@ -972,6 +1017,8 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
         .iter()
         .copied()
         .filter(|tab| !matches!(tab, Tab::Overview | Tab::Projects | Tab::History))
+        // Battery only where there is one (or a preview of one).
+        .filter(|tab| *tab != Tab::Battery || s.battery.present || crate::battery::preview().is_some())
     {
         let reading = sidebar_reading(tab, s);
         let available = reading.is_some();
@@ -1047,6 +1094,215 @@ pub(crate) fn list_card(rows: Vec<Div>, dark: bool) -> Div {
     card(dark).p_0().py_2().gap_0().children(rows)
 }
 
+// ---------- Page header ----------
+
+/// What a page shows in its header besides its title: one line saying what
+/// the page is for, the page's own actions, and the notes behind ⓘ.
+#[derive(Default)]
+pub(crate) struct PageChrome {
+    pub subtitle: Option<String>,
+    pub actions: Vec<AnyElement>,
+    pub notes: Vec<&'static str>,
+}
+
+fn page_header(
+    here: Destination,
+    chrome: PageChrome,
+    info_open: bool,
+    accent: Hsla,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> Div {
+    div()
+        .min_h(px(52.))
+        .flex_shrink_0()
+        .px(t::SPACE_5)
+        .pt(t::SPACE_3)
+        .pb(t::SPACE_2)
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(t::TEXT_TITLE)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(if here.tinted() { accent } else { t::ink(dark) })
+                        .child(here.title()),
+                )
+                .when_some(chrome.subtitle, |d, subtitle| {
+                    d.child(
+                        div()
+                            .text_size(t::TEXT_BODY)
+                            .text_color(t::ink_dim(dark))
+                            .truncate()
+                            .child(subtitle),
+                    )
+                }),
+        )
+        .child(div().flex().items_center().gap_2().flex_shrink_0().children(chrome.actions))
+        .when(!chrome.notes.is_empty(), |d| {
+            d.child(crate::controls::icon_toggle(
+                "page-info",
+                "icons/info.svg",
+                l("About this page", "Om denne siden"),
+                info_open,
+                dark,
+                move |_, cx| {
+                    this.update(cx, |v, cx| {
+                        v.info_for = if v.info_for == Some(here) { None } else { Some(here) };
+                        cx.notify();
+                    });
+                },
+            ))
+        })
+}
+
+impl TideGaugeView {
+    fn chrome(
+        &self,
+        here: Destination,
+        dark: bool,
+        this: Entity<TideGaugeView>,
+        _cx: &mut Context<TideGaugeView>,
+    ) -> PageChrome {
+        match here {
+            Destination::Tab(tab) => PageChrome { notes: tab_notes(tab), ..Default::default() },
+            Destination::Apps => crate::process_panel::chrome(self),
+            Destination::Agents => PageChrome { notes: crate::agents_panel::notes(), ..Default::default() },
+            Destination::Tool(_) => crate::tools_panel::chrome(self, dark, this),
+            Destination::Settings => PageChrome { notes: settings_notes(), ..Default::default() },
+        }
+    }
+}
+
+/// What each metric page's numbers mean, kept out of the page itself.
+fn tab_notes(tab: Tab) -> Vec<&'static str> {
+    match tab {
+        Tab::Overview => vec![
+            l(
+                "Network totals count since the Mac started. Averages and peaks cover this session.",
+                "Nettverkstotaler teller siden Macen startet. Gjennomsnitt og topper gjelder denne økten.",
+            ),
+            shared_memory_note(),
+        ],
+        Tab::Cpu => vec![
+            l(
+                "App CPU: 100% is one full core, so a busy app can show more than 100%.",
+                "App-CPU: 100 % er én hel kjerne, så en travel app kan vise mer enn 100 %.",
+            ),
+            l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll."),
+        ],
+        Tab::Memory => vec![
+            shared_memory_note(),
+            l("Memory shows usage, not memory pressure.", "Minnetallet viser bruk, ikke minnepress."),
+        ],
+        Tab::Disk => vec![
+            l(
+                "App activity below is system-wide, not attributed to the selected drive.",
+                "Appaktiviteten nedenfor gjelder hele systemet, ikke bare den valgte disken.",
+            ),
+            l("Inventory refreshes every 30 seconds. Virtual disk images are omitted. No mount, eject, erase, or SMART-setting operations are performed.", "Oversikten oppdateres hvert 30. sekund. Virtuelle diskbilder utelates. Ingen montering, utmating, sletting eller endring av SMART-innstillinger utføres."),
+            l("APFS volumes share container space. Shared capacity and free space are shown per container, never summed per volume.", "APFS-volumer deler beholderplass. Delt kapasitet og ledig plass vises per beholder og summeres aldri per volum."),
+            l("Device I/O counters reset when the device is reattached; they are not lifetime SMART totals. Rates need two fresh samples.", "Enhetens I/O-tellere nullstilles når enheten kobles til på nytt; de er ikke SMART-totaltall for levetiden. Hastigheter krever to ferske målinger."),
+            l(
+                "Endurance used is a wear indicator, not a health score, and can exceed 100%. Missing SMART data never means healthy.",
+                "Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore, og kan overstige 100 %. Manglende SMART-data betyr aldri frisk.",
+            ),
+        ],
+        Tab::Network => vec![l(
+            "Received and sent count since the Mac started.",
+            "Mottatt og sendt teller siden Macen startet.",
+        )],
+        Tab::Gpu => vec![
+            l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
+            l(
+                "Tidegauge can't read Neural Engine usage on this Mac yet.",
+                "Tidegauge kan ikke lese bruken av Neural Engine på denne Macen ennå.",
+            ),
+        ],
+        Tab::Battery => vec![
+            l("Power per app is an estimate from macOS.", "Effekt per app er et anslag fra macOS."),
+            l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS."),
+            l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor."),
+        ],
+        Tab::Sound => vec![
+            l("Controls the default media output device, not individual apps.", "Styrer standard lydutgang, ikke enkeltapper."),
+            l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd."),
+        ],
+        Tab::Bluetooth => vec![l(
+            "Battery levels show only for devices that report them.",
+            "Batterinivå vises bare for enheter som rapporterer det.",
+        )],
+        Tab::Projects => Vec::new(),
+        Tab::History => vec![
+            l(
+                "History keeps 30 days and is tidied every hour.",
+                "Historikken beholdes i 30 dager og ryddes hver time.",
+            ),
+            l(
+                "Values are averages for each interval, never peaks. Missing data is a gap, not zero.",
+                "Verdiene er gjennomsnitt per intervall, aldri topper. Manglende data er hull, ikke null.",
+            ),
+            l(
+                "Apps: the 60 busiest names are recorded, so an app that is missing may still have been active.",
+                "Apper: de 60 travleste navnene registreres, så en app som mangler kan likevel ha vært aktiv.",
+            ),
+            l("App CPU can exceed 100% across cores. Power values are estimates.", "App-CPU kan overstige 100 % på flere kjerner. Effektverdier er anslag."),
+        ],
+    }
+}
+
+fn shared_memory_note() -> &'static str {
+    l(
+        "Apps share memory, so their sum can be larger than memory in use.",
+        "Apper deler minne, så summen kan bli større enn minne i bruk.",
+    )
+}
+
+fn settings_notes() -> Vec<&'static str> {
+    vec![
+        l("Settings are saved on this Mac right away.", "Innstillingene lagres på denne Macen med en gang."),
+        l("Opt-in. CPU/memory: sustained for 20 seconds; disk/network: 30 seconds. One alert until recovery, with a 10-minute cooldown per metric.", "Valgfritt. CPU/minne: vedvarende i 20 sekunder; disk/nettverk: 30 sekunder. Ett varsel frem til normalisering, med 10 minutters pause per måling."),
+        l("Permission is requested with the first alert. macOS notification settings and Focus may suppress delivery. Memory measures usage, not memory pressure.", "Tillatelse forespørres ved første varsel. Varselinnstillinger og Fokus i macOS kan hindre levering. Minnetallet viser bruk, ikke minnepress."),
+        l("Prevents idle system sleep only. The display may sleep; closing the lid still sleeps. Off after quitting or restarting Tidegauge.", "Hindrer kun automatisk systemdvale. Skjermen kan sove; lukket lokk gir fortsatt dvale. Av etter avslutning eller omstart av Tidegauge."),
+        l("Overview and Settings stay available. Menu-bar readings are independent.", "Oversikt og Innstillinger er alltid tilgjengelige. Menylinjemålinger er uavhengige."),
+    ]
+}
+
+/// The notes behind ⓘ: what the numbers mean and where they stop.
+fn info_card(notes: &[&'static str], dark: bool, this: Entity<TideGaugeView>) -> Div {
+    card(dark)
+        .gap_2()
+        .bg(t::card_hi(dark).opacity(0.5))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(caption(l("About this page", "Om denne siden"), dark))
+                .child(crate::controls::icon_toggle(
+                    "page-info-close",
+                    "icons/x.svg",
+                    l("Close", "Lukk"),
+                    false,
+                    dark,
+                    move |_, cx| {
+                        this.update(cx, |v, cx| {
+                            v.info_for = None;
+                            cx.notify();
+                        });
+                    },
+                )),
+        )
+        .children(notes.iter().map(|note| sub(*note).text_color(t::ink_dim(dark))))
+}
+
 // ---------- Render ----------
 
 impl Render for TideGaugeView {
@@ -1073,35 +1329,11 @@ impl Render for TideGaugeView {
 
         let here = self.destination();
         let accent = here.accent(dark);
-        let header = div()
-            .h(px(52.))
-            .flex_shrink_0()
-            .px(t::SPACE_5)
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(t::TEXT_TITLE)
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(if here.tinted() { accent } else { t::ink(dark) })
-                    .child(here.title()),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(t::TEXT_BODY)
-                    .text_color(t::ink_dim(dark))
-                    .child(if here == Destination::Settings {
-                        l("Saved on this Mac", "Lagres på denne Macen").to_string()
-                    } else {
-                        format!(
-                            "{} · {}",
-                            crate::locale::count(s.app_count as u64, "app", "apps", "app", "apper"),
-                            crate::locale::count(s.proc_count as u64, "process", "processes", "prosess", "prosesser")
-                        )
-                    }),
-            );
+        let chrome = self.chrome(here, dark, this.clone(), cx);
+        let notes = chrome.notes.clone();
+        let info_open = self.info_for == Some(here) && !notes.is_empty();
+        let header = page_header(here, chrome, info_open, accent, dark, this.clone());
+        let info = info_open.then(|| info_card(&notes, dark, this.clone()));
 
         let content = div()
             .id("content")
@@ -1115,6 +1347,7 @@ impl Render for TideGaugeView {
             .flex()
             .flex_col()
             .gap(t::SECTION_GAP)
+            .children(info)
             .child(self.render_tab(dark, this.clone(), cx));
 
         div()
@@ -1480,11 +1713,6 @@ fn settings_panel(dark: bool, this: Entity<TideGaugeView>, error: Option<&str>) 
         })
         .collect::<Vec<_>>();
     panel.child(card(dark).gap_0().py_1().children(rows))
-        .child(div().text_xs().text_color(t::ink_dim(dark))
-            .child(l(
-                "Click the menu-bar item for Open Dashboard, Settings, or Quit. Changes are saved immediately.",
-                "Klikk på menylinjeelementet for å åpne oversikten, endre innstillinger eller avslutte. Endringer lagres med en gang.",
-            )))
         .child(div().flex().justify_end().gap_3()
             .child({
                 let target = this.clone();
@@ -1544,6 +1772,10 @@ fn overview_card(
 ) -> impl IntoElement {
     let color = tab.metric().unwrap().accent(dark);
     let compact = crate::settings::Settings::load().compact_dashboard;
+    // No reading: say so quietly instead of a big dash, and keep only the
+    // supporting values that exist.
+    let unavailable = value == "—";
+    let stats: Vec<(&str, String)> = stats.into_iter().filter(|(_, v)| !unavailable || v != "—").collect();
     let (number, unit) = value.rsplit_once(' ').unwrap_or((&value, ""));
     let keyboard_target = this.clone();
     div()
@@ -1593,26 +1825,40 @@ fn overview_card(
                         .text_color(t::ink_dim(dark))
                         .child(context),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_baseline()
-                        .gap(t::SPACE_2)
-                        .child(
-                            div()
-                                .text_size(t::TEXT_STAT)
-                                .line_height(px(42.))
-                                .font_weight(FontWeight::BOLD)
-                                .child(number.to_string()),
-                        )
-                        .child(
-                            div()
-                                .text_size(t::TEXT_EMPH)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(t::ink_dim(dark))
-                                .child(unit.to_string()),
-                        ),
-                ),
+                .when(unavailable, |d| {
+                    d.child(
+                        div()
+                            .h(px(42.))
+                            .flex()
+                            .items_center()
+                            .text_size(t::TEXT_EMPH)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(t::ink_dim(dark))
+                            .child(l("Not available on this Mac", "Ikke tilgjengelig på denne Macen")),
+                    )
+                })
+                .when(!unavailable, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(t::SPACE_2)
+                            .child(
+                                div()
+                                    .text_size(t::TEXT_STAT)
+                                    .line_height(px(42.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(number.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(t::TEXT_EMPH)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(t::ink_dim(dark))
+                                    .child(unit.to_string()),
+                            ),
+                    )
+                }),
         )
         .when(!compact, |d| {
             d.child(
@@ -1706,12 +1952,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         ),
         (
             Tab::Gpu,
-            if s.gpu.utilization.is_some() {
-                l("GPU utilization", "GPU-utnyttelse")
-            } else {
-                l("Utilization unavailable", "Utnyttelse utilgjengelig")
-            }
-            .into(),
+            l("GPU utilization", "GPU-utnyttelse").into(),
             s.gpu
                 .utilization
                 .map(fmt_pct)
@@ -1766,8 +2007,8 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             fmt_rate(s.net.rate_in),
             [
                 (l("Uploading", "Laster opp"), fmt_rate(s.net.rate_out)),
-                (l("Received¹", "Mottatt¹"), fmt_bytes(s.net.total_in as f64)),
-                (l("Sent¹", "Sendt¹"), fmt_bytes(s.net.total_out as f64)),
+                (l("Received", "Mottatt"), fmt_bytes(s.net.total_in as f64)),
+                (l("Sent", "Sendt"), fmt_bytes(s.net.total_out as f64)),
             ],
             &s.net_in_hist,
             None,
@@ -1798,6 +2039,18 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         ),
     ];
     let target = this.clone();
+    let cards: Vec<_> = cards
+        .into_iter()
+        .filter(|(tab, ..)| favorites.iter().any(|k| k == tab.key()))
+        // A Mac without a battery gets no battery card.
+        .filter(|(tab, ..)| *tab != Tab::Battery || s.battery.present)
+        .collect();
+    // A short last row takes the busiest-apps card instead of leaving a
+    // hole; otherwise it sits beside the donuts below.
+    let fill_grid = cards.len() % 3 != 0;
+    let show_power = favorites.iter().any(|key| key == "battery") && s.apps.iter().any(|a| a.power_w > 0.);
+    let show_memory = favorites.iter().any(|key| key == "memory");
+    let bottom_count = 2 * show_memory as usize + show_power as usize + (!fill_grid) as usize;
     div()
         .flex()
         .flex_col()
@@ -1827,22 +2080,21 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .grid()
                 .grid_cols(3)
                 .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
-                .children(
-                    cards
-                        .into_iter()
-                        .filter(|(tab, ..)| favorites.iter().any(|k| k == tab.key()))
-                        .map(|(tab, context, value, stats, hist, max)| {
-                            overview_card(tab, context, value, stats, hist, max, dark, this.clone())
-                        }),
-                ),
+                .children(cards.into_iter().map(|(tab, context, value, stats, hist, max)| {
+                    overview_card(tab, context, value, stats, hist, max, dark, this.clone()).into_any_element()
+                }))
+                .when(fill_grid && !favorites.is_empty(), |d| {
+                    let compact = settings.compact_dashboard;
+                    d.child(busiest_apps(s, if compact { 154. } else { 208. }, if compact { 4 } else { 6 }, dark, this.clone()))
+                }),
         )
-        .when(!settings.compact_dashboard && !favorites.is_empty(), |d| {
+        .when(!settings.compact_dashboard && bottom_count > 0, |d| {
             d.child(
                 div()
                     .grid()
-                    .grid_cols(3)
+                    .grid_cols(bottom_count.max(2) as u16)
                     .gap(t::SPACE_4)
-                    .when(favorites.iter().any(|key| key == "memory"), |row| row.child(donut_card(
+                    .when(show_memory, |row| row.child(donut_card(
                         l("Memory by Type", "Minne etter type"),
                         Tab::Memory,
                         vec![
@@ -1866,24 +2118,10 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                         dark,
                     ))
                     .child(top_apps_donut(s, dark)))
-                    .when(favorites.iter().any(|key| key == "battery") && s.apps.iter().any(|a| a.power_w > 0.), |row| row.child(power_donut(s, dark))),
+                    .when(show_power, |row| row.child(power_donut(s, dark)))
+                    .when(!fill_grid, |row| row.child(busiest_apps(s, 184., 5, dark, this.clone()))),
             )
         })
-        .child(
-            div()
-                .text_size(t::TEXT_CAPTION)
-                .text_color(t::ink_dim(dark))
-                .child(l(
-                "¹ Network totals since boot. Averages and peaks cover this session.",
-                "¹ Nettverkstotaler siden oppstart. Gjennomsnitt og topper gjelder denne økten.",
-            ))
-                .when(!settings.compact_dashboard && !favorites.is_empty(), |d| {
-                    d.child(l(
-                        "² Apps share memory, so their sum can be larger than memory in use.",
-                        "² Apper deler minne, så summen kan bli større enn minne i bruk.",
-                    ))
-                }),
-        )
 }
 
 /// Draw a ring from convex quadrilaterals. GPUI triangulates filled paths
@@ -2000,7 +2238,102 @@ fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
     }
     let other: f64 = top.iter().skip(4).map(|a| a.mem_bytes as f64).sum();
     if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
-    donut_card(l("Memory by App", "Minne etter app"), Tab::Memory, slices, fmt_bytes(total), l("all apps²", "alle apper²"), fmt_bytes, dark)
+    donut_card(l("Memory by App", "Minne etter app"), Tab::Memory, slices, fmt_bytes(total), l("all apps", "alle apper"), fmt_bytes, dark)
+}
+
+/// The apps using the most CPU right now; fills the Overview's third slot
+/// when there is no power chart, and opens the full list on click.
+fn busiest_apps(s: &Snapshot, height: f32, rows: usize, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+    let color = Metric::Cpu.accent(dark);
+    let mut top: Vec<&AppGroup> = s.apps.iter().filter(|a| a.cpu_pct > 0.).collect();
+    top.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
+    let keyboard = this.clone();
+    div()
+        .id("overview-busiest")
+        .role(Role::Button)
+        .aria_label(l("Busiest apps. Open Apps & processes", "Mest aktive apper. Åpne Apper og prosesser"))
+        .tab_index(40)
+        .min_w_0()
+        .h(px(height))
+        .rounded(t::RADIUS_CARD)
+        .bg(t::card(dark))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .focus_visible(move |d| d.border_color(color))
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap(t::SPACE_3)
+        .cursor_pointer()
+        .hover(|d| d.bg(t::card_hi(dark)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .size(px(22.))
+                                .rounded(t::RADIUS_CONTROL)
+                                .bg(Metric::Cpu.soft(dark))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon_img("icons/layout-grid.svg", 13., color)),
+                        )
+                        .child(
+                            div()
+                                .text_size(t::TEXT_BODY)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(color)
+                                .child(l("Busiest apps", "Mest aktive apper")),
+                        ),
+                )
+                .child(icon_img("icons/chevron-right.svg", 12., t::ink_dim(dark))),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .when(top.is_empty(), |d| {
+                    d.child(sub(l("No app is using this right now.", "Ingen app bruker dette akkurat nå.")).text_color(t::ink_dim(dark)))
+                })
+                .children(top.iter().take(rows).map(|app| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(t::SPACE_2)
+                        .h(px(23.))
+                        .child(app_icon(app, dark))
+                        .child(div().flex_1().min_w_0().text_size(t::TEXT_SMALL).truncate().child(app.name.clone()))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(t::TEXT_SMALL)
+                                .text_color(t::ink_dim(dark))
+                                .child(fmt_pct(app.cpu_pct)),
+                        )
+                })),
+        )
+        .on_click(move |_, _, cx| {
+            this.update(cx, |v, _| {
+                v.process_sort_cpu = true;
+                v.process_order.clear();
+            });
+            crate::process_panel::open(&this, cx);
+        })
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
+                crate::process_panel::open(&keyboard, cx);
+                cx.stop_propagation();
+            }
+        })
 }
 
 fn breakdown_watts(watts: f64) -> String {
@@ -2253,15 +2586,16 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
             }).text_color(t::ink_dim(dark)))
         })
         .children(sample.fans.iter().map(|r| reading_row(r, "RPM")));
+    let thermal = format!("{}: {}", l("macOS thermal state", "Termisk tilstand fra macOS"), s.thermal);
     div().flex().flex_col().gap_3()
-        .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), l("Read-only", "Kun avlesning"), dark))
+        .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), &thermal, dark))
         .when(preview.is_some(), |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample sensor values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke sensormålinger")).text_color(t::ink_dim(dark)))))
         .child(div().grid().grid_cols(2).gap_3().items_start().child(temperatures).child(fans))
-        .child(div().flex().justify_between().gap_3()
-            .child(sub(source).text_color(t::ink_dim(dark)))
-            .child(sub(format!("{}: {}", l("macOS thermal state", "Termisk tilstand fra macOS"), s.thermal)).text_color(t::ink_dim(dark))))
+        // Only a source that isn't working is worth a line.
+        .when(!fresh || !matches!(sample.source, crate::sensors::SourceState::Ready), |d| {
+            d.child(sub(source).text_color(t::ink_dim(dark)))
+        })
         .when(sample.inventory_limited, |d| d.child(sub(l("Sensor inventory is limited; some channels are not shown.", "Sensoroversikten er begrenset; enkelte kanaler vises ikke.")).text_color(t::ink_dim(dark))))
-        .child(sub(l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll.")).text_color(t::ink_dim(dark)))
 }
 
 fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
@@ -2349,7 +2683,7 @@ fn disk_tab(
             ],
             None,
         ))
-        .child(section_header(l("Storage devices", "Lagringsenheter"), l("Read-only", "Kun avlesning"), dark))
+        .child(section_header(l("Storage devices", "Lagringsenheter"), "", dark))
         .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
         // One drive needs no picker: its card below already names it. A
         // selection that has gone away keeps it, so the remaining drive can
@@ -2390,9 +2724,7 @@ fn disk_tab(
             l("Device unavailable", "Enheten er utilgjengelig").into(),
             l("Device disconnected, replaced, or temporarily unavailable. Waiting for a fresh inventory.", "Enheten er frakoblet, erstattet eller midlertidig utilgjengelig. Venter på en ny oversikt.").into(), dark)))
         .when_some(device.filter(|device| inventory.fresh() && device.identity_matches(&io)), |d, device| d.child(disk_detail(device, io.get(&device.id).filter(|sample| sample.fresh()), dark)))
-        .child(sub(l("Inventory refreshes every 30 seconds. Virtual disk images are omitted. No mount, eject, erase, or SMART-setting operations are performed.", "Oversikten oppdateres hvert 30. sekund. Virtuelle diskbilder utelates. Ingen montering, utmating, sletting eller endring av SMART-innstillinger utføres.")).text_color(t::ink_dim(dark)))
         .child(section_header(l("All apps · all devices", "Alle apper · alle enheter"), l("Disk activity", "Diskaktivitet"), dark))
-        .child(sub(l("App activity below is system-wide, not attributed to the selected drive.", "Appaktiviteten nedenfor gjelder hele systemet, ikke bare den valgte disken.")).text_color(t::ink_dim(dark)))
         .child(top_apps(rows.iter().copied(), |a| { let r = a.disk_read_rate + a.disk_write_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
 }
 
@@ -2422,9 +2754,20 @@ fn disk_detail(
         Some(false) => l("Rotating disk", "Roterende disk"),
         None => l("Media type unavailable", "Medietype utilgjengelig"),
     };
-    let flow = |title: &'static str, rate: Option<f64>, history: &[f64]| {
+    let flow = |title: &'static str, rate: Option<f64>, history: &[f64], total: Option<u64>| {
         card(dark)
-            .child(caption(title, dark))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(caption(title, dark))
+                    .child(
+                        div()
+                            .text_size(t::TEXT_CAPTION)
+                            .text_color(t::ink_dim(dark))
+                            .child(format!("{} {}", l("Counter", "Teller"), bytes(total))),
+                    ),
+            )
             .child(
                 div()
                     .text_2xl()
@@ -2445,7 +2788,7 @@ fn disk_detail(
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(bytes(device.size)))
                     .child(caption(l("Physical capacity", "Fysisk kapasitet"), dark)))))
         .when(device.smart.health == Health::Failed, |d| d.child(card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("SMART reports a failure. Back up important data and inspect this drive.", "SMART rapporterer en feil. Sikkerhetskopier viktige data og undersøk disken.")))))
-        .child(section_header(l("Volumes and containers", "Volumer og beholdere"), "diskutil", dark))
+        .child(section_header(l("Volumes and containers", "Volumer og beholdere"), "", dark))
         .when(device.volumes.is_empty(), |d| d.child(sub(l("No readable volume information.", "Ingen lesbar voluminformasjon.")).text_color(t::ink_dim(dark))))
         .children(crate::disks::volume_groups(&device.volumes).iter().map(|group| {
             let mut volume_card = card(dark);
@@ -2589,16 +2932,13 @@ fn disk_detail(
             }
             volume_card
         }))
-        .child(sub(l("APFS volumes share container space. Shared capacity and free space are shown per container, never summed per volume.", "APFS-volumer deler beholderplass. Delt kapasitet og ledig plass vises per beholder og summeres aldri per volum.")).text_color(t::ink_dim(dark)))
-        .child(section_header(l("Device activity", "Enhetsaktivitet"), l("Read + write", "Lesing + skriving"), dark))
+        .child(section_header(l("Device activity", "Enhetsaktivitet"), "", dark))
         .child(div().grid().grid_cols(2).gap_3()
-            .child(flow(l("Device read", "Enhetens lesing"), io.and_then(|v| v.read_rate), io.map(|v| v.read_history.as_slice()).unwrap_or(&[])))
-            .child(flow(l("Device write", "Enhetens skriving"), io.and_then(|v| v.write_rate), io.map(|v| v.write_history.as_slice()).unwrap_or(&[]))))
-        .child(sub(format!("IORegistry · {}: {} · {}: {}", l("Read counter", "Leseteller"), bytes(io.map(|v| v.read_total)), l("Write counter", "Skriveteller"), bytes(io.map(|v| v.write_total)))).text_color(t::ink_dim(dark)))
-        .child(sub(l("Device I/O counters reset when the device is reattached; they are not lifetime SMART totals. Rates need two fresh samples.", "Enhetens I/O-tellere nullstilles når enheten kobles til på nytt; de er ikke SMART-totaltall for levetiden. Hastigheter krever to ferske målinger.")).text_color(t::ink_dim(dark)))
-        .child(section_header(l("Health and lifetime", "Helse og levetid"), "SMART", dark))
+            .child(flow(l("Device read", "Enhetens lesing"), io.and_then(|v| v.read_rate), io.map(|v| v.read_history.as_slice()).unwrap_or(&[]), io.map(|v| v.read_total)))
+            .child(flow(l("Device write", "Enhetens skriving"), io.and_then(|v| v.write_rate), io.map(|v| v.write_history.as_slice()).unwrap_or(&[]), io.map(|v| v.write_total))))
+        .child(section_header(l("Health and lifetime", "Helse og levetid"), "", dark))
         .child(div().grid().grid_cols(3).gap_3()
-            .child(stat_card("SMART", health.to_string(), None, dark))
+            .child(stat_card(if device.smart.extended { "SMART" } else { l("SMART · from macOS", "SMART · fra macOS") }, health.to_string(), None, dark))
             .child(stat_card(l("Temperature", "Temperatur"), device.smart.temperature_c.map(fmt_celsius).unwrap_or_else(unknown), None, dark))
             .child(stat_card(l("Endurance used", "Brukt skrivelevetid"), device.smart.endurance_used.map(|v| fmt_pct(v as f64)).unwrap_or_else(unknown), None, dark)))
         .child(div().grid().grid_cols(4).gap_3()
@@ -2606,7 +2946,6 @@ fn disk_detail(
             .child(stat_card(l("Lifetime write", "Skrevet i levetiden"), bytes(device.smart.lifetime_write), None, dark))
             .child(stat_card(l("Power-on hours", "Driftstimer"), count(device.smart.power_on_hours), None, dark))
             .child(stat_card(l("Power cycles", "Strømsykluser"), count(device.smart.power_cycles), None, dark)))
-        .child(sub(if device.smart.extended { l("Extended source: read-only SMART log. Endurance used is a wear indicator, not a health score; it can exceed 100%.", "Utvidet kilde: skrivebeskyttet SMART-logg. Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore; den kan overstige 100 %.") } else { l("SMART status source: macOS. Extended SMART data is unavailable without a supported local reader and device. Missing data never means healthy.", "Kilde for SMART-status: macOS. Utvidede SMART-data er utilgjengelige uten en støttet lokal leser og enhet. Manglende data betyr aldri frisk.") }).text_color(t::ink_dim(dark)))
 }
 
 fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
@@ -2753,74 +3092,9 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
                     l("GPU utilization counters aren't exposed in virtual machines. On real Apple Silicon hardware this tab shows utilization and GPU memory.", "GPU-utnyttelse er ikke eksponert i virtuelle maskiner. På ekte Apple Silicon-maskinvare viser denne fanen utnyttelse og GPU-minne.").into(),
                     dark,
                 ))
-            })
-            .child(section_header(
-                l("Apps", "Apper"),
-                l("GPU attribution", "GPU-tilskrivning"),
-                dark,
-            ))
-            .child(empty_state(
-                "icons/gpu.svg",
-                m.accent(dark),
-                l("Per-app GPU usage unavailable", "GPU-bruk per app er ikke tilgjengelig").into(),
-                l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen.").into(),
-                dark,
-            ));
+            });
     }
-    page.child(neural_section(s, dark))
-}
-
-/// Neural Engine as a supplementary section of the GPU page. Utilization is
-/// not exposed by the collector on this Mac, so the section reports its core
-/// count honestly rather than implying a live reading.
-fn neural_section(s: &Snapshot, dark: bool) -> Div {
-    let m = Metric::Neural;
-    let cores = s.chip.neural_cores;
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(section_header("Neural Engine", l("Read-only", "Kun avlesning"), dark));
-    if s.neural.is_some() {
-        section = section.child(
-            div()
-                .grid()
-                .grid_cols(3)
-                .gap_3()
-                .child(stat_card(
-                    l("Utilization", "Utnyttelse"),
-                    s.neural.map(fmt_pct).unwrap_or("—".into()),
-                    Some(m.accent(dark)),
-                    dark,
-                ))
-                .child(stat_card(
-                    l("Cores", "Kjerner"),
-                    if cores > 0 { format!("{}", cores) } else { "—".into() },
-                    None,
-                    dark,
-                ))
-                .child(stat_card(l("Thermal", "Termisk"), s.thermal.clone(), None, dark)),
-        );
-    } else {
-        section = section.child(empty_state(
-            "icons/brain.svg",
-            m.accent(dark),
-            l("Utilization unavailable", "Utnyttelse utilgjengelig").into(),
-            {
-                let why = l(
-                    "Tidegauge can't read Neural Engine usage on this Mac yet.",
-                    "Tidegauge kan ikke lese bruken av Neural Engine på denne Macen ennå.",
-                );
-                if cores > 0 {
-                    format!("{why} {} {cores}.", l("Neural Engine cores:", "Kjerner i Neural Engine:"))
-                } else {
-                    why.to_string()
-                }
-            },
-            dark,
-        ));
-    }
-    section
+    page
 }
 
 fn battery_tab(s: &Snapshot, dark: bool) -> Div {
@@ -2890,19 +3164,17 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                 )
             }))
         .when(b.present, |d| d
-            .child(section_header(l("Battery health", "Batterihelse"), l("Read-only", "Kun avlesning"), dark))
+            .child(section_header(l("Battery health", "Batterihelse"), "", dark))
             .child(div().grid().grid_cols(3).gap_3()
                 .child(stat_card(l("Full-charge capacity", "Fulladekapasitet"), b.full_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Design capacity", "Designkapasitet"), b.design_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("macOS condition", "Tilstand fra macOS"), b.condition_label().into(), None, dark)))
-            .child(sub(l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS.")).text_color(t::ink_dim(dark)))
-            .child(section_header(l("Electrical details", "Elektriske detaljer"), l("Live battery readings", "Aktuelle batterimålinger"), dark))
+            .child(section_header(l("Electrical details", "Elektriske detaljer"), "", dark))
             .child(div().grid().grid_cols(4).gap_3()
                 .child(stat_card(l("Battery flow", "Batteristrøm"), b.power_w.map(fmt_signed_watts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Voltage", "Spenning"), b.voltage_v.map(fmt_volts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Current", "Strømstyrke"), b.current_ma.map(|a| format!("{:+} mA", a)).unwrap_or("—".into()), None, dark))
-                .child(stat_card(l("Adapter rating", "Adapterkapasitet"), b.adapter_rating_w.map(|w| format!("{} W", w)).unwrap_or("—".into()), None, dark)))
-            .child(sub(l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor.")).text_color(t::ink_dim(dark))))
+                .child(stat_card(l("Adapter rating", "Adapterkapasitet"), b.adapter_rating_w.map(|w| format!("{} W", w)).unwrap_or("—".into()), None, dark))))
 }
 
 // ---------- sound ----------
@@ -3040,7 +3312,6 @@ fn sound_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>, pending: boo
             list_card(rows, dark)
         })
         .children(idle_line)
-        .child(sub(l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd.")).text_color(t::ink_dim(dark)))
 }
 
 // ---------- bluetooth ----------
@@ -3083,7 +3354,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(if n == 0 { l("No devices connected", "Ingen enheter tilkoblet").into() } else { format!("{} {}", n, l("connected", "tilkoblede")) }),
                         )
-                        .when_some(lowest, |d, (name, b)| {
+                        .when_some(lowest, |d, (name, _)| {
                             d.child(sub(format!("{} {}", name, l("has the lowest battery", "har lavest batterinivå"))).text_color(t::ink_dim(dark)))
                         }),
                     )

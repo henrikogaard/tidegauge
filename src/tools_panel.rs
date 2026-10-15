@@ -53,8 +53,6 @@ impl Page {
 }
 pub struct State {
     pub page: Page,
-    /// The page whose "About this data" notes are expanded.
-    pub about: Option<Page>,
     pub startup: Option<crate::startup::Inventory>,
     pub startup_busy: bool,
     pub message: Option<String>,
@@ -76,7 +74,6 @@ impl Default for State {
     fn default() -> Self {
         Self {
             page: Page::Startup,
-            about: None,
             startup: None,
             startup_busy: false,
             message: None,
@@ -105,8 +102,6 @@ pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
         v.show_settings = false;
         v.tools.page = page;
         v.tools.message = None;
-        // A page always opens with its "About this data" closed.
-        v.tools.about = None;
         v.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     });
@@ -150,11 +145,38 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         Page::Storage => storage(view, dark, this.clone()),
         Page::Packages => packages(view, dark, this.clone()),
     })
-    .child(about(view.tools.page, view.tools.about == Some(view.tools.page), dark, this))
 }
 
-/// The caveats for a page, kept out of its opening card so the page leads
-/// with what it is for.
+/// The header for a tool page: what it is for, its actions, and its notes.
+pub(crate) fn chrome(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> crate::ui::PageChrome {
+    let page = view.tools.page;
+    let (subtitle, actions) = match page {
+        Page::Startup => (
+            l("Review the legacy launch registrations found on this Mac.", "Se gjennom eldre oppstartsregistreringer funnet på denne Macen."),
+            startup_actions(view, dark, this),
+        ),
+        Page::Activity => (
+            l("Recent CPU, disk and wakeup activity for each process.", "Nylig CPU-, disk- og oppvåkningsaktivitet for hver prosess."),
+            Vec::new(),
+        ),
+        Page::Baselines => (
+            l("Save a fixed system baseline, make your change, then compare an equal-length later window.", "Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu."),
+            baseline_actions(view, dark, this),
+        ),
+        Page::Storage => (
+            l("Find the largest folders and files inside a folder you choose.", "Finn de største mappene og filene i en mappe du velger."),
+            storage_actions(view, dark, this),
+        ),
+        Page::Packages => (
+            l("Local app bundles, Homebrew formulae/casks and global npm packages.", "Lokale app-pakker, Homebrew-formler/-casks og globale npm-pakker."),
+            package_actions(view, dark, this),
+        ),
+    };
+    crate::ui::PageChrome { subtitle: Some(subtitle.into()), actions, notes: about_notes(page) }
+}
+
+/// The caveats for a page, behind the header's ⓘ so the page leads with
+/// what it is for.
 fn about_notes(page: Page) -> Vec<&'static str> {
     match page {
         Page::Startup => vec![
@@ -180,38 +202,6 @@ fn about_notes(page: Page) -> Vec<&'static str> {
     }
 }
 
-/// A collapsed "About this data" disclosure at the bottom of a page.
-fn about(page: Page, open: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let toggle = this.clone();
-    let mut section = div().flex().flex_col().gap_2().child(
-        div().flex().child(crate::controls::button_labeled(
-            format!("{}-about", page.key()),
-            l("About this data", "Om disse dataene"),
-            if open {
-                l("About this data, expanded", "Om disse dataene, utvidet")
-            } else {
-                l("About this data, collapsed", "Om disse dataene, skjult")
-            },
-            open,
-            dark,
-            move |_, cx| {
-                toggle.update(cx, |v, cx| {
-                    v.tools.about = if v.tools.about == Some(page) { None } else { Some(page) };
-                    cx.notify();
-                });
-            },
-        )),
-    );
-    if open {
-        let mut notes = card(dark);
-        for note in about_notes(page) {
-            notes = notes.child(sub(note).text_color(t::ink_dim(dark)));
-        }
-        section = section.child(notes);
-    }
-    section
-}
-
 fn title(text: &str) -> Div {
     div()
         .text_lg()
@@ -231,10 +221,10 @@ fn startup_page_range(page: usize, len: usize) -> std::ops::Range<usize> {
     start..end
 }
 
-fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
+fn startup_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
     let refresh = this.clone();
     let settings = this.clone();
-    let mut actions = div().flex().flex_wrap().gap_2().child(button(
+    let mut actions = vec![button(
         "startup-settings",
         l(
             "Open Login Items Settings",
@@ -249,31 +239,36 @@ fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 cx.notify();
             });
         },
-    ));
+    )
+    .into_any_element()];
     if !view.tools.startup_busy {
-        actions = actions.child(button(
-            "startup-refresh",
-            l("Refresh", "Oppdater"),
-            false,
-            dark,
-            move |_, cx| refresh_startup(&refresh, cx),
-        ));
+        actions.push(
+            button(
+                "startup-refresh",
+                l("Refresh", "Oppdater"),
+                false,
+                dark,
+                move |_, cx| refresh_startup(&refresh, cx),
+            )
+            .into_any_element(),
+        );
     }
     let login = crate::login::status();
     let login_target = this.clone();
     if login.can_change() && !view.tools.startup_busy {
         let enabled = login.is_registered();
-        actions=actions.child(button("startup-own-login",if enabled {l("Disable Tidegauge at login","Slå av Tidegauge ved pålogging")} else {l("Launch Tidegauge at login","Start Tidegauge ved pålogging")},enabled,dark,move |_,cx| {
+        actions.push(button("startup-own-login",if enabled {l("Disable Tidegauge at login","Slå av Tidegauge ved pålogging")} else {l("Launch Tidegauge at login","Start Tidegauge ved pålogging")},enabled,dark,move |_,cx| {
             let result=crate::login::set_enabled(!enabled).map_err(str::to_string).and_then(|status| {
                 crate::settings::mutate(|s|s.launch_at_login=status.is_registered()).map_err(|_|l("Login registration changed, but the local preference could not be saved.","Påloggingsregistreringen ble endret, men den lokale innstillingen kunne ikke lagres.").to_string())
             });
             login_target.update(cx,|v,cx|{v.tools.message=result.err();cx.notify();});
-        }));
+        }).into_any_element());
     }
-    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
-        .child(sub(l("Review the legacy launch registrations found on this Mac.","Se gjennom eldre oppstartsregistreringer funnet på denne Macen.")))
-        .child(sub(format!("Tidegauge: {}",login.message())))
-        .child(actions));
+    actions
+}
+
+fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if view.tools.startup_busy {
         body = body.child(sub(l(
             "Reading startup registrations…",
@@ -531,10 +526,7 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             },
         ));
     }
-    let wakeups_label = l("reported interrupt wakeups/s", "rapporterte avbruddsoppvåkninger/s");
-    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
-        .child(sub(l("Recent CPU, disk and wakeup activity for each process.","Nylig CPU-, disk- og oppvåkningsaktivitet for hver prosess.")))
-        .child(div().flex().child(actions)));
+    let body = div().flex().flex_col().gap(t::SECTION_GAP).child(div().flex().child(actions));
     let mut rows: Vec<_> = view.snap.resource_activity.iter().collect();
     let metric = |r: &crate::resource_activity::Activity| match view.tools.activity_sort {
         ActivitySort::Cpu => r.cpu,
@@ -547,27 +539,6 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.pid.cmp(&b.pid))
     });
-    if let Some(own) = rows.iter().find(|r| r.own) {
-        body = body.child(sub(format!(
-            "{}: {} CPU · {} · {} {} · {:.0} {}",
-            l(
-                "Tidegauge monitoring process",
-                "Tidegauges overvåkingsprosess"
-            ),
-            own.cpu
-                .map(|v| crate::locale::percent(v, 1))
-                .unwrap_or_else(|| "—".into()),
-            own.io
-                .map(crate::engine::fmt_rate)
-                .unwrap_or_else(|| "—".into()),
-            own.interrupt_wakeups
-                .map(|v| crate::locale::number(v, 1))
-                .unwrap_or_else(|| "—".into()),
-            wakeups_label,
-            own.wakeups_covered,
-            l("s covered", "s dekket")
-        )));
-    }
     if rows.is_empty() {
         return body.child(empty_state(
             Page::Activity.icon(),
@@ -732,8 +703,8 @@ fn capture_baseline(this: &Entity<TideGaugeView>, save: bool, cx: &mut App) {
     }).detach();
 }
 
-fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut actions = div().flex().flex_wrap().items_center().gap_2();
+fn baseline_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
+    let mut actions: Vec<AnyElement> = Vec::new();
     let mut windows = segment_group("baseline-windows", l("Window", "Tidsvindu"), dark);
     for minutes in crate::baselines::WINDOWS {
         let target = this.clone();
@@ -753,10 +724,10 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             },
         ));
     }
-    actions = actions.child(windows);
+    actions.push(windows.into_any_element());
     if !view.tools.baseline_busy && !view.tools.baseline_read_failed {
         let target = this.clone();
-        actions = actions.child(button(
+        actions.push(button(
             "baseline-save",
             l("Save recent window", "Lagre nylig tidsvindu"),
             false,
@@ -784,21 +755,23 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                 })
                 .detach();
             },
-        ));
+        ).into_any_element());
         if view.tools.baseline.is_some() {
             let target = this.clone();
-            actions = actions.child(button(
+            actions.push(button(
                 "baseline-compare",
                 l("Compare with now", "Sammenlign med nå"),
                 false,
                 dark,
                 move |_, cx| capture_baseline(&target, false, cx),
-            ));
+            ).into_any_element());
         }
     }
-    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
-        .child(sub(l("Save a fixed system baseline, make your change, then compare an equal-length later window.","Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu.")))
-        .child(actions));
+    actions
+}
+
+fn baselines(view: &TideGaugeView, dark: bool, _this: Entity<TideGaugeView>) -> Div {
+    let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if view.tools.baseline_busy {
         body = body.child(sub(l("Reading history…", "Leser historikk…")));
     }
@@ -864,8 +837,8 @@ fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     body.child(list)
 }
 
-fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut actions = div().flex().gap_2();
+fn storage_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
+    let mut actions: Vec<AnyElement> = Vec::new();
     let data = view
         .tools
         .scan
@@ -873,7 +846,7 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         .map(|s| s.progress.lock().unwrap().clone());
     if data.as_ref().is_none_or(|d| d.finished) {
         let target = this.clone();
-        actions = actions.child(button(
+        actions.push(button(
             "storage-select",
             l("Choose folder…", "Velg mappe…"),
             false,
@@ -913,20 +886,27 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                 })
                 .detach();
             },
-        ));
+        ).into_any_element());
     } else if let Some(scan) = &view.tools.scan {
         let cancel = scan.cancel.clone();
-        actions = actions.child(button(
+        actions.push(button(
             "storage-cancel",
             l("Cancel scan", "Avbryt skanning"),
             false,
             dark,
             move |_, _| cancel.store(true, std::sync::atomic::Ordering::Relaxed),
-        ));
+        ).into_any_element());
     }
-    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
-        .child(sub(l("Find the largest folders and files inside a folder you choose.","Finn de største mappene og filene i en mappe du velger.")))
-        .child(actions));
+    actions
+}
+
+fn storage(view: &TideGaugeView, dark: bool, _this: Entity<TideGaugeView>) -> Div {
+    let data = view
+        .tools
+        .scan
+        .as_ref()
+        .map(|s| s.progress.lock().unwrap().clone());
+    let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if let Some(d) = data {
         let status = if d.error.is_some() {
             l("Scan unavailable", "Skanning utilgjengelig")
@@ -1126,27 +1106,29 @@ fn package_action(
     .detach();
 }
 
-fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    use crate::packages::Source;
-    let mut actions = div().flex().flex_wrap().gap_2();
+fn package_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
+    let mut actions: Vec<AnyElement> = Vec::new();
     if !view.tools.packages_busy {
         for (updates, label) in [
             (false, l("Refresh installed", "Oppdater installerte")),
             (true, l("Check for updates", "Se etter oppdateringer")),
         ] {
             let target = this.clone();
-            actions = actions.child(button(
+            actions.push(button(
                 format!("packages-refresh-{updates}"),
                 label,
                 false,
                 dark,
                 move |_, cx| refresh_packages(&target, updates, cx),
-            ));
+            ).into_any_element());
         }
     }
-    let mut body=div().flex().flex_col().gap(t::SECTION_GAP).child(card(dark)
-        .child(sub(l("Local app bundles, Homebrew formulae/casks and global npm packages.","Lokale app-pakker, Homebrew-formler/-casks og globale npm-pakker.")))
-        .child(actions));
+    actions
+}
+
+fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::packages::Source;
+    let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if view.tools.packages_busy {
         body = body.child(sub(l(
             "Working… Other package actions are locked until this finishes.",
@@ -1166,8 +1148,22 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             dark,
         ));
     };
-    for warning in &inventory.warnings {
-        body = body.child(sub(warning.clone()).text_color(t::warn(dark)));
+    // Skipped items are worth knowing, not alarming: one quiet line.
+    if !inventory.warnings.is_empty() {
+        body = body.child(
+            sub(format!(
+                "{} {}",
+                crate::locale::count(
+                    inventory.warnings.len() as u64,
+                    "item was skipped:",
+                    "items were skipped:",
+                    "element ble hoppet over:",
+                    "elementer ble hoppet over:",
+                ),
+                inventory.warnings.join(" ")
+            ))
+            .text_color(t::ink_dim(dark)),
+        );
     }
     let mut filters = div().flex().flex_wrap().items_center().gap_2();
     let mut sources =

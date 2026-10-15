@@ -60,6 +60,35 @@ pub fn refresh_order(view: &mut TideGaugeView) {
     }
 }
 
+/// Whether the rows on screen are out of date because the order is being
+/// held for a safe click. Only then is it worth saying.
+fn order_held(view: &TideGaugeView) -> bool {
+    (view.process_table_hovered || view.expanded_process_group.is_some())
+        && !view.process_order.is_empty()
+        && view.process_order != sorted_keys(&view.snap, view.process_sort_cpu)
+}
+
+fn held_chip(dark: bool) -> impl IntoElement {
+    div()
+        .id("order-held")
+        .role(Role::Status)
+        .aria_label(l(
+            "Order held while the pointer is over the list",
+            "Rekkefølgen holdes mens pekeren er over listen",
+        ))
+        .flex()
+        .items_center()
+        .gap_1()
+        .h(px(22.))
+        .px_2()
+        .rounded(t::RADIUS_CHIP)
+        .bg(t::card_hi(dark))
+        .text_size(t::TEXT_SMALL)
+        .text_color(t::ink_dim(dark))
+        .child(svg().path("icons/pause.svg").size(px(11.)).text_color(t::ink_dim(dark)))
+        .child(l("Order held", "Rekkefølge holdt"))
+}
+
 fn remaining_pids(s: &Snapshot) -> HashSet<i32> {
     s.process_groups
         .iter()
@@ -109,6 +138,31 @@ fn header_row(sort_cpu: bool, dark: bool) -> Div {
         .child(cell("CPU", COL_CPU, sort_cpu))
         .child(cell(l("MEMORY", "MINNE"), COL_MEM, !sort_cpu))
         .child(div().w(px(16.)).flex_shrink_0())
+}
+
+/// The header line counts what is running; the notes explain Quit and the
+/// held row order.
+pub(crate) fn chrome(view: &TideGaugeView) -> crate::ui::PageChrome {
+    let s = &view.snap;
+    crate::ui::PageChrome {
+        subtitle: Some(format!(
+            "{} · {}",
+            crate::locale::count(s.app_count as u64, "app", "apps", "app", "apper"),
+            count_label(s.proc_count)
+        )),
+        notes: vec![
+            l(
+                "Quit asks the app to close. Force Quit stops it at once, and unsaved work is lost.",
+                "Avslutt ber appen lukke seg. Tving avslutning stopper den med en gang, og ulagret arbeid går tapt.",
+            ),
+            l(
+                "The list keeps its order while the pointer is over it, so a click never lands on the wrong row.",
+                "Listen holder rekkefølgen mens pekeren er over den, så et klikk aldri treffer feil rad.",
+            ),
+            l("CPU: 100% is one full core.", "CPU: 100 % er én hel kjerne."),
+        ],
+        ..Default::default()
+    }
 }
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
@@ -179,6 +233,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     .child(gpui_kit::base::input::Input::new(&view.process_filter)),
             )
             .child(div().flex_1())
+            .when(order_held(view), |d| d.child(held_chip(dark)))
             .child(sub(l("Sort by", "Sorter etter")).text_color(t::ink_dim(dark)))
             .child(sort),
     );
