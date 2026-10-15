@@ -199,15 +199,18 @@ mod design_tokens_tests {
         "mb", "ml", "mr",
     ];
 
-    /// Literals that are deliberately not tokens: (file, call prefix, reason).
-    const ALLOWED: &[(&str, &str, &str)] = &[
-        ("agents_panel.rs", ".gap(px(2.", "hairline gap between stacked list rows"),
-        ("ui.rs", ".gap(px(1.", "hairline gap between sidebar items"),
-        ("ui.rs", ".gap(px(2.", "gap between level-meter bars (chart geometry)"),
-        ("ui.rs", ".py(px(1.", "optical vertical padding of runtime badges"),
-        ("ui.rs", ".mx(px(3.", "centres the 8 px swatch in the 14 px icon slot"),
-        ("agents_panel.rs", ".ml(px(48.", "aligns detail text under icon and name"),
-        ("process_panel.rs", ".ml(px(38.", "aligns detail text under icon and name"),
+    /// Literals that are deliberately not tokens: (file, call prefix, exact
+    /// number of uses, reason). The count pins each exemption to the call
+    /// sites it was written for: a new raw call with the same method and
+    /// value in that file fails the test instead of slipping through.
+    const ALLOWED: &[(&str, &str, usize, &str)] = &[
+        ("agents_panel.rs", ".gap(px(2.", 2, "hairline gap between stacked lines: plan tile text, session list rows"),
+        ("ui.rs", ".gap(px(1.", 1, "hairline gap between sidebar items"),
+        ("ui.rs", ".gap(px(2.", 1, "gap between level-meter bars (chart geometry)"),
+        ("ui.rs", ".py(px(1.", 2, "optical vertical padding of the two runtime badges"),
+        ("ui.rs", ".mx(px(3.", 1, "centres the 8 px swatch in the 14 px icon slot"),
+        ("agents_panel.rs", ".ml(px(48.", 1, "aligns session detail under icon and name"),
+        ("process_panel.rs", ".ml(px(38.", 1, "aligns app detail under icon and name"),
     ];
 
     fn read(file: &str) -> String {
@@ -240,12 +243,21 @@ mod design_tokens_tests {
     fn ui_uses_tokens_for_typography_radius_and_spacing() {
         let mut offenders = Vec::new();
         for file in UI_FILES {
-            for (line, call) in literal_calls(&read(file)) {
-                if !ALLOWED.iter().any(|(f, prefix, _)| f == file && *prefix == call) {
-                    offenders.push(format!("{file}:{line}: {call}"));
+            let calls = literal_calls(&read(file));
+            for (line, call) in &calls {
+                let allowed = ALLOWED.iter().find(|(f, prefix, _, _)| f == file && prefix == call);
+                match allowed {
+                    None => offenders.push(format!("{file}:{line}: {call}")),
+                    Some((_, prefix, count, _)) => {
+                        let uses = calls.iter().filter(|(_, c)| c == prefix).count();
+                        if uses > *count {
+                            offenders.push(format!("{file}:{line}: {call} ({uses} uses, {count} allowed)"));
+                        }
+                    }
                 }
             }
         }
+        offenders.dedup();
         assert!(
             offenders.is_empty(),
             "raw px literals; use a token from theme.rs or add a commented ALLOWED entry:\n{}",
@@ -255,11 +267,12 @@ mod design_tokens_tests {
 
     #[test]
     fn allowlist_has_no_stale_entries() {
-        for (file, prefix, reason) in ALLOWED {
+        for (file, prefix, count, reason) in ALLOWED {
             assert!(!reason.is_empty());
+            let uses = literal_calls(&read(file)).iter().filter(|(_, call)| call == prefix).count();
             assert!(
-                literal_calls(&read(file)).iter().any(|(_, call)| call == prefix),
-                "{file} no longer contains {prefix}; remove the ALLOWED entry"
+                uses >= *count,
+                "{file} has {uses} of {prefix}, {count} allowed; lower or remove the ALLOWED entry"
             );
         }
     }
