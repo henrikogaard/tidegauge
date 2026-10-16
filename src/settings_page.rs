@@ -25,6 +25,9 @@ pub struct Sliders {
     /// When the volume was last dragged; the device's reading lags, so the
     /// slider isn't pulled back to it for a moment.
     pub volume_touched: Option<std::time::Instant>,
+    /// The input device's (microphone's) volume, kept the same way.
+    pub input_volume: Entity<SliderState>,
+    pub input_touched: Option<std::time::Instant>,
 }
 
 impl Sliders {
@@ -38,6 +41,7 @@ impl Sliders {
         let (low, high) = crate::settings::APP_MEMORY_RANGE;
         let app_memory = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_app_mem_gb as f32));
         let volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
+        let input_volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
         let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 4] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
@@ -68,12 +72,23 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, app_memory, volume, volume_touched: None }
+        cx.subscribe(&input_volume, |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
+            let value = match event {
+                SliderEvent::Change(value) | SliderEvent::Release(value) => value.end(),
+            };
+            view.sliders.input_touched = Some(std::time::Instant::now());
+            let id = view.snap.audio.input.id;
+            view.audio_error = crate::audio::set_volume(crate::audio::Direction::Input, id, value / 100.).err();
+            view.snap.audio.input.volume = Some(value / 100.);
+            cx.notify();
+        })
+        .detach();
+        Self { cpu, mem, app, app_memory, volume, volume_touched: None, input_volume, input_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
     /// the person is moving them right now.
-    pub fn sync(&self, view_volume: Option<f32>, window: &mut Window, cx: &mut App) {
+    pub fn sync(&self, view_volume: Option<f32>, input_volume: Option<f32>, window: &mut Window, cx: &mut App) {
         let settings = Settings::load();
         for (state, value) in [
             (&self.cpu, settings.alert_cpu_pct as f32),
@@ -85,11 +100,16 @@ impl Sliders {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
             }
         }
-        let settling = self.volume_touched.is_some_and(|at| at.elapsed().as_millis() < 1500);
-        if let (Some(volume), false) = (view_volume, settling) {
-            let value = volume * 100.;
-            if (self.volume.read(cx).value().end() - value).abs() > 0.5 {
-                self.volume.update(cx, |s, cx| s.set_value(value, window, cx));
+        for (state, touched, reading) in [
+            (&self.volume, self.volume_touched, view_volume),
+            (&self.input_volume, self.input_touched, input_volume),
+        ] {
+            let settling = touched.is_some_and(|at| at.elapsed().as_millis() < 1500);
+            if let (Some(volume), false) = (reading, settling) {
+                let value = volume * 100.;
+                if (state.read(cx).value().end() - value).abs() > 0.5 {
+                    state.update(cx, |s, cx| s.set_value(value, window, cx));
+                }
             }
         }
     }

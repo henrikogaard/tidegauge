@@ -70,7 +70,11 @@ pub struct AudioInfo {
     pub device_muted: Option<bool>,
     pub can_volume: bool,
     pub can_mute: bool,
-    pub devices: Vec<String>,
+    /// Every output device, by id and name, for choosing the default.
+    pub outputs: Vec<(u32, String)>,
+    /// The default input device (microphone) and every input device.
+    pub input: crate::audio::OutputState,
+    pub inputs: Vec<(u32, String)>,
     pub apps: Vec<AudioApp>,
 }
 
@@ -484,8 +488,10 @@ impl Engine {
         s.audio.device_muted = output.muted;
         s.audio.can_volume = output.can_volume;
         s.audio.can_mute = output.can_mute;
+        s.audio.input = crate::audio::device_state(crate::audio::Direction::Input);
         if self.tick % 10 == 0 {
-            s.audio.devices = crate::audio::output_device_names();
+            s.audio.outputs = crate::audio::devices(crate::audio::Direction::Output);
+            s.audio.inputs = crate::audio::devices(crate::audio::Direction::Input);
         }
         s.bt = bt;
         s.projects = crate::projects::detect_projects(&procs);

@@ -1,4 +1,5 @@
-//! CoreAudio: output device list/volume + per-app audio processes.
+//! CoreAudio: output and input devices (choice, volume, mute) + per-app
+//! audio processes.
 
 #![allow(dead_code)]
 
@@ -14,6 +15,28 @@ pub struct OutputState {
     pub muted: Option<bool>,
     pub can_volume: bool,
     pub can_mute: bool,
+}
+
+/// Which side of the audio system: what plays, or what records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Output,
+    Input,
+}
+
+impl Direction {
+    fn scope(self) -> u32 {
+        match self {
+            Direction::Output => K_AUDIO_OBJECT_PROPERTY_SCOPE_OUTPUT,
+            Direction::Input => K_AUDIO_OBJECT_PROPERTY_SCOPE_INPUT,
+        }
+    }
+    fn default_selector(self) -> u32 {
+        match self {
+            Direction::Output => K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
+            Direction::Input => K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE,
+        }
+    }
 }
 
 fn addr(selector: u32, scope: u32) -> AudioObjectPropertyAddress {
@@ -102,17 +125,58 @@ fn cfstr_value(obj: AudioObjectID, sel: u32, scope: u32) -> Option<String> {
 }
 
 pub fn default_output_device() -> AudioObjectID {
+    default_device(Direction::Output)
+}
+
+pub fn default_device(direction: Direction) -> AudioObjectID {
     unsafe {
         let mut id: AudioObjectID = 0;
         get(
             K_AUDIO_OBJECT_SYSTEM_OBJECT,
-            &addr(
-                K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
-                K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
-            ),
+            &addr(direction.default_selector(), K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL),
             &mut id,
         );
         id
+    }
+}
+
+/// Every device on this side that macOS allows as the default: it has
+/// streams in that direction and says it can be the default device there.
+pub fn devices(direction: Direction) -> Vec<(AudioObjectID, String)> {
+    let mut out = Vec::new();
+    for id in object_list(K_AUDIO_HARDWARE_PROPERTY_DEVICES) {
+        unsafe {
+            let a = addr(K_AUDIO_DEVICE_PROPERTY_STREAMS, direction.scope());
+            let mut size = 0u32;
+            let has_streams = AudioObjectGetPropertyDataSize(id, &a, 0, std::ptr::null(), &mut size) == 0 && size > 0;
+            let mut can_be_default = 0u32;
+            let eligible = get(id, &property(K_AUDIO_DEVICE_PROPERTY_DEVICE_CAN_BE_DEFAULT_DEVICE, direction), &mut can_be_default);
+            if has_streams && eligible && can_be_default != 0 {
+                out.push((id, device_name(id)));
+            }
+        }
+    }
+    out
+}
+
+/// Make `id` the default device on this side, as the Sound settings do.
+/// Only a device that is still listed there can be chosen.
+pub fn set_default_device(direction: Direction, id: AudioObjectID) -> Result<(), String> {
+    if !devices(direction).iter().any(|(d, _)| *d == id) {
+        return Err(stale_output_error());
+    }
+    let ok = unsafe {
+        set(
+            K_AUDIO_OBJECT_SYSTEM_OBJECT,
+            &addr(direction.default_selector(), K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL),
+            &id,
+        )
+    };
+    // A write macOS accepts but does not apply is not a switch.
+    if ok && default_device(direction) == id {
+        Ok(())
+    } else {
+        Err(crate::locale::text("macOS did not switch the audio device.", "macOS byttet ikke lydenhet.").into())
     }
 }
 
@@ -135,9 +199,13 @@ pub fn default_output_name() -> String {
 }
 
 fn output_property(selector: u32) -> AudioObjectPropertyAddress {
+    property(selector, Direction::Output)
+}
+
+fn property(selector: u32, direction: Direction) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress {
         mSelector: selector,
-        mScope: K_AUDIO_OBJECT_PROPERTY_SCOPE_OUTPUT,
+        mScope: direction.scope(),
         mElement: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
     }
 }
@@ -155,15 +223,24 @@ unsafe fn property_settable(
 }
 
 pub fn output_state() -> OutputState {
-    let id = default_output_device();
+    device_state(Direction::Output)
+}
+
+/// The default device on this side, with its volume and mute.
+pub fn device_state(direction: Direction) -> OutputState {
+    let id = default_device(direction);
     if id == 0 {
         return OutputState {
-            name: crate::locale::text("Default output", "Standardutgang").into(),
+            name: match direction {
+                Direction::Output => crate::locale::text("Default output", "Standardutgang"),
+                Direction::Input => crate::locale::text("No input device", "Ingen inngang"),
+            }
+            .into(),
             ..Default::default()
         };
     }
-    let volume_address = output_property(K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR);
-    let mute_address = output_property(K_AUDIO_DEVICE_PROPERTY_MUTE);
+    let volume_address = property(K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR, direction);
+    let mute_address = property(K_AUDIO_DEVICE_PROPERTY_MUTE, direction);
     unsafe {
         let mut volume = 0.0f32;
         let mut muted = 0u32;
@@ -186,8 +263,8 @@ pub fn output_state() -> OutputState {
 
 fn stale_output_error() -> String {
     crate::locale::text(
-        "The selected audio output is no longer active.",
-        "Den valgte lydutgangen er ikke lenger aktiv.",
+        "The selected audio device is no longer active.",
+        "Den valgte lydenheten er ikke lenger aktiv.",
     )
     .into()
 }
@@ -241,6 +318,10 @@ fn adjusted_volume(state: &OutputState, expected_id: u32, delta: f32) -> Result<
 }
 
 pub fn set_output_volume(expected_id: u32, value: f32) -> Result<(), String> {
+    set_volume(Direction::Output, expected_id, value)
+}
+
+pub fn set_volume(direction: Direction, expected_id: u32, value: f32) -> Result<(), String> {
     if !valid_volume(value) {
         return Err(crate::locale::text(
             "Volume must be a finite value from 0 to 1.",
@@ -248,11 +329,11 @@ pub fn set_output_volume(expected_id: u32, value: f32) -> Result<(), String> {
         )
         .into());
     }
-    let state = output_state();
+    let state = device_state(direction);
     if !target_is_current(expected_id, state.id) {
         return Err(stale_output_error());
     }
-    let address = output_property(K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR);
+    let address = property(K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR, direction);
     unsafe {
         match property_settable(state.id, &address) {
             Ok(true) => {}
@@ -276,11 +357,15 @@ pub fn set_output_volume(expected_id: u32, value: f32) -> Result<(), String> {
 }
 
 pub fn set_output_mute(expected_id: u32, value: bool) -> Result<(), String> {
-    let state = output_state();
+    set_mute(Direction::Output, expected_id, value)
+}
+
+pub fn set_mute(direction: Direction, expected_id: u32, value: bool) -> Result<(), String> {
+    let state = device_state(direction);
     if !target_is_current(expected_id, state.id) {
         return Err(stale_output_error());
     }
-    let address = output_property(K_AUDIO_DEVICE_PROPERTY_MUTE);
+    let address = property(K_AUDIO_DEVICE_PROPERTY_MUTE, direction);
     let muted: u32 = u32::from(value);
     unsafe {
         match property_settable(state.id, &address) {
@@ -305,8 +390,12 @@ pub fn set_output_mute(expected_id: u32, value: bool) -> Result<(), String> {
 }
 
 pub fn toggle_output_mute(expected_id: u32) -> Result<(), String> {
-    let value = toggled_mute_value(&output_state(), expected_id)?;
-    set_output_mute(expected_id, value)
+    toggle_mute(Direction::Output, expected_id)
+}
+
+pub fn toggle_mute(direction: Direction, expected_id: u32) -> Result<(), String> {
+    let value = toggled_mute_value(&device_state(direction), expected_id)?;
+    set_mute(direction, expected_id, value)
 }
 
 fn toggled_mute_value(state: &OutputState, expected_id: u32) -> Result<bool, String> {
@@ -341,6 +430,17 @@ fn readonly_settable_result(status: OSStatus, settable: Boolean) -> Result<bool,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "reads the Mac's audio devices"]
+    fn native_devices_and_input_state_read() {
+        for direction in [Direction::Output, Direction::Input] {
+            let list = devices(direction);
+            let state = device_state(direction);
+            eprintln!("{direction:?}: default {} {:?} volume {:?} muted {:?} settable {}/{}; all {:?}", state.id, state.name, state.volume, state.muted, state.can_volume, state.can_mute, list);
+            assert!(state.id == 0 || list.iter().any(|(id, _)| *id == state.id), "the default is among the devices");
+        }
+    }
 
     #[test]
     fn volume_range_rejects_nonfinite_and_out_of_range_values() {

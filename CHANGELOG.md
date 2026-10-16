@@ -15,6 +15,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Measured GPU power from macOS's GPU energy counter, on the GPU page and
   Overview's GPU card. Neural Engine power shows too on Macs where its
   energy counter moves.
+- The Sound page can switch the output and input device, as macOS Sound
+  settings do, and controls the input's (microphone's) volume and mute where
+  the device allows it.
 
 ## [0.3.4](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.4) — 2026-10-16
 

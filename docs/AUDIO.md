@@ -1,6 +1,6 @@
 # Audio capabilities
 
-Tidegauge uses public CoreAudio properties. It neither installs an audio driver nor creates a process tap, records audio, or requests microphone/screen-recording access.
+Tidegauge uses public CoreAudio properties. It neither installs an audio driver nor creates a process tap, records audio, or requests microphone/screen-recording access. Per-app volume is therefore not offered: macOS has no public per-app volume, and doing it needs audio routing (a driver or process taps with recording permission).
 
 ## Output controls
 
@@ -9,6 +9,12 @@ The default **media** output is `kAudioHardwarePropertyDefaultOutputDevice` (`dO
 Controls require a readable property and a successful `AudioObjectIsPropertySettable` capability check. Volume must be finite and within 0–1. Every write rechecks the default device identity and capability; changing outputs while the dashboard is open must not redirect an old click to a new device. Native failures are shown rather than treated as success.
 
 Some outputs do not expose a master-volume or mute property. Tidegauge does not fake support, write unrelated channels, or partially change a stereo balance. Use macOS Sound settings when the corresponding control is unavailable.
+
+## Choosing devices and the input
+
+The Sound page lists every device with output or input streams (`kAudioDevicePropertyStreams` in that scope) that also reports it can be the default there (`kAudioDevicePropertyDeviceCanBeDefaultDevice`), so virtual devices such as a meeting app's audio driver are left out. A switch counts only once the default reads back as the chosen device. Choosing one sets `kAudioHardwarePropertyDefaultOutputDevice` (`dOut`) or `kAudioHardwarePropertyDefaultInputDevice` (`dIn `), the same defaults macOS Sound settings change. A device that has left the list is refused rather than written.
+
+The default **input** gets the same volume and mute handling as the output, in the input scope: read, capability-checked, and identity-checked on every write. Changing an input's volume or mute does not capture audio and needs no microphone permission.
 
 ## Per-process limits
 
