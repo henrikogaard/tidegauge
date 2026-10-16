@@ -54,6 +54,10 @@ pub fn card_hi(dark: bool) -> Hsla {
 pub fn bg(dark: bool) -> Hsla {
     hex(if dark { DARK.bg } else { LIGHT.bg })
 }
+/// Sidebar ground: one step off `bg` so the navigation reads as chrome.
+pub fn sidebar(dark: bool) -> Hsla {
+    hex(if dark { 0x1b1b1e } else { 0xececef })
+}
 pub fn line(dark: bool) -> Hsla {
     hex(if dark { DARK.line } else { LIGHT.line })
 }
@@ -66,6 +70,53 @@ pub fn accent(dark: bool) -> Hsla {
 pub fn on_accent(dark: bool) -> Hsla {
     hex(if dark { 0x1d1d1f } else { 0xffffff })
 }
+
+// ---------- Size, spacing and radius tokens ----------
+//
+// Typography, corner radii and layout spacing come from here, never from raw
+// `px(..)` literals (`design_tokens_tests` enforces it). Chart geometry, icon
+// sizes and column widths stay literal. Values are documented in DESIGN.md.
+
+/// Uppercase labels and tiny badges.
+pub const TEXT_CAPTION: Pixels = px(10.);
+/// Secondary readings and list metadata.
+pub const TEXT_SMALL: Pixels = px(11.);
+/// Default body and control label.
+pub const TEXT_BODY: Pixels = px(12.);
+/// List-row names and headline lines.
+pub const TEXT_ROW: Pixels = px(13.);
+/// Emphasised values (units beside a stat, card sub-headings).
+pub const TEXT_EMPH: Pixels = px(14.);
+/// Page and section titles.
+pub const TEXT_TITLE: Pixels = px(20.);
+/// Overview card headline numbers.
+pub const TEXT_STAT: Pixels = px(34.);
+/// Detail-page hero number.
+pub const TEXT_HERO: Pixels = px(42.);
+
+/// Small badges, icon tiles and row-highlight bars.
+pub const RADIUS_CHIP: Pixels = px(6.);
+/// Controls, list rows, toasts and notices.
+pub const RADIUS_CONTROL: Pixels = px(8.);
+/// Cards and panels.
+pub const RADIUS_CARD: Pixels = px(12.);
+/// Thin bars and colour swatches.
+pub const RADIUS_BAR: Pixels = px(2.);
+
+pub const SPACE_1: Pixels = px(4.);
+pub const SPACE_2: Pixels = px(8.);
+pub const SPACE_3: Pixels = px(12.);
+pub const SPACE_4: Pixels = px(16.);
+/// Page gutter.
+pub const SPACE_5: Pixels = px(20.);
+pub const SPACE_6: Pixels = px(24.);
+/// Gap between the sections of a detail page.
+pub const SECTION_GAP: Pixels = SPACE_4;
+
+/// Height of buttons, segmented controls and steppers.
+pub const CONTROL_H: Pixels = px(28.);
+/// Height of a list row.
+pub const ROW_H: Pixels = px(36.);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
@@ -118,6 +169,132 @@ impl Metric {
 pub fn warn(dark: bool) -> Hsla {
     hex(if dark { 0xff453a } else { 0xd70015 })
 }
+/// Caution (amber): something is incomplete or worth a look, not broken.
+pub fn caution(dark: bool) -> Hsla {
+    hex(if dark { 0xe8ad39 } else { 0x9b6900 })
+}
 pub fn ok(dark: bool) -> Hsla {
     hex(if dark { 0x30d158 } else { 0x248a3d })
+}
+/// Track of a switch that is on: the system green of macOS switches.
+pub fn switch_on(dark: bool) -> Hsla {
+    hex(if dark { 0x30d158 } else { 0x34c759 })
+}
+
+#[cfg(test)]
+mod design_tokens_tests {
+    // Explicit imports: the glob `gpui_kit::*` in the parent also exports a
+    // `test` macro that shadows `#[test]`.
+    use super::{CONTROL_H, ROW_H, SECTION_GAP, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6};
+
+    /// Source files that build the dashboard UI.
+    const UI_FILES: &[&str] = &[
+        "ui.rs",
+        "controls.rs",
+        "process_panel.rs",
+        "agents_panel.rs",
+        "tools_panel.rs",
+        "history_browser.rs",
+        "settings_page.rs",
+        "menu_panel.rs",
+    ];
+
+    /// Builder calls whose literal argument must come from a token.
+    const GUARDED: &[&str] = &[
+        "text_size", "rounded", "gap", "p", "px", "py", "pt", "pb", "pl", "pr", "mx", "my", "mt",
+        "mb", "ml", "mr",
+    ];
+
+    /// Literals that are deliberately not tokens: (file, call prefix, exact
+    /// number of uses, reason). The count pins each exemption to the call
+    /// sites it was written for: a new raw call with the same method and
+    /// value in that file fails the test instead of slipping through.
+    const ALLOWED: &[(&str, &str, usize, &str)] = &[
+        ("agents_panel.rs", ".gap(px(2.", 2, "hairline gap between stacked lines: plan tile text, session list rows"),
+        ("ui.rs", ".gap(px(1.", 1, "hairline gap between sidebar items"),
+        ("ui.rs", ".gap(px(2.", 1, "gap between level-meter bars (chart geometry)"),
+        ("ui.rs", ".py(px(1.", 2, "optical vertical padding of the two runtime badges"),
+        ("ui.rs", ".mx(px(3.", 1, "centres the 8 px swatch in the 14 px icon slot"),
+        ("agents_panel.rs", ".ml(px(48.", 1, "aligns session detail under icon and name"),
+        ("process_panel.rs", ".ml(px(38.", 1, "aligns app detail under icon and name"),
+        ("ui.rs", ".ml(px(52.", 1, "aligns a list row's detail under its name (row inset + icon + gap)"),
+    ];
+
+    fn read(file: &str) -> String {
+        let path = format!("{}/src/{file}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    /// Every `.method(px(<number>` in `source`, as the matched prefix.
+    fn literal_calls(source: &str) -> Vec<(usize, String)> {
+        let mut found = Vec::new();
+        for (index, line) in source.lines().enumerate() {
+            for method in GUARDED {
+                let needle = format!(".{method}(px(");
+                let mut rest = line;
+                while let Some(at) = rest.find(&needle) {
+                    let after = &rest[at + needle.len()..];
+                    let number: String =
+                        after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                    if number.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                        found.push((index + 1, format!("{needle}{number}")));
+                    }
+                    rest = after;
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn ui_uses_tokens_for_typography_radius_and_spacing() {
+        let mut offenders = Vec::new();
+        for file in UI_FILES {
+            let calls = literal_calls(&read(file));
+            for (line, call) in &calls {
+                let allowed = ALLOWED.iter().find(|(f, prefix, _, _)| f == file && prefix == call);
+                match allowed {
+                    None => offenders.push(format!("{file}:{line}: {call}")),
+                    Some((_, prefix, count, _)) => {
+                        let uses = calls.iter().filter(|(_, c)| c == prefix).count();
+                        if uses > *count {
+                            offenders.push(format!("{file}:{line}: {call} ({uses} uses, {count} allowed)"));
+                        }
+                    }
+                }
+            }
+        }
+        offenders.dedup();
+        assert!(
+            offenders.is_empty(),
+            "raw px literals; use a token from theme.rs or add a commented ALLOWED entry:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn allowlist_has_no_stale_entries() {
+        for (file, prefix, count, reason) in ALLOWED {
+            assert!(!reason.is_empty());
+            let uses = literal_calls(&read(file)).iter().filter(|(_, call)| call == prefix).count();
+            assert!(
+                uses >= *count,
+                "{file} has {uses} of {prefix}, {count} allowed; lower or remove the ALLOWED entry"
+            );
+        }
+    }
+
+    #[test]
+    fn scanner_flags_literals_and_ignores_tokens() {
+        let sample = "div().text_size(px(13.)).rounded(t::RADIUS_CARD).p(px(8.)).px(t::SPACE_2)";
+        let calls: Vec<String> = literal_calls(sample).into_iter().map(|(_, c)| c).collect();
+        assert_eq!(calls, vec![".text_size(px(13.", ".p(px(8."]);
+    }
+
+    #[test]
+    fn spacing_tokens_stay_on_the_four_pixel_grid() {
+        for space in [SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, SECTION_GAP, CONTROL_H, ROW_H] {
+            assert_eq!(f32::from(space) % 4., 0.);
+        }
+    }
 }

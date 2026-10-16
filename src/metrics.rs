@@ -144,6 +144,42 @@ pub struct MemStats {
     pub total: u64,
     pub swap_used: u64,
     pub swap_total: u64,
+    /// macOS's own memory-pressure level, the one Activity Monitor colours.
+    pub pressure: Option<Pressure>,
+    /// The share of memory macOS counts as available (`kern.memorystatus_level`).
+    pub available_pct: Option<u8>,
+}
+
+/// The kernel's memory-pressure level. macOS reports 1, 2 or 4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pressure {
+    Normal,
+    Warning,
+    Critical,
+}
+
+impl Pressure {
+    pub fn from_level(level: u64) -> Option<Self> {
+        match level {
+            1 => Some(Self::Normal),
+            2 => Some(Self::Warning),
+            4 => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        use crate::locale::text as l;
+        match self {
+            Self::Normal => l("Normal", "Normalt"),
+            Self::Warning => l("Warning", "Advarsel"),
+            Self::Critical => l("Critical", "Kritisk"),
+        }
+    }
+}
+
+fn available_pct(level: u64) -> Option<u8> {
+    (level <= 100).then_some(level as u8)
 }
 
 pub fn mem_stats() -> MemStats {
@@ -180,6 +216,8 @@ pub fn mem_stats() -> MemStats {
             out.swap_used = sw.xsu_used;
             out.swap_total = sw.xsu_total;
         }
+        out.pressure = sysctl_u64("kern.memorystatus_vm_pressure_level").and_then(Pressure::from_level);
+        out.available_pct = sysctl_u64("kern.memorystatus_level").and_then(available_pct);
         out
     }
 }
@@ -400,6 +438,10 @@ pub struct GpuStats {
     pub utilization: Option<f64>,
     pub mem_in_use: Option<u64>,
     pub supported: bool,
+    /// Measured GPU power from macOS's energy counters, in watts.
+    pub power_w: Option<f64>,
+    /// Neural Engine power, only on Macs where its counter is seen to move.
+    pub neural_engine_w: Option<f64>,
 }
 
 pub fn gpu_stats() -> GpuStats {
@@ -508,7 +550,6 @@ pub struct ChipInfo {
     pub cores: usize,
     pub p_cores: usize,
     pub e_cores: usize,
-    pub neural_cores: usize,
 }
 
 pub fn chip_info() -> ChipInfo {
@@ -522,26 +563,21 @@ pub fn chip_info() -> ChipInfo {
         p = sysctl_u64("hw.perflevel0.physicalcpu").unwrap_or(cores as u64) as usize;
         e = sysctl_u64("hw.perflevel1.physicalcpu").unwrap_or(0) as usize;
     }
-    // ANE core count is not exposed; infer 16-core for most M-chips (or 0 on VM).
-    let has_ane = !matching_services("IOService")
-        .filter(|e| {
-            let n = entry_prop(*e, "IOName");
-            let s = cf_to_string(n);
-            if !n.is_null() { unsafe { CFRelease(n) }; }
-            s.map(|x| x.to_lowercase().contains("ane")).unwrap_or(false)
-        })
-        .count()
-        == 0;
     ChipInfo {
         brand,
         cores,
         p_cores: p,
         e_cores: e,
-        neural_cores: if has_ane { 0 } else { 16 },
     }
 }
 
 // ---- Thermal ----
+/// macOS's thermal state: 0 nominal, 1 fair, 2 serious, 3 critical.
+pub fn thermal_level() -> Option<u8> {
+    let level = objc2_foundation::NSProcessInfo::processInfo().thermalState().0;
+    (0..=3).contains(&level).then_some(level as u8)
+}
+
 pub fn thermal_state() -> Option<&'static str> {
     use crate::locale::text as l;
     match objc2_foundation::NSProcessInfo::processInfo().thermalState().0 {
@@ -556,6 +592,27 @@ pub fn thermal_state() -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use super::Pressure;
+
+    #[test]
+    fn pressure_levels_follow_the_kernel_values() {
+        assert_eq!(Pressure::from_level(1), Some(Pressure::Normal));
+        assert_eq!(Pressure::from_level(2), Some(Pressure::Warning));
+        assert_eq!(Pressure::from_level(4), Some(Pressure::Critical));
+        assert_eq!(Pressure::from_level(0), None, "an unknown level is not shown as normal");
+        assert_eq!(Pressure::from_level(3), None);
+        assert_eq!(super::available_pct(47), Some(47));
+        assert_eq!(super::available_pct(101), None);
+    }
+
+    #[test]
+    #[ignore = "requires macOS"]
+    fn native_memory_pressure_reads() {
+        let m = super::mem_stats();
+        eprintln!("pressure {:?}, available {:?} %", m.pressure, m.available_pct);
+        assert!(m.pressure.is_some() && m.available_pct.is_some());
+    }
+
     #[test]
     fn cpu_time_conversion_uses_the_platform_timebase() {
         assert_eq!(super::ticks_to_ns(24_000_000, 125, 3), 1_000_000_000);

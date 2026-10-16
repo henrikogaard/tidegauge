@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "macos", allow(non_snake_case))]
 
+mod agents;
+mod agents_panel;
 mod alerts;
 mod app;
 mod appearance;
@@ -13,16 +15,22 @@ mod engine;
 mod ffi;
 mod history;
 mod history_browser;
+mod gpu_power;
 mod icons;
 mod instance;
 mod keepawake;
 mod locale;
+#[cfg(test)]
+mod locale_guard;
 mod login;
+mod menu_panel;
 mod metrics;
+mod named_sensors;
 mod notifications;
 mod packages;
 mod processes;
 mod process_activity;
+mod process_control;
 mod process_panel;
 mod process_signing;
 mod projects;
@@ -32,6 +40,8 @@ mod startup;
 mod storage;
 mod tools_panel;
 mod settings;
+mod settings_page;
+mod shortcut;
 mod statusbar;
 mod theme;
 mod ui;
@@ -125,6 +135,9 @@ fn main() {
         #[cfg(target_os = "macos")]
         {
             let mut bar = statusbar::StatusBar::new();
+            // A shortcut another app has taken since stays off; Settings
+            // says so, since what is in effect is read from shortcut::active.
+            let _ = shortcut::apply(settings::Settings::load().panel_shortcut.as_deref());
             // status bar pump: refresh readouts + handle toggles
             cx.spawn(async move |cx: &mut AsyncApp| {
                 loop {
@@ -135,6 +148,13 @@ fn main() {
                     if statusbar::SHOW_CONTEXT_MENU.swap(false, std::sync::atomic::Ordering::SeqCst)
                     {
                         statusbar::show_context_menu();
+                    }
+                    if updater::CHECK_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = updater::request_check();
+                    }
+                    if statusbar::SHOW_ITEM_MENU.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = cx.update(app::close_popover);
+                        statusbar::show_item_menu();
                     }
                 }
             })

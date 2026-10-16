@@ -34,7 +34,7 @@ pub fn label(key: &str) -> &'static str {
     match key {
         "cpu" => "CPU",
         "mem_used" => l("Used memory", "Brukt minne"),
-        "swap_used" => "Swap",
+        "swap_used" => l("Swap used", "Brukt vekselminne"),
         "disk_r" => l("Disk read", "Disklesing"),
         "disk_w" => l("Disk write", "Diskskriving"),
         "net_in" => l("Download", "Nedlasting"),
@@ -45,7 +45,7 @@ pub fn label(key: &str) -> &'static str {
 
 pub fn format(key: &str, value: f64) -> String {
     match key {
-        "cpu" | "mem_used" => format!("{value:.1}%"),
+        "cpu" | "mem_used" => crate::locale::percent(value, 1),
         "swap_used" => crate::engine::fmt_bytes(value),
         _ => crate::engine::fmt_rate(value),
     }

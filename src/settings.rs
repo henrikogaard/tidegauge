@@ -23,10 +23,28 @@ pub struct Settings {
     pub alert_mem_enabled: bool,
     pub alert_disk_enabled: bool,
     pub alert_network_enabled: bool,
+    /// Alert when one app stays above `alert_app_cpu_pct` (of one core) for
+    /// five minutes.
+    pub alert_app_enabled: bool,
+    pub alert_app_cpu_pct: f64,
+    /// Alert when one app holds more than `alert_app_mem_gb` for five minutes.
+    pub alert_app_mem_enabled: bool,
+    pub alert_app_mem_gb: f64,
+    /// Alert when the startup disk has less than 10 GB free.
+    pub alert_low_disk_enabled: bool,
+    /// Alert when macOS reports a serious or critical thermal state.
+    pub alert_thermal_enabled: bool,
+    /// Alert when macOS reports warning or critical memory pressure.
+    pub alert_pressure_enabled: bool,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
     pub compact_dashboard: bool,
+    /// The app's language: "en", "nb", or `None` to follow macOS.
+    pub language: Option<String>,
+    /// The keyboard shortcut that opens the menu-bar panel, one of
+    /// `shortcut::CHOICES`, or `None` for none.
+    pub panel_shortcut: Option<String>,
 }
 
 impl Default for Settings {
@@ -41,38 +59,76 @@ impl Default for Settings {
             alert_mem_enabled: false,
             alert_disk_enabled: false,
             alert_network_enabled: false,
+            alert_app_enabled: false,
+            alert_app_cpu_pct: APP_CPU_DEFAULT,
+            alert_app_mem_enabled: false,
+            alert_app_mem_gb: APP_MEMORY_DEFAULT,
+            alert_low_disk_enabled: false,
+            alert_thermal_enabled: false,
+            alert_pressure_enabled: false,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
             compact_dashboard: false,
+            language: None,
+            panel_shortcut: None,
         }
     }
 }
 
 fn path() -> PathBuf {
-    let d = directories::ProjectDirs::from("no", "ogard", "tidegauge")
-        .map(|p| p.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("/tmp/tidegauge"));
-    let _ = std::fs::create_dir_all(&d);
-    d.join("settings.json")
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let d = directories::ProjectDirs::from("no", "ogard", "tidegauge")
+            .map(|p| p.config_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/tmp/tidegauge"));
+        let _ = std::fs::create_dir_all(&d);
+        d.join("settings.json")
+    })
+    .clone()
+}
+
+/// The file's identity when it was last read: unchanged identity means the
+/// parsed settings can be reused. Drawing the window asks for settings many
+/// times a frame, so this saves a read and a parse each time.
+type Stamp = (Option<std::time::SystemTime>, u64);
+static CACHE: std::sync::Mutex<Option<(Stamp, Settings)>> = std::sync::Mutex::new(None);
+
+fn stamp(path: &std::path::Path) -> Option<Stamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok(), metadata.len()))
 }
 
 impl Settings {
     pub fn load() -> Self {
-        let mut settings: Self = std::fs::read(path())
+        let path = path();
+        let current = stamp(&path);
+        let mut cache = CACHE.lock().unwrap();
+        if let (Some(current), Some((cached, settings))) = (current, cache.as_ref()) {
+            if *cached == current {
+                return settings.clone();
+            }
+        }
+        let mut settings: Self = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         settings.normalize();
+        *cache = current.map(|current| (current, settings.clone()));
         settings
     }
     pub fn save(&self) -> std::io::Result<()> {
-        self.write_to(&path())
+        let result = self.write_to(&path());
+        // Read the saved file afresh next time, whatever its timestamp says.
+        *CACHE.lock().unwrap() = None;
+        result
     }
 
     pub fn normalize(&mut self) {
         self.alert_cpu_pct = valid_threshold(self.alert_cpu_pct, 90.);
         self.alert_mem_pct = valid_threshold(self.alert_mem_pct, 92.);
+        self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
+        self.alert_app_mem_gb = valid_app_memory_gb(self.alert_app_mem_gb);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
     }
@@ -131,6 +187,29 @@ pub fn valid_threshold(value: f64, fallback: f64) -> f64 {
     }
 }
 
+pub const APP_CPU_DEFAULT: f64 = 80.;
+pub const APP_CPU_RANGE: (f64, f64) = (20., 400.);
+
+/// An app's CPU can pass 100 % across cores, so its threshold runs to 400 %.
+pub fn valid_app_threshold(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(APP_CPU_RANGE.0, APP_CPU_RANGE.1)
+    } else {
+        APP_CPU_DEFAULT
+    }
+}
+
+pub const APP_MEMORY_DEFAULT: f64 = 4.;
+pub const APP_MEMORY_RANGE: (f64, f64) = (1., 64.);
+
+pub fn valid_app_memory_gb(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(APP_MEMORY_RANGE.0, APP_MEMORY_RANGE.1)
+    } else {
+        APP_MEMORY_DEFAULT
+    }
+}
+
 fn normalize_choices(choices: &mut Vec<String>, supported: &[&str]) {
     let mut seen = std::collections::HashSet::new();
     choices.retain(|s| supported.contains(&s.as_str()) && seen.insert(s.clone()));
@@ -153,28 +232,28 @@ pub const MENU_STYLES: [(&str, &str); 4] = [
 ];
 
 pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
-    let (english, norwegian) = match metric {
-        "cpu" => ("CPU", "CPU"),
-        "memory" => ("Memory", "Minne"),
-        "gpu" => ("GPU", "GPU"),
-        "disk" => ("Disk", "Disk"),
-        "network" => ("Network", "Nettverk"),
-        "battery" => ("Battery", "Batteri"),
-        "power" => ("Power", "Effekt"),
+    use crate::locale::text as l;
+    Some(match metric {
+        "cpu" => l("CPU", "CPU"),
+        "memory" => l("Memory", "Minne"),
+        "gpu" => l("GPU", "GPU"),
+        "disk" => l("Disk", "Disk"),
+        "network" => l("Network", "Nettverk"),
+        "battery" => l("Battery", "Batteri"),
+        "power" => l("Power", "Effekt"),
         _ => return None,
-    };
-    Some(crate::locale::text(english, norwegian))
+    })
 }
 
 pub fn localized_style_label(style: &str) -> Option<&'static str> {
-    let (english, norwegian) = match style {
-        "icon" => ("Icon", "Ikon"),
-        "value" => ("Value", "Verdi"),
-        "graph" => ("Graph", "Graf"),
-        "both" => ("Value + graph", "Verdi + graf"),
+    use crate::locale::text as l;
+    Some(match style {
+        "icon" => l("Icon", "Ikon"),
+        "value" => l("Value", "Verdi"),
+        "graph" => l("Graph", "Graf"),
+        "both" => l("Value + graph", "Verdi + graf"),
         _ => return None,
-    };
-    Some(crate::locale::text(english, norwegian))
+    })
 }
 
 /// Read the latest file before changing one setting, preserving other preferences.

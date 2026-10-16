@@ -11,13 +11,153 @@ use crate::settings::{localized_metric_label, Settings, MENU_METRICS};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, AllocAnyThread, ClassType};
 use objc2_app_kit::*;
-use objc2_foundation::{MainThreadMarker, NSObject, NSString};
+use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
 pub static SHOW_SETTINGS: AtomicBool = AtomicBool::new(false);
 pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);
+/// A left click on the item: open or close the menu-bar panel.
+pub static TOGGLE_POPOVER: AtomicBool = AtomicBool::new(false);
+
+/// A right or Control click on the item: show the native menu.
+pub static SHOW_ITEM_MENU: AtomicBool = AtomicBool::new(false);
+/// A click somewhere else on screen: close the panel.
+pub static CLICKED_OUTSIDE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static ITEM: std::cell::RefCell<Option<(Retained<NSStatusItem>, Retained<TideGaugeTarget>)>> =
+        const { std::cell::RefCell::new(None) };
+    static OUTSIDE_MONITOR: std::cell::RefCell<Option<Retained<objc2::runtime::AnyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Where the panel goes: the display the item is on, and the item's place
+/// on it in points from the display's top-left corner.
+#[derive(Clone, Copy, Debug)]
+pub struct Anchor {
+    pub display: u64,
+    pub left: f64,
+    pub width: f64,
+    pub bottom: f64,
+    pub display_width: f64,
+}
+
+/// Where the last click on the item landed, in Cocoa screen points.
+static CLICK_AT: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+/// Where the last click outside the app landed.
+static OUTSIDE_AT: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+/// Whether two clicks hit the same place: the item, give or take its width.
+fn same_spot(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).abs() <= 60. && (a.1 - b.1).abs() <= 30.
+}
+
+/// Newer macOS hosts status items in another process, so pressing the item
+/// also reaches the "click in another app" monitor. Such a press is the
+/// item's own click, not a reason to close the panel.
+pub fn outside_click_was_on_item() -> bool {
+    let outside = *OUTSIDE_AT.lock().unwrap();
+    let item = *CLICK_AT.lock().unwrap();
+    matches!((outside, item), (Some(o), Some(i)) if same_spot(o, i))
+}
+
+/// A display as placement needs it: its number, its frame (x, y, width,
+/// height, Cocoa points) and the top of its area below the menu bar.
+#[derive(Clone, Copy, Debug)]
+struct Display {
+    number: u64,
+    frame: (f64, f64, f64, f64),
+    visible_top: f64,
+}
+
+/// Place the panel under a click on the item. The item's own window can't
+/// be trusted for this: newer macOS draws status items in another process,
+/// so the click point is the one position that is always real.
+fn place(click: (f64, f64), displays: &[Display]) -> Option<Anchor> {
+    let (x, y) = click;
+    let display = displays.iter().find(|d| {
+        let (dx, dy, w, h) = d.frame;
+        x >= dx && x <= dx + w && y >= dy && y <= dy + h
+    })?;
+    let (dx, dy, w, h) = display.frame;
+    // The menu bar's height: the gap between the display's top and the top
+    // of its usable area. A hidden menu bar leaves none; keep a usual gap.
+    let menu_bar = (dy + h - display.visible_top).max(24.);
+    Some(Anchor {
+        display: display.number,
+        left: x - dx - 10.,
+        width: 20.,
+        bottom: menu_bar,
+        display_width: w,
+    })
+}
+
+/// The panel's place under the last click on the item.
+pub fn anchor() -> Option<Anchor> {
+    let click = (*CLICK_AT.lock().unwrap())?;
+    let displays: Vec<Display> = NSScreen::screens(mtm())
+        .iter()
+        .filter_map(|screen| {
+            let number = screen
+                .deviceDescription()
+                .objectForKey(&NSString::from_str("NSScreenNumber"))?
+                .downcast::<objc2_foundation::NSNumber>()
+                .ok()?
+                .unsignedLongLongValue();
+            let frame = screen.frame();
+            let visible = screen.visibleFrame();
+            Some(Display {
+                number,
+                frame: (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height),
+                visible_top: visible.origin.y + visible.size.height,
+            })
+        })
+        .collect();
+    place(click, &displays)
+}
+
+/// The shortcut acts like a click on the item. The panel opens where the
+/// item was last clicked; before any click, under the item's own window if
+/// macOS reports one on a screen, or else at the right of the main menu bar.
+pub fn toggle_from_keyboard() {
+    let mut click = CLICK_AT.lock().unwrap();
+    if click.is_none() {
+        let item = ITEM.with(|item| item.borrow().as_ref().map(|(item, _)| item.clone()));
+        let frame = item
+            .and_then(|item| item.button(mtm()))
+            .and_then(|button| button.window())
+            .map(|window| window.frame())
+            .filter(|f| f.size.width > 0. && NSScreen::screens(mtm()).iter().any(|s| {
+                let r = s.frame();
+                f.origin.x >= r.origin.x && f.origin.x <= r.origin.x + r.size.width
+            }));
+        *click = match frame {
+            Some(f) => Some((f.origin.x + f.size.width / 2., f.origin.y + f.size.height / 2.)),
+            None => NSScreen::mainScreen(mtm()).map(|s| {
+                let r = s.frame();
+                (r.origin.x + r.size.width - 200., r.origin.y + r.size.height - 10.)
+            }),
+        };
+    }
+    TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+}
+
+/// Show the native menu from the item, as a right click would.
+pub fn show_item_menu() {
+    let target = ITEM.with(|item| item.borrow().as_ref().map(|(_, target)| target.clone()));
+    let Some(target) = target else {
+        return;
+    };
+    // At the click, in screen points: like the panel, the menu doesn't rely
+    // on the item's own window, which newer macOS hosts elsewhere.
+    let (x, y) = (*CLICK_AT.lock().unwrap()).unwrap_or_else(|| {
+        let at = NSEvent::mouseLocation();
+        (at.x, at.y)
+    });
+    context_menu(&target).popUpMenuPositioningItem_atLocation_inView(None, NSPoint::new(x, y - 4.), None);
+}
 
 thread_local! {
     static LOGO: Option<Retained<NSImage>> = {
@@ -42,6 +182,21 @@ define_class!(
         #[unsafe(method(quit:))]
         fn _quit(&self, _sender: Option<&NSObject>) {
             QUIT_APP.store(true, Ordering::SeqCst);
+        }
+        #[unsafe(method(clicked:))]
+        fn _clicked(&self, _sender: Option<&NSObject>) {
+            let event = NSApplication::sharedApplication(mtm()).currentEvent();
+            let secondary = event.as_ref().is_some_and(|event| {
+                event.r#type() == NSEventType::RightMouseUp
+                    || event.modifierFlags().contains(NSEventModifierFlags::Control)
+            });
+            let at = NSEvent::mouseLocation();
+            *CLICK_AT.lock().unwrap() = Some((at.x, at.y));
+            if secondary {
+                SHOW_ITEM_MENU.store(true, Ordering::SeqCst);
+            } else {
+                TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+            }
         }
     }
 );
@@ -114,26 +269,49 @@ const GRAPH_WIDTH: f64 = 24.;
 /// A single native item keeps readings together and preserves their identity.
 pub struct StatusBar {
     item: Retained<NSStatusItem>,
-    _target: Retained<TideGaugeTarget>,
+    target: Retained<TideGaugeTarget>,
+    /// The language the menu was built in; it is rebuilt when that changes.
+    norwegian: bool,
 }
 
 impl StatusBar {
     pub fn new() -> Self {
         let target: Retained<TideGaugeTarget> = unsafe { msg_send![TideGaugeTarget::class(), new] };
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
-        item.setMenu(Some(&context_menu(&target)));
+        // A left click opens the panel; a right or Control click the menu.
+        if let Some(button) = item.button(mtm()) {
+            unsafe {
+                button.setTarget(Some(&target));
+                button.setAction(Some(sel!(clicked:)));
+            }
+            button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
+        }
+        ITEM.with(|slot| *slot.borrow_mut() = Some((item.clone(), target.clone())));
+        // Clicks in other apps close the panel, like any menu-bar popover.
+        let monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+            &block2::RcBlock::new(|_| {
+                let at = NSEvent::mouseLocation();
+                *OUTSIDE_AT.lock().unwrap() = Some((at.x, at.y));
+                CLICKED_OUTSIDE.store(true, Ordering::SeqCst);
+            }),
+        );
+        OUTSIDE_MONITOR.with(|slot| *slot.borrow_mut() = monitor);
         Self {
             item,
-            _target: target,
+            target,
+            norwegian: crate::locale::is_norwegian(),
         }
     }
 
     pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
+        // The menu is built when shown, so it always uses the current language.
+        self.norwegian = crate::locale::is_norwegian();
         let readouts = menu_readouts(settings, snap, measure_label_width);
         let show_icon = settings.show_app_icon || readouts.is_empty();
         let menu_hint = l(
-            "Click for Open Dashboard, Settings, and Quit.",
-            "Klikk for å åpne oversikten, innstillinger eller avslutte.",
+            "Click for the panel; right-click for the menu.",
+            "Klikk for panelet; høyreklikk for menyen.",
         );
         let description = if readouts.is_empty() {
             format!("Tidegauge. {menu_hint}")
@@ -143,8 +321,13 @@ impl StatusBar {
                 readouts
                     .iter()
                     .map(|r| {
+                        let pressure = match r.tint {
+                            Some(Tint::Caution) => l(", memory pressure warning", ", minnepress: advarsel"),
+                            Some(Tint::Critical) => l(", memory pressure critical", ", minnepress: kritisk"),
+                            None => "",
+                        };
                         format!(
-                            "{} {}",
+                            "{} {}{pressure}",
                             localized_metric_label(r.metric).unwrap_or(l("Metric", "Måling")),
                             r.value
                         )
@@ -178,6 +361,33 @@ struct Readout {
     style: String,
     value: String,
     history: Vec<f64>,
+    /// Drawn in colour instead of the menu bar's own ink: memory while macOS
+    /// reports memory pressure.
+    tint: Option<Tint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tint {
+    Caution,
+    Critical,
+}
+
+impl Tint {
+    fn color(self) -> Retained<NSColor> {
+        match self {
+            Tint::Caution => NSColor::systemOrangeColor(),
+            Tint::Critical => NSColor::systemRedColor(),
+        }
+    }
+}
+
+/// Memory is tinted while macOS reports warning or critical pressure.
+fn memory_tint(pressure: Option<crate::metrics::Pressure>) -> Option<Tint> {
+    match pressure? {
+        crate::metrics::Pressure::Normal => None,
+        crate::metrics::Pressure::Warning => Some(Tint::Caution),
+        crate::metrics::Pressure::Critical => Some(Tint::Critical),
+    }
 }
 
 impl Readout {
@@ -237,20 +447,17 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                 .iter()
                 .find(|item| item.metric == metric)?;
             let (label, value, history) = match metric {
-                "cpu" => ("CPU", format!("{:.0}%", s.cpu_pct), s.cpu_hist.pts.clone()),
+                "cpu" => ("CPU", crate::engine::fmt_pct(s.cpu_pct), s.cpu_hist.pts.clone()),
                 "memory" => (
                     l("MEM", "MINNE"),
-                    format!(
-                        "{:.0}%",
-                        s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.
-                    ),
+                    crate::engine::fmt_pct(s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.),
                     s.mem_hist.pts.clone(),
                 ),
                 "gpu" => (
                     "GPU",
                     s.gpu
                         .utilization
-                        .map(|p| format!("{:.0}%", p))
+                        .map(crate::engine::fmt_pct)
                         .unwrap_or_else(|| "—".into()),
                     if s.gpu.utilization.is_some() {
                         s.gpu_hist.pts.clone()
@@ -259,7 +466,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                     },
                 ),
                 "disk" => (
-                    "DSK",
+                    l("DSK", "DISK"),
                     menu_rate(s.disk.read_rate + s.disk.write_rate),
                     s.disk_r_hist
                         .pts
@@ -269,7 +476,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                         .collect(),
                 ),
                 "network" => (
-                    "NET",
+                    l("NET", "NETT"),
                     menu_rate(s.net.rate_in + s.net.rate_out),
                     s.net_in_hist
                         .pts
@@ -279,10 +486,10 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                         .collect(),
                 ),
                 "battery" => (
-                    "BAT",
+                    l("BAT", "BATT"),
                     s.battery
                         .percent
-                        .map(|p| format!("{:.0}%", p))
+                        .map(crate::engine::fmt_pct)
                         .unwrap_or_else(|| "—".into()),
                     if s.battery.percent.is_some() {
                         s.batt_hist.pts.clone()
@@ -304,6 +511,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                 style: preference.style.clone(),
                 value,
                 history,
+                tint: if metric == "memory" { memory_tint(s.mem.pressure) } else { None },
             })
         })
         .collect()
@@ -319,9 +527,9 @@ fn menu_rate(rate: f64) -> String {
         unit += 1;
     }
     if unit > 0 && value < 10. {
-        format!("{value:.1} {}", units[unit])
+        format!("{} {}", crate::locale::number(value, 1), units[unit])
     } else {
-        format!("{value:.0} {}", units[unit])
+        format!("{} {}", crate::locale::number(value, 0), units[unit])
     }
 }
 
@@ -342,7 +550,22 @@ fn symbol_image(metric: &str) -> Option<Retained<NSImage>> {
     )
 }
 
-fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
+/// The ink for unremarkable text and lines: black in a template image, which
+/// macOS tints itself, and the label colour once the image carries colour.
+fn ink(template: bool) -> Retained<NSColor> {
+    if template { NSColor::blackColor() } else { NSColor::labelColor() }
+}
+
+/// Images drawn black (the logo, SF Symbols) take `color` once the menu-bar
+/// image is no longer a template that macOS tints for us.
+fn recolor(rect: objc2_foundation::NSRect, template: bool, color: &NSColor) {
+    if !template {
+        color.set();
+        NSRectFillUsingOperation(rect, NSCompositingOperation::SourceAtop);
+    }
+}
+
+fn draw_text(text: &str, x: f64, font_size: f64, value: bool, color: &NSColor) {
     use objc2::runtime::AnyObject;
     use objc2_foundation::NSDictionary;
     let weight = unsafe { NSFontWeightMedium };
@@ -351,9 +574,8 @@ fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
     } else {
         NSFont::systemFontOfSize_weight(font_size, weight)
     };
-    let color = NSColor::blackColor();
-    let font_object: &AnyObject = &font;
-    let color_object: &AnyObject = &color;
+    let font_object: &AnyObject = font.as_ref();
+    let color_object: &AnyObject = color.as_ref();
     unsafe {
         let attributes = NSDictionary::from_slices(
             &[NSFontAttributeName, NSForegroundColorAttributeName],
@@ -371,9 +593,9 @@ fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
     }
 }
 
-fn draw_graph(history: &[f64], x: f64, metric: &str) {
+fn draw_graph(history: &[f64], x: f64, metric: &str, color: &NSColor) {
     if history.len() < 2 {
-        draw_text("—", x + 6., 10., false);
+        draw_text("—", x + 6., 10., false, color);
         return;
     }
     let maximum = if matches!(metric, "cpu" | "memory" | "gpu" | "battery") {
@@ -389,7 +611,7 @@ fn draw_graph(history: &[f64], x: f64, metric: &str) {
     let points = &history[history.len() - count..];
     let path = NSBezierPath::bezierPath();
     path.setLineWidth(1.);
-    NSColor::blackColor().setStroke();
+    color.setStroke();
     for (i, value) in points.iter().enumerate() {
         let point = objc2_foundation::NSPoint {
             x: x + i as f64 / (count - 1) as f64 * GRAPH_WIDTH,
@@ -415,33 +637,39 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
         + if show_icon { 16. } else { 0. }
         + (readouts.len() + usize::from(show_icon)).saturating_sub(1) as f64 * ITEM_GAP;
     let readouts = readouts.to_vec();
+    // A template image is all one ink, so colour needs a plain image; it
+    // stays a template whenever nothing is tinted.
+    let template = readouts.iter().all(|r| r.tint.is_none());
     let logo = LOGO.with(Clone::clone);
     // AppKit invokes the drawing block at the display's backing scale.
     let drawing = block2::RcBlock::new(move |_bounds: NSRect| {
         let mut x = 0.;
         if show_icon {
             if let Some(logo) = logo.as_ref() {
+                let rect = NSRect { origin: NSPoint { x, y: 0. }, size: NSSize { width: 16., height: 16. } };
                 logo.drawInRect_fromRect_operation_fraction(
-                    NSRect { origin: NSPoint { x, y: 0. }, size: NSSize { width: 16., height: 16. } },
+                    rect,
                     NSRect { origin: NSPoint { x: 0., y: 0. }, size: NSSize { width: 0., height: 0. } },
                     NSCompositingOperation::SourceOver, 1.,
                 );
+                recolor(rect, template, &ink(template));
             } else {
-                draw_text("T", x + 3., 12., true);
+                draw_text("T", x + 3., 12., true, &ink(template));
             }
             x += 16. + ITEM_GAP;
         }
         for readout in &readouts {
             if readout.style == "icon" {
                 if let Some(symbol) = symbol_image(readout.metric) {
-                    symbol.drawInRect_fromRect_operation_fraction(
-                        NSRect {
-                            origin: NSPoint { x, y: 1. },
-                            size: NSSize {
-                                width: 14.,
-                                height: 14.,
-                            },
+                    let rect = NSRect {
+                        origin: NSPoint { x, y: 1. },
+                        size: NSSize {
+                            width: 14.,
+                            height: 14.,
                         },
+                    };
+                    symbol.drawInRect_fromRect_operation_fraction(
+                        rect,
                         NSRect {
                             origin: NSPoint { x: 0., y: 0. },
                             size: NSSize {
@@ -452,14 +680,16 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
                         NSCompositingOperation::SourceOver,
                         1.,
                     );
+                    recolor(rect, template, &readout.tint.map(Tint::color).unwrap_or_else(|| ink(template)));
                 } else {
-                    draw_text(readout.label, x, 8., false);
+                    draw_text(readout.label, x, 8., false, &ink(template));
                 }
             } else {
-                draw_text(readout.label, x, 9., false);
+                let accent = readout.tint.map(Tint::color).unwrap_or_else(|| ink(template));
+                draw_text(readout.label, x, 9., false, &ink(template));
                 let value_x = x + readout.label_width + 4.;
                 if readout.style != "graph" {
-                    draw_text(&readout.value, value_x, 11., true);
+                    draw_text(&readout.value, value_x, 11., true, &accent);
                 }
                 if matches!(readout.style.as_str(), "graph" | "both") {
                     let graph_x = if readout.style == "both" {
@@ -467,7 +697,7 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
                     } else {
                         value_x
                     };
-                    draw_graph(&readout.history, graph_x, readout.metric);
+                    draw_graph(&readout.history, graph_x, readout.metric, &accent);
                 }
             }
             x += readout.width() + ITEM_GAP;
@@ -482,13 +712,41 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
         false,
         &drawing,
     );
-    image.setTemplate(true);
+    image.setTemplate(template);
     image
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_is_tinted_only_under_pressure() {
+        use crate::metrics::Pressure;
+        assert_eq!(memory_tint(None), None, "an unknown level is not tinted");
+        assert_eq!(memory_tint(Some(Pressure::Normal)), None);
+        assert_eq!(memory_tint(Some(Pressure::Warning)), Some(Tint::Caution));
+        assert_eq!(memory_tint(Some(Pressure::Critical)), Some(Tint::Critical));
+    }
+
+    #[test]
+    fn a_press_on_the_item_is_not_an_outside_click() {
+        assert!(same_spot((3025., 2160.), (3025.3, 2160.)));
+        assert!(same_spot((3000., 2150.), (3040., 2160.)), "anywhere on the item");
+        assert!(!same_spot((1200., 900.), (3025., 2160.)), "a click in another app");
+        assert!(!same_spot((2800., 2160.), (3025., 2160.)), "another menu-bar item");
+    }
+
+    #[test]
+    fn the_panel_sits_under_the_click_on_the_display_clicked() {
+        let main = Display { number: 1, frame: (0., 0., 3840., 2160.), visible_top: 2126. };
+        let left = Display { number: 2, frame: (-1920., 0., 1920., 1080.), visible_top: 1080. };
+        let at = place((3000., 2150.), &[main, left]).unwrap();
+        assert_eq!((at.display, at.left, at.bottom, at.display_width), (1, 2990., 34., 3840.));
+        let at = place((-100., 1075.), &[main, left]).unwrap();
+        assert_eq!((at.display, at.left, at.bottom), (2, 1810., 24.), "a hidden menu bar keeps a usual gap");
+        assert!(place((9999., 9999.), &[main]).is_none());
+    }
 
     #[test]
     fn menu_readings_are_identified_ordered_and_do_not_resize_for_new_values() {
@@ -520,13 +778,13 @@ mod tests {
         let first = menu_readouts(&settings, &snapshot, |_| 22.);
         assert_eq!(
             first.iter().map(|r| r.label).collect::<Vec<_>>(),
-            ["CPU", "NET"]
+            ["CPU", l("NET", "NETT")]
         );
-        assert_eq!(first[0].value, "9%");
+        assert_eq!(first[0].value, crate::engine::fmt_pct(9.));
         snapshot.cpu_pct = 100.;
         snapshot.net.rate_in = 1024. * 1024. * 999.;
         let next = menu_readouts(&settings, &snapshot, |_| 22.);
-        assert_eq!(next[0].value, "100%");
+        assert_eq!(next[0].value, crate::engine::fmt_pct(100.));
         assert_eq!(next[1].value, "999 M/s");
         assert_eq!(
             first.iter().map(Readout::width).sum::<f64>(),

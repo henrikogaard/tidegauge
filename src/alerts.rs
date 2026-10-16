@@ -8,6 +8,19 @@ const MEMORY_DEFAULT_THRESHOLD: f64 = 92.0;
 const CPU_MEMORY_DURATION: f64 = 20.0;
 const IO_DURATION: f64 = 30.0;
 const COOLDOWN: f64 = 600.0;
+/// One app has to stay busy this long: a build or an export that ends in a
+/// minute is not worth a notification.
+const APP_DURATION: f64 = 300.0;
+/// Free space on the startup disk below which it is worth a word.
+pub const LOW_DISK_BYTES: f64 = 10e9;
+/// A minute, so a big download that is cleaned up at once does not alert.
+const LOW_DISK_DURATION: f64 = 60.0;
+/// Serious (2) or critical (3): macOS is slowing the Mac down to cool it.
+const THERMAL_LEVEL: f64 = 1.5;
+const THERMAL_DURATION: f64 = 10.0;
+/// Warning (2) or critical (4) memory pressure, as macOS numbers them.
+const PRESSURE_LEVEL: f64 = 1.5;
+const PRESSURE_DURATION: f64 = 20.0;
 
 #[derive(Default)]
 struct Episode {
@@ -87,6 +100,12 @@ pub struct AlertEngine {
     memory: Episode,
     disk: Episode,
     network: Episode,
+    /// One episode per app, keyed by its group key: CPU, then memory.
+    apps: std::collections::HashMap<String, Episode>,
+    app_memory: std::collections::HashMap<String, Episode>,
+    low_disk: Episode,
+    thermal: Episode,
+    pressure: Episode,
 }
 
 impl AlertEngine {
@@ -96,6 +115,11 @@ impl AlertEngine {
             memory: Episode::default(),
             disk: Episode::default(),
             network: Episode::default(),
+            apps: std::collections::HashMap::new(),
+            app_memory: std::collections::HashMap::new(),
+            low_disk: Episode::default(),
+            thermal: Episode::default(),
+            pressure: Episode::default(),
         }
     }
 
@@ -118,9 +142,9 @@ impl AlertEngine {
             |value| Alert {
                 metric: "cpu".into(),
                 message: format!(
-                    "{}: {:.0}% {}",
+                    "{}: {} {}",
                     crate::locale::text("High CPU usage", "Høy CPU-bruk"),
-                    value,
+                    crate::locale::percent(value, 0),
                     crate::locale::text("for over 20 seconds", "i over 20 sekunder")
                 ),
                 at,
@@ -138,9 +162,9 @@ impl AlertEngine {
             |value| Alert {
                 metric: "memory".into(),
                 message: format!(
-                    "{}: {:.0}% {}",
+                    "{}: {} {}",
                     crate::locale::text("High memory usage", "Høy minnebruk"),
-                    value,
+                    crate::locale::percent(value, 0),
                     crate::locale::text("used for over 20 seconds", "brukt i over 20 sekunder")
                 ),
                 at,
@@ -196,8 +220,165 @@ impl AlertEngine {
             alerts.push(alert);
         }
 
+        // Episodes alert above a threshold, so low free space goes in as the
+        // amount it falls short of 10 GB. A disk that reports no size is no
+        // reading at all.
+        let free = snapshot.disk.free as f64;
+        let shortfall = (snapshot.disk.total > 0).then(|| LOW_DISK_BYTES - free);
+        if let Some(alert) = self.low_disk.check(
+            at,
+            settings.alert_low_disk_enabled,
+            0.,
+            shortfall,
+            LOW_DISK_DURATION,
+            |_| Alert {
+                metric: "low_disk".into(),
+                message: format!(
+                    "{}: {} {}",
+                    crate::locale::text("Startup disk almost full", "Oppstartsdisken er nesten full"),
+                    crate::engine::fmt_bytes(free),
+                    crate::locale::text("free", "ledig")
+                ),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        if let Some(alert) = self.thermal.check(
+            at,
+            settings.alert_thermal_enabled,
+            THERMAL_LEVEL,
+            snapshot.thermal_level.map(f64::from),
+            THERMAL_DURATION,
+            |level| Alert {
+                metric: "thermal".into(),
+                message: if level >= 3. {
+                    crate::locale::text(
+                        "macOS reports a critical thermal state and is slowing the Mac down hard to cool it",
+                        "macOS melder kritisk termisk tilstand og senker farten på Macen kraftig for å kjøle den",
+                    )
+                } else {
+                    crate::locale::text(
+                        "macOS reports a serious thermal state and is slowing the Mac down to cool it",
+                        "macOS melder alvorlig termisk tilstand og senker farten på Macen for å kjøle den",
+                    )
+                }
+                .into(),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        let app_threshold = crate::settings::valid_app_threshold(settings.alert_app_cpu_pct);
+        alerts.extend(check_apps(
+            &mut self.apps,
+            snapshot,
+            settings.alert_app_enabled,
+            app_threshold,
+            |app| app.cpu_pct,
+            "app",
+            |name, value| {
+                format!(
+                    "{name} {} {} {}",
+                    crate::locale::text("has used", "har brukt"),
+                    crate::locale::percent(value, 0),
+                    crate::locale::text("CPU for over 5 minutes", "CPU i over 5 minutter")
+                )
+            },
+        ));
+        let memory_threshold = crate::settings::valid_app_memory_gb(settings.alert_app_mem_gb) * GIB;
+        alerts.extend(check_apps(
+            &mut self.app_memory,
+            snapshot,
+            settings.alert_app_mem_enabled,
+            memory_threshold,
+            |app| app.mem_bytes as f64,
+            "appmem",
+            |name, value| {
+                format!(
+                    "{name} {} {} {}",
+                    crate::locale::text("has used", "har brukt"),
+                    crate::engine::fmt_bytes(value),
+                    crate::locale::text("of memory for over 5 minutes", "minne i over 5 minutter")
+                )
+            },
+        ));
+
+        let pressure = snapshot.mem.pressure.map(|p| match p {
+            crate::metrics::Pressure::Normal => 1.,
+            crate::metrics::Pressure::Warning => 2.,
+            crate::metrics::Pressure::Critical => 4.,
+        });
+        if let Some(alert) = self.pressure.check(
+            at,
+            settings.alert_pressure_enabled,
+            PRESSURE_LEVEL,
+            pressure,
+            PRESSURE_DURATION,
+            |level| Alert {
+                metric: "pressure".into(),
+                message: if level >= 4. {
+                    crate::locale::text(
+                        "Memory pressure is critical: macOS is out of memory to hand out. Quit something you don't need.",
+                        "Minnepresset er kritisk: macOS har ikke mer minne å gi ut. Avslutt noe du ikke trenger.",
+                    )
+                } else {
+                    crate::locale::text(
+                        "Memory pressure is high: macOS is compressing and swapping memory to keep up.",
+                        "Minnepresset er høyt: macOS komprimerer og veksler minne for å henge med.",
+                    )
+                }
+                .into(),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
         alerts
     }
+}
+
+/// The memory threshold is set in GB as Tidegauge shows them: 1024³ bytes.
+const GIB: f64 = 1024. * 1024. * 1024.;
+
+/// One episode per app for a per-app reading: an app alerts once it stays
+/// above `threshold` for five minutes, as `"{prefix}:{key}"`.
+fn check_apps(
+    episodes: &mut std::collections::HashMap<String, Episode>,
+    snapshot: &Snapshot,
+    enabled: bool,
+    threshold: f64,
+    value: impl Fn(&crate::processes::AppGroup) -> f64,
+    prefix: &str,
+    message: impl Fn(&str, f64) -> String,
+) -> Vec<Alert> {
+    let at = snapshot.at;
+    let mut alerts = Vec::new();
+    for app in &snapshot.apps {
+        let episode = episodes.entry(app.key.clone()).or_default();
+        if let Some(alert) = episode.check(at, enabled, threshold, Some(value(app)), APP_DURATION, |v| Alert {
+            metric: format!("{prefix}:{}", app.key),
+            message: message(&app.name, v),
+            at,
+        }) {
+            alerts.push(alert);
+        }
+    }
+    // An app that has gone ends its episode; its cooldown is kept, so a
+    // quick relaunch does not alert again at once.
+    episodes.retain(|key, episode| {
+        snapshot.apps.iter().any(|a| &a.key == key)
+            || episode.last_sent.is_some_and(|sent| at - sent < COOLDOWN)
+    });
+    for (key, episode) in episodes.iter_mut() {
+        if !snapshot.apps.iter().any(|a| &a.key == key) {
+            episode.reset_episode();
+        }
+    }
+    alerts
 }
 
 impl Default for AlertEngine {
@@ -224,6 +405,156 @@ mod tests {
         Snapshot {
             at,
             ..Snapshot::default()
+        }
+    }
+
+    fn busy_app(at: f64, cpu: f64) -> Snapshot {
+        let mut s = snapshot(at);
+        s.apps = vec![crate::processes::AppGroup {
+            key: "com.example.busy".into(),
+            name: "Busy".into(),
+            cpu_pct: cpu,
+            ..Default::default()
+        }];
+        s
+    }
+
+    fn app_settings() -> Settings {
+        Settings { alert_app_enabled: true, ..Settings::default() }
+    }
+
+    #[test]
+    fn one_app_alerts_after_five_busy_minutes() {
+        let settings = app_settings();
+        let mut engine = AlertEngine::new();
+        assert!(engine.check(&busy_app(0., 120.), &settings).is_empty());
+        assert!(engine.check(&busy_app(299., 120.), &settings).is_empty());
+        let alerts = engine.check(&busy_app(300., 120.), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "app:com.example.busy");
+        assert!(alerts[0].message.starts_with("Busy "), "{}", alerts[0].message);
+        assert!(engine.check(&busy_app(400., 120.), &settings).is_empty(), "one alert per episode");
+    }
+
+    #[test]
+    fn app_alerts_respect_threshold_and_switch() {
+        let mut engine = AlertEngine::new();
+        let mut settings = app_settings();
+        settings.alert_app_cpu_pct = 150.;
+        for at in [0., 300., 600.] {
+            assert!(engine.check(&busy_app(at, 120.), &settings).is_empty(), "below the threshold");
+        }
+        let off = Settings::default();
+        let mut engine = AlertEngine::new();
+        for at in [0., 300., 600.] {
+            assert!(engine.check(&busy_app(at, 300.), &off).is_empty(), "off by default");
+        }
+    }
+
+    #[test]
+    fn a_quiet_moment_or_a_quit_restarts_the_five_minutes() {
+        let settings = app_settings();
+        let mut engine = AlertEngine::new();
+        engine.check(&busy_app(0., 120.), &settings);
+        engine.check(&busy_app(200., 10.), &settings);
+        assert!(engine.check(&busy_app(400., 120.), &settings).is_empty());
+        engine.check(&snapshot(450.), &settings);
+        assert!(engine.check(&busy_app(500., 120.), &settings).is_empty());
+        assert!(engine.check(&busy_app(799., 120.), &settings).is_empty());
+        assert_eq!(engine.check(&busy_app(800., 120.), &settings).len(), 1);
+    }
+
+    #[test]
+    fn one_app_alerts_after_five_minutes_above_its_memory_limit() {
+        let settings = Settings { alert_app_mem_enabled: true, alert_app_mem_gb: 2., ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let big = |at: f64, gb: f64| {
+            let mut s = busy_app(at, 0.);
+            s.apps[0].mem_bytes = (gb * GIB) as u64;
+            s
+        };
+        assert!(engine.check(&big(0., 1.5), &settings).is_empty());
+        assert!(engine.check(&big(10., 3.), &settings).is_empty());
+        assert!(engine.check(&big(309., 3.), &settings).is_empty());
+        let alerts = engine.check(&big(310., 3.), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "appmem:com.example.busy");
+        assert!(engine.check(&big(400., 3.), &settings).is_empty(), "one alert per episode");
+        assert!(engine.check(&big(1000., 3.), &Settings::default()).is_empty(), "off by default");
+    }
+
+    #[test]
+    fn app_thresholds_are_clamped() {
+        assert_eq!(crate::settings::valid_app_memory_gb(0.2), 1.);
+        assert_eq!(crate::settings::valid_app_memory_gb(500.), 64.);
+        assert_eq!(crate::settings::valid_app_memory_gb(f64::NAN), 4.);
+        assert_eq!(crate::settings::valid_app_threshold(5.), 20.);
+        assert_eq!(crate::settings::valid_app_threshold(900.), 400.);
+        assert_eq!(crate::settings::valid_app_threshold(f64::NAN), 80.);
+    }
+
+    #[test]
+    fn low_disk_alerts_after_a_minute_under_ten_gigabytes() {
+        let settings = Settings { alert_low_disk_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.);
+        s.disk.total = 500e9 as u64;
+        s.disk.free = 12e9 as u64;
+        assert!(engine.check(&s, &settings).is_empty(), "12 GB free is fine");
+        s.disk.free = 8e9 as u64;
+        s.at = 10.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 70.;
+        let alerts = engine.check(&s, &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "low_disk");
+        s.disk.total = 0;
+        s.at = 2000.;
+        assert!(engine.check(&s, &settings).is_empty(), "no disk reading is not low space");
+    }
+
+    #[test]
+    fn thermal_alerts_on_serious_or_critical_only() {
+        let settings = Settings { alert_thermal_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.);
+        s.thermal_level = Some(1);
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 60.;
+        assert!(engine.check(&s, &settings).is_empty(), "fair is not worth an alert");
+        s.thermal_level = Some(2);
+        s.at = 61.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 71.;
+        assert_eq!(engine.check(&s, &settings)[0].metric, "thermal");
+        let mut engine = AlertEngine::new();
+        s.thermal_level = None;
+        for at in [100., 200.] {
+            s.at = at;
+            assert!(engine.check(&s, &settings).is_empty(), "an unknown state never alerts");
+        }
+    }
+
+    #[test]
+    fn pressure_alerts_on_warning_or_critical_for_twenty_seconds() {
+        use crate::metrics::Pressure;
+        let settings = Settings { alert_pressure_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(100.);
+        s.mem.pressure = Some(Pressure::Normal);
+        assert!(engine.check(&s, &settings).is_empty());
+        s.mem.pressure = Some(Pressure::Warning);
+        s.at = 101.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 121.;
+        let alerts = engine.check(&s, &settings);
+        assert_eq!(alerts[0].metric, "pressure");
+        assert!(!alerts[0].message.contains("critical") && !alerts[0].message.contains("kritisk"), "warning is not worded as critical: {}", alerts[0].message);
+        let mut engine = AlertEngine::new();
+        s.mem.pressure = None;
+        for at in [200., 300.] {
+            s.at = at;
+            assert!(engine.check(&s, &settings).is_empty(), "an unknown level never alerts");
         }
     }
 

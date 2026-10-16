@@ -33,7 +33,10 @@ fn conn() -> &'static Mutex<Option<Connection>> {
                  CREATE INDEX IF NOT EXISTS idx_metric_ts ON metric(ts);
                  CREATE INDEX IF NOT EXISTS idx_metric_key_ts ON metric(metric,ts);
                  CREATE INDEX IF NOT EXISTS idx_app_name_ts ON app_metric(app,ts);
-                 CREATE INDEX IF NOT EXISTS idx_app_ts ON app_metric(ts);",
+                 CREATE INDEX IF NOT EXISTS idx_app_ts ON app_metric(ts);
+                 CREATE TABLE IF NOT EXISTS battery_daily(
+                     day TEXT PRIMARY KEY, ts REAL, health REAL, cycles INTEGER,
+                     full_mah INTEGER, design_mah INTEGER);",
             );
             c
         });
@@ -87,7 +90,7 @@ fn record_on(c: &Connection, s: &Snapshot) {
     if let Ok(mut st) = c.prepare(
         "INSERT OR REPLACE INTO app_metric(ts,app,cpu,mem,disk,net,power) VALUES(?,?,?,?,?,?,?)",
     ) {
-        for a in s.apps.iter().take(60) {
+        for a in recorded_apps(&s.apps) {
             let _ = st.execute(rusqlite::params![
                 ts,
                 a.name,
@@ -99,12 +102,51 @@ fn record_on(c: &Connection, s: &Snapshot) {
             ]);
         }
     }
+    record_battery_day(c, s);
     if should_prune(ts) {
         let cutoff = ts - 30.0 * 86400.0;
         let _ = c.execute("DELETE FROM metric WHERE ts < ?", [cutoff]);
         let _ = c.execute("DELETE FROM app_metric WHERE ts < ?", [cutoff]);
     }
     let _ = transaction.commit();
+}
+
+/// The apps one tick records: the 60 using the most memory (the order
+/// `apps` arrives in), plus the busiest by CPU, disk and network, so an app
+/// that is busy but small is never left out of its own history.
+fn recorded_apps(apps: &[crate::processes::AppGroup]) -> Vec<&crate::processes::AppGroup> {
+    let mut chosen: Vec<&crate::processes::AppGroup> = apps.iter().take(60).collect();
+    let mut add_top = |n: usize, key: fn(&crate::processes::AppGroup) -> f64| {
+        let mut ranked: Vec<&crate::processes::AppGroup> = apps.iter().filter(|a| key(a) > 0.).collect();
+        ranked.sort_by(|a, b| key(b).total_cmp(&key(a)));
+        for app in ranked.into_iter().take(n) {
+            if !chosen.iter().any(|c| c.name == app.name) {
+                chosen.push(app);
+            }
+        }
+    };
+    add_top(20, |a| a.cpu_pct);
+    add_top(10, |a| a.disk_read_rate + a.disk_write_rate);
+    add_top(10, |a| a.net_in_rate + a.net_out_rate);
+    chosen
+}
+
+/// One row per local day with the day's latest battery health, kept beyond
+/// the 30-day window: a battery wears over months, and a row is tiny.
+fn record_battery_day(c: &Connection, s: &Snapshot) {
+    let b = &s.battery;
+    let Some(health) = b.health.filter(|h| b.present && h.is_finite() && *h > 0.) else { return };
+    let _ = c.execute(
+        "INSERT OR REPLACE INTO battery_daily(day,ts,health,cycles,full_mah,design_mah) VALUES(?,?,?,?,?,?)",
+        rusqlite::params![
+            crate::history_browser::local_day(s.at),
+            s.at,
+            health,
+            b.cycles,
+            b.full_capacity_mah,
+            b.design_capacity_mah
+        ],
+    );
 }
 
 fn should_prune(ts: f64) -> bool {
@@ -139,6 +181,42 @@ pub fn series(metric: &str, secs: f64) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn battery_health_is_kept_once_a_day_and_only_when_measured() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE metric(ts REAL,metric TEXT,value REAL,PRIMARY KEY(ts,metric)); CREATE TABLE app_metric(ts REAL,app TEXT,cpu REAL,mem REAL,disk REAL,net REAL,power REAL,PRIMARY KEY(ts,app)); CREATE TABLE battery_daily(day TEXT PRIMARY KEY, ts REAL, health REAL, cycles INTEGER, full_mah INTEGER, design_mah INTEGER);").unwrap();
+        let mut s = Snapshot { at: 1_800_000_000., ..Snapshot::default() };
+        record_on(&c, &s);
+        let rows = |c: &Connection| c.query_row("SELECT COUNT(*) FROM battery_daily", [], |r| r.get::<_, u64>(0)).unwrap();
+        assert_eq!(rows(&c), 0, "no battery, no row");
+        s.battery.present = true;
+        s.battery.health = Some(91.5);
+        s.battery.cycles = Some(120);
+        record_on(&c, &s);
+        s.at += 60.;
+        s.battery.health = Some(91.4);
+        record_on(&c, &s);
+        assert_eq!(rows(&c), 1, "one row per day");
+        assert_eq!(c.query_row("SELECT health FROM battery_daily", [], |r| r.get::<_, f64>(0)).unwrap(), 91.4, "the day's latest reading");
+    }
+
+    #[test]
+    fn busy_small_apps_are_recorded_alongside_the_largest() {
+        let app = |name: &str, mem: u64, cpu: f64| crate::processes::AppGroup {
+            name: name.into(),
+            mem_bytes: mem,
+            cpu_pct: cpu,
+            ..Default::default()
+        };
+        // Arrives sorted by memory, as the engine delivers it.
+        let mut apps: Vec<_> = (0..70).map(|i| app(&format!("big{i}"), 1000 - i, 0.)).collect();
+        apps.push(app("busy-small", 1, 90.));
+        let names: Vec<&str> = recorded_apps(&apps).iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names.len(), 61);
+        assert!(names.contains(&"busy-small"), "a busy app with little memory is recorded");
+        assert!(!names.contains(&"big65"), "idle apps past the memory cut stay out");
+    }
 
     #[test]
     fn optional_history_records_measured_zero_not_unavailable_placeholders() {

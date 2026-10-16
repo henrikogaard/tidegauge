@@ -1,10 +1,9 @@
 //! Dashboard controls share persistence and keyboard behavior with Settings.
 
 use crate::locale::text as l;
-use crate::settings::Settings;
 use crate::theme as t;
 use crate::ui::{
-    caption, card, empty_state, section_header, sub, update_preference, Tab, TideGaugeView,
+    card, empty_state, section_header, sub, TideGaugeView,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -25,6 +24,17 @@ pub(crate) fn control(
     spec: ControlSpec,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let label = spec.label.clone();
+    control_with(spec, label, action)
+}
+
+/// Like `control`, with `content` (an icon, say) in place of the text label.
+/// `spec.label` still names the control for assistive technology.
+fn control_with(
+    spec: ControlSpec,
+    content: impl IntoElement,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
     let toggled = matches!(spec.role, Role::RadioButton | Role::Switch);
@@ -35,14 +45,14 @@ pub(crate) fn control(
             spec.aria.unwrap_or_else(|| spec.label.clone()),
         ))
         .tab_index(spec.tab_index)
-        .h(px(28.))
+        .h(t::CONTROL_H)
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .px_3()
         .whitespace_nowrap()
-        .text_size(px(12.))
+        .text_size(t::TEXT_BODY)
         .text_color(if spec.selected {
             spec.accent
         } else {
@@ -59,7 +69,7 @@ pub(crate) fn control(
     }
     if spec.framed {
         base = base
-            .rounded(px(8.))
+            .rounded(t::RADIUS_CONTROL)
             .border_1()
             .border_color(if spec.selected {
                 spec.accent
@@ -76,7 +86,55 @@ pub(crate) fn control(
     if spec.selected {
         base = base.bg(spec.accent.opacity(0.12));
     }
-    base.child(spec.label)
+    base.child(content)
+        .on_click(move |_, window, cx| action(window, cx))
+        .capture_key_down(move |event, window, cx| {
+            if is_activation_key(&event.keystroke) {
+                window.prevent_default();
+                keyboard(window, cx);
+                cx.stop_propagation();
+            }
+        })
+}
+
+/// An on/off switch: a 34×20 track whose knob slides right when on. The
+/// track takes the accent colour when on; Enter or Space flips it.
+pub(crate) fn switch(
+    id: impl Into<String>,
+    aria: impl Into<String>,
+    on: bool,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let action = std::rc::Rc::new(action);
+    let keyboard = action.clone();
+    let accent = t::switch_on(dark);
+    div()
+        .id(SharedString::from(id.into()))
+        .role(Role::Switch)
+        .aria_label(SharedString::from(aria.into()))
+        .aria_toggled(if on { Toggled::True } else { Toggled::False })
+        .tab_index(0)
+        .flex_shrink_0()
+        .w(px(34.))
+        .h(px(20.))
+        .p_0p5()
+        .rounded_full()
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .bg(if on { accent } else { t::card_hi(dark) })
+        .focus_visible(move |d| d.border_color(t::accent(dark)))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .when(on, |d| d.justify_end())
+        .child(
+            div()
+                .size(px(14.))
+                .rounded_full()
+                .bg(gpui_kit::white())
+                .shadow_sm(),
+        )
         .on_click(move |_, window, cx| action(window, cx))
         .capture_key_down(move |event, window, cx| {
             if is_activation_key(&event.keystroke) {
@@ -132,6 +190,20 @@ pub fn button_accent(
     control(spec(id, label, selected, dark, accent), action)
 }
 
+/// A quiet, unframed action in the warning colour, for the harsher of two
+/// choices (Force Quit beside Quit).
+pub fn button_destructive(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label: String = label.into();
+    let mut s = spec(id, label.clone(), false, dark, t::warn(dark));
+    s.framed = false;
+    control_with(s, div().text_color(t::warn(dark)).child(label), action)
+}
+
 pub fn button_indexed(
     id: impl Into<String>,
     label: impl Into<String>,
@@ -142,19 +214,6 @@ pub fn button_indexed(
 ) -> impl IntoElement {
     let mut s = spec(id, label, selected, dark, t::accent(dark));
     s.tab_index = tab_index;
-    control(s, action)
-}
-
-pub fn button_labeled(
-    id: impl Into<String>,
-    label: impl Into<String>,
-    aria: impl Into<String>,
-    selected: bool,
-    dark: bool,
-    action: impl Fn(&mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let mut s = spec(id, label, selected, dark, t::accent(dark));
-    s.aria = Some(aria.into());
     control(s, action)
 }
 
@@ -182,430 +241,59 @@ pub fn segment_group(id: impl Into<String>, label: impl Into<String>, dark: bool
         .items_center()
         .border_1()
         .border_color(t::line(dark))
-        .rounded(px(8.))
+        .rounded(t::RADIUS_CONTROL)
         .overflow_hidden()
 }
 
-pub fn stepper_group(id: impl Into<String>, label: impl Into<String>, dark: bool) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(id.into()))
-        .role(Role::Group)
-        .aria_label(SharedString::from(label.into()))
-        .flex()
-        .items_center()
-        .border_1()
-        .border_color(t::line(dark))
-        .rounded(px(8.))
-        .overflow_hidden()
-}
-
-pub fn step_button(
+/// An icon-only control for the page header: framed, with the selected tint
+/// while what it opens is showing.
+pub(crate) fn icon_toggle(
     id: impl Into<String>,
-    label: impl Into<String>,
+    icon: &'static str,
     aria: impl Into<String>,
+    selected: bool,
     dark: bool,
-    accent: Hsla,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let mut s = spec(id, label, false, dark, accent);
-    s.aria = Some(aria.into());
-    s.framed = false;
-    control(s, action)
+    let color = if selected { t::accent(dark) } else { t::ink_dim(dark) };
+    let content = svg().path(icon).size(px(14.)).text_color(color);
+    let mut s = spec(id, aria, selected, dark, t::accent(dark));
+    s.role = Role::Button;
+    control_with(s, content, action)
 }
 
-pub fn step_value(value: String, dark: bool) -> Div {
-    div()
-        .min_w(px(56.))
-        .h(px(28.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_sm()
-        .text_color(t::ink(dark))
-        .child(value)
-}
-
-fn preference(
-    id: String,
-    label: impl Into<String>,
-    selected: bool,
-    dark: bool,
-    this: Entity<TideGaugeView>,
-    change: impl Fn(&mut Settings) + 'static,
-) -> impl IntoElement {
-    button(id, label, selected, dark, move |window, cx| {
-        update_preference(&this, |s| change(s), window, cx)
-    })
-}
-
-fn preference_labeled(
-    id: String,
-    label: impl Into<String>,
-    aria: impl Into<String>,
-    selected: bool,
-    dark: bool,
-    this: Entity<TideGaugeView>,
-    change: impl Fn(&mut Settings) + 'static,
-) -> impl IntoElement {
-    button_labeled(id, label, aria, selected, dark, move |window, cx| {
-        update_preference(&this, |s| change(s), window, cx)
-    })
-}
-
-fn step_preference(
-    id: String,
-    label: impl Into<String>,
-    aria: impl Into<String>,
-    dark: bool,
-    this: Entity<TideGaugeView>,
-    change: impl Fn(&mut Settings) + 'static,
-) -> impl IntoElement {
-    step_button(id, label, aria, dark, t::accent(dark), move |window, cx| {
-        update_preference(&this, |s| change(s), window, cx)
-    })
-}
-
-pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let s = Settings::load();
-    let alerts = [
-        ("cpu", "CPU", s.alert_cpu_enabled),
-        (
-            "mem",
-            l("Memory in use", "Minne i bruk"),
-            s.alert_mem_enabled,
-        ),
-        (
-            "disk",
-            l("Disk · above 400 MB/s", "Disk · over 400 MB/s"),
-            s.alert_disk_enabled,
-        ),
-        (
-            "net",
-            l("Network · above 80 MB/s", "Nettverk · over 80 MB/s"),
-            s.alert_network_enabled,
-        ),
-    ];
-    let mut alert_panel = card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Alerts", "Varsler")))
-        .child(sub(l("Opt-in. CPU/memory: sustained for 20 seconds; disk/network: 30 seconds. One alert until recovery, with a 10-minute cooldown per metric.", "Valgfritt. CPU/minne: vedvarende i 20 sekunder; disk/nettverk: 30 sekunder. Ett varsel frem til normalisering, med 10 minutters pause per måling.")));
-    for (key, label, enabled) in alerts {
-        let mut row = div()
-            .id(SharedString::from(format!("alert-row-{key}")))
-            .role(Role::Group)
-            .aria_label(label)
-            .flex()
-            .items_center()
-            .gap_2()
-            .py_1()
-            .child(div().flex_1().text_sm().child(label));
-        if key == "cpu" || key == "mem" {
-            let value = if key == "cpu" {
-                s.alert_cpu_pct
-            } else {
-                s.alert_mem_pct
-            };
-            row = row
-                .aria_label(SharedString::from(format!("{label} · {value:.0}%")))
-                .child(
-                    stepper_group(
-                        format!("threshold-{key}-group"),
-                        format!("{label} {}", l("threshold", "terskel")),
-                        dark,
-                    )
-                    .child(step_preference(
-                        format!("threshold-{key}-down"),
-                        l("− 5", "− 5"),
-                        format!("{label} · {}", l("Decrease", "Senk")),
-                        dark,
-                        this.clone(),
-                        move |s| {
-                            let v = if key == "cpu" {
-                                &mut s.alert_cpu_pct
-                            } else {
-                                &mut s.alert_mem_pct
-                            };
-                            *v = (*v - 5.).max(1.);
-                        },
-                    ))
-                    .child(step_value(format!("{value:.0}%"), dark))
-                    .child(step_preference(
-                        format!("threshold-{key}-up"),
-                        "+ 5",
-                        format!("{label} · {}", l("Increase", "Øk")),
-                        dark,
-                        this.clone(),
-                        move |s| {
-                            let v = if key == "cpu" {
-                                &mut s.alert_cpu_pct
-                            } else {
-                                &mut s.alert_mem_pct
-                            };
-                            *v = (*v + 5.).min(100.);
-                        },
-                    )),
-                );
-        }
-        row = row.child(preference(
-            format!("alert-{key}"),
-            if enabled {
-                l("On", "På")
-            } else {
-                l("Off", "Av")
-            },
-            enabled,
-            dark,
-            this.clone(),
-            move |s| {
-                let flag = match key {
-                    "cpu" => &mut s.alert_cpu_enabled,
-                    "mem" => &mut s.alert_mem_enabled,
-                    "disk" => &mut s.alert_disk_enabled,
-                    _ => &mut s.alert_network_enabled,
-                };
-                *flag = !enabled;
-            },
-        ));
-        alert_panel = alert_panel.child(row);
-    }
-    alert_panel = alert_panel.child(sub(l("Permission is requested with the first alert. macOS notification settings and Focus may suppress delivery. Memory measures usage, not memory pressure.", "Tillatelse forespørres ved første varsel. Varselinnstillinger og Fokus i macOS kan hindre levering. Minnetallet viser bruk, ikke minnepress.")));
-
-    let mut order = s.dashboard_tabs.clone();
-    for key in crate::settings::DASHBOARD_TABS {
-        if !order.iter().any(|x| x == key) {
-            order.push(key.into());
-        }
-    }
-    let mut tabs = div().flex().flex_col().gap_2().child(
-        div()
-            .text_sm()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(l("Tab order", "Fanerekkefølge")),
-    );
-    for key in order {
-        let Some(tab) = Tab::from_key(&key) else {
-            continue;
-        };
-        let enabled = s.dashboard_tabs.contains(&key);
-        let toggle_key = key.clone();
-        let up_key = key.clone();
-        let down_key = key.clone();
-        let mut row = div()
-            .id(SharedString::from(format!("tab-row-{key}")))
-            .role(Role::Group)
-            .aria_label(tab.label())
-            .flex()
-            .gap_2()
-            .items_center()
-            .child(div().flex_1().text_sm().child(tab.label()))
-            .child(preference(
-                format!("show-{key}"),
-                if enabled {
-                    l("Shown", "Vist")
-                } else {
-                    l("Hidden", "Skjult")
-                },
-                enabled,
-                dark,
-                this.clone(),
-                move |s| {
-                    if enabled {
-                        s.dashboard_tabs.retain(|x| x != &toggle_key);
-                    } else {
-                        s.dashboard_tabs.push(toggle_key.clone());
-                    }
-                },
-            ));
-        if enabled {
-            row = row
-                .child(preference_labeled(
-                    format!("up-{key}"),
-                    "↑",
-                    format!("{} {} {}", l("Move", "Flytt"), tab.label(), l("up", "opp")),
-                    false,
-                    dark,
-                    this.clone(),
-                    move |s| {
-                        if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &up_key) {
-                            if i > 0 {
-                                s.dashboard_tabs.swap(i, i - 1);
-                            }
-                        }
-                    },
-                ))
-                .child(preference_labeled(
-                    format!("down-{key}"),
-                    "↓",
-                    format!(
-                        "{} {} {}",
-                        l("Move", "Flytt"),
-                        tab.label(),
-                        l("down", "ned")
-                    ),
-                    false,
-                    dark,
-                    this.clone(),
-                    move |s| {
-                        if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &down_key) {
-                            if i + 1 < s.dashboard_tabs.len() {
-                                s.dashboard_tabs.swap(i, i + 1);
-                            }
-                        }
-                    },
-                ));
-        }
-        tabs = tabs.child(row);
-    }
-    let mut favorites = div().flex().flex_col().gap_2().child(
-        div()
-            .text_sm()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(l("Overview favorites", "Favoritter i oversikten")),
-    );
-    for key in crate::settings::FAVORITE_METRICS {
-        let enabled = s.favorite_metrics.iter().any(|x| x == key);
-        let label = Tab::from_key(key).unwrap().label();
-        favorites = favorites.child(preference(
-            format!("favorite-{key}"),
-            format!(
-                "{} · {}",
-                label,
-                if enabled {
-                    l("Shown", "Vist")
-                } else {
-                    l("Hidden", "Skjult")
-                }
-            ),
-            enabled,
-            dark,
-            this.clone(),
-            move |s| {
-                if enabled {
-                    s.favorite_metrics.retain(|x| x != key);
-                } else {
-                    s.favorite_metrics.push(key.into());
-                }
-            },
-        ));
-    }
-    favorites = favorites
-        .child(preference(
-            "compact-dashboard".into(),
-            format!(
-                "{} · {}",
-                l("Compact layout", "Kompakt oppsett"),
-                if s.compact_dashboard {
-                    l("On", "På")
-                } else {
-                    l("Off", "Av")
-                }
-            ),
-            s.compact_dashboard,
-            dark,
-            this.clone(),
-            |s| s.compact_dashboard = !s.compact_dashboard,
-        ))
-        .child(sub(l(
-            "Overview and Settings stay available. Menu-bar readings are independent.",
-            "Oversikt og Innstillinger er alltid tilgjengelige. Menylinjemålinger er uavhengige.",
-        )))
-        .child(preference(
-            "reset-dashboard".into(),
-            l("Reset dashboard only", "Tilbakestill kun oversikten"),
-            false,
-            dark,
-            this.clone(),
-            Settings::reset_dashboard,
-        ));
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(keep_awake(dark, this))
-        .child(alert_panel)
-        .child(
-            card(dark)
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(l("Dashboard layout", "Oversiktsoppsett")),
-                )
-                .child(
-                    div()
-                        .grid()
-                        .grid_cols(2)
-                        .gap_6()
-                        .child(tabs)
-                        .child(favorites),
-                ),
-        )
-}
-
+/// While Keep awake is on, Overview says so in one line with a way to stop.
 pub fn keep_awake(dark: bool, this: Entity<TideGaugeView>) -> Div {
     let status = crate::keepawake::status();
-    let title = if status.active {
-        status
-            .remaining
-            .map(|remaining| {
-                format!(
-                    "{} · {}:{:02}",
-                    l("Keeping awake", "Holder våken"),
-                    remaining.as_secs() / 60,
-                    remaining.as_secs() % 60
-                )
-            })
-            .unwrap_or_else(|| {
-                l(
-                    "Keeping awake · until stopped",
-                    "Holder våken · frem til stopp",
-                )
-                .into()
-            })
-    } else {
-        l("Keep awake", "Hold våken").into()
+    let title = match status.remaining {
+        Some(remaining) => format!(
+            "{} · {}:{:02}",
+            l("Keeping awake", "Holder våken"),
+            remaining.as_secs() / 60,
+            remaining.as_secs() % 60
+        ),
+        None => l("Keeping awake · until stopped", "Holder våken · frem til stopp").into(),
     };
-    let mut choices = div().flex().gap_2().flex_wrap();
-    for (minutes, label) in [
-        (Some(15), l("15 min", "15 min")),
-        (Some(30), l("30 min", "30 min")),
-        (Some(60), l("1 hour", "1 time")),
-        (None, l("Until stopped", "Frem til stopp")),
-    ] {
-        let target = this.clone();
-        choices = choices.child(button(
-            format!("awake-{minutes:?}"),
-            label,
-            false,
-            dark,
-            move |_, cx| {
-                let result = crate::keepawake::start(
-                    minutes.map(|m| std::time::Duration::from_secs(m * 60)),
-                );
-                target.update(cx, |v, cx| {
-                    v.settings_error = result.err();
-                    cx.notify();
-                });
-            },
-        ));
-    }
-    if status.active {
-        let target = this;
-        choices = choices.child(button(
-            "awake-stop",
-            l("Stop", "Stopp"),
-            true,
-            dark,
-            move |_, cx| {
-                let result = crate::keepawake::stop();
-                target.update(cx, |v, cx| {
-                    v.settings_error = result.err();
-                    cx.notify();
-                });
-            },
-        ));
-    }
-    card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
-        .child(sub(l("Prevents idle system sleep only. The display may sleep; closing the lid still sleeps. Off after quitting or restarting Tidegauge.", "Hindrer kun automatisk systemdvale. Skjermen kan sove; lukket lokk gir fortsatt dvale. Av etter avslutning eller omstart av Tidegauge.")))
-        .child(choices).when_some(status.error, |d,e| d.child(sub(e).text_color(t::warn(dark))))
+    card(dark)
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .py(t::SPACE_2)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(t::SPACE_2)
+                .child(svg().path("icons/coffee.svg").size(px(14.)).text_color(t::ink_dim(dark)))
+                .child(div().text_size(t::TEXT_ROW).child(title)),
+        )
+        .child(button("awake-stop", l("Stop", "Stopp"), false, dark, move |_, cx| {
+            let result = crate::keepawake::stop();
+            this.update(cx, |v, cx| {
+                v.settings_error = result.err();
+                cx.notify();
+            });
+        }))
 }
 
 pub fn refresh_history(this: &Entity<TideGaugeView>, cx: &mut App) {
@@ -613,6 +301,7 @@ pub fn refresh_history(this: &Entity<TideGaugeView>, cx: &mut App) {
         view.history_request.end = crate::metrics::now_unix();
         view.history_generation += 1;
         view.history_loading = true;
+        view.history_loaded_at = Some(std::time::Instant::now());
         let request = view.history_request.clone();
         let generation = view.history_generation;
         cx.spawn(async move |this, cx| {
@@ -628,6 +317,33 @@ pub fn refresh_history(this: &Entity<TideGaugeView>, cx: &mut App) {
         .detach();
         cx.notify();
     });
+}
+
+/// Saves what History shows, every sample rather than the chart's averages,
+/// as a CSV file in Downloads and shows it in Finder.
+fn export_history(this: Entity<TideGaugeView>, cx: &mut App) {
+    let request = this.read(cx).history_request.clone();
+    cx.spawn(async move |cx| {
+        let result = smol::unblock(move || crate::history_browser::export(&request)).await;
+        if let Ok(path) = &result {
+            crate::storage::reveal(path);
+        }
+        this.update(cx, |v, cx| {
+            v.toast = Some(crate::ui::Toast::new(
+                match &result {
+                    Ok(path) => format!(
+                        "{} {}",
+                        l("Saved in Downloads:", "Lagret i Nedlastinger:"),
+                        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    ),
+                    Err(error) => error.clone(),
+                },
+                result.is_err(),
+            ));
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 fn change_history(
@@ -680,7 +396,6 @@ pub fn history_panel(
             move |_, cx| change_history(&target, cx, |r| r.hours = hours),
         ));
     }
-    let refresh = this.clone();
     let mut metrics = segment_group("history-metrics", l("Metric", "Måling"), dark);
     for &metric in if app {
         &Metric::APP[..]
@@ -702,11 +417,6 @@ pub fn history_panel(
         .flex()
         .flex_col()
         .gap_4()
-        .child(section_header(
-            l("History", "Historikk"),
-            l("Read-only", "Kun avlesning"),
-            dark,
-        ))
         .child(
             card(dark)
                 .child(
@@ -715,16 +425,7 @@ pub fn history_panel(
                         .items_center()
                         .gap_3()
                         .child(row_label(l("Range", "Tidsrom")))
-                        .child(ranges)
-                        .child(div().flex_1())
-                        .child(button_accent(
-                            "refresh-history",
-                            l("Refresh", "Oppdater"),
-                            false,
-                            dark,
-                            accent,
-                            move |_, cx| refresh_history(&refresh, cx),
-                        )),
+                        .child(ranges),
                 )
                 .child(
                     div()
@@ -842,7 +543,8 @@ pub fn history_panel(
             let format_value = |v| match metric.unit(app) {
                 "B" => crate::engine::fmt_bytes(v),
                 "B/s" => crate::engine::fmt_rate(v),
-                unit => format!("{v:.1} {unit}"),
+                "%" => crate::locale::percent(v, 1),
+                unit => format!("{} {unit}", crate::locale::number(v, 1)),
             };
             let mut plot = card(dark)
                 .child(
@@ -850,10 +552,10 @@ pub fn history_panel(
                         .flex()
                         .justify_between()
                         .gap_3()
-                        .child(sub(format!("{} {}", samples, l("samples", "målinger"))))
+                        .child(sub(crate::locale::count(samples, "sample", "samples", "måling", "målinger")))
                         .child(sub(format_value(max))),
                 )
-                .child(history_chart(&data.values, max, accent))
+                .child(history_chart(&data.values, max, accent, 180.))
                 .child(sub(format_value(0.)))
                 .child(
                     div()
@@ -866,17 +568,25 @@ pub fn history_panel(
                         .child(l("Local time", "Lokal tid"))
                         .child(crate::history_browser::local_time(data.end)),
                 );
-            if values.len() * 5 < data.values.len() {
-                // Under ~20% of the buckets hold data; say so instead of leaving
-                // a mostly blank plot unexplained.
-                plot = plot.child(sub(l(
-                    "Few recorded measurements in this range — most intervals have no data.",
-                    "Få registrerte målinger i dette tidsrommet — de fleste intervallene mangler data.",
-                )));
+            // When recording began inside the range, say when: that, not a
+            // fault, is why the left of the plot is empty.
+            if let Some(at) = data.recording_began {
+                plot = plot.child(
+                    sub(format!("{} {}", l("Recorded since", "Registrert siden"), crate::history_browser::local_time(at)))
+                        .text_color(t::ink_dim(dark)),
+                );
             }
+            let target = this.clone();
             panel = panel
                 .child(section_header(metric.label(app), metric.unit(app), dark))
-                .child(plot);
+                .child(plot)
+                .child(div().flex().child(button(
+                    "history-export",
+                    l("Export CSV", "Eksporter CSV"),
+                    false,
+                    dark,
+                    move |_, cx| export_history(target.clone(), cx),
+                )));
         }
     } else if let Some(Err(error)) = &view.history_data {
         panel = panel.child(empty_state(
@@ -887,84 +597,10 @@ pub fn history_panel(
             dark,
         ));
     }
-    panel.child(recording_details(dark))
+    panel
 }
 
-fn recording_details(dark: bool) -> Div {
-    let row = |label: &'static str, text: &'static str| {
-        div()
-            .flex()
-            .gap_3()
-            .child(
-                div()
-                    .w(px(112.))
-                    .flex_shrink_0()
-                    .child(caption(label, dark)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(sub(text).text_color(t::ink_dim(dark))),
-            )
-    };
-    card(dark)
-        .child(caption(
-            l("Recording details", "Registreringsdetaljer"),
-            dark,
-        ))
-        .child(row(
-            l("Retention", "Lagring"),
-            l(
-                "30-day target, pruned hourly",
-                "mål om 30 dager, ryddes hver time",
-            ),
-        ))
-        .child(row(
-            l("Values", "Verdier"),
-            l(
-                "bucket means, never peaks; missing is not zero",
-                "intervallgjennomsnitt, aldri topper; manglende er ikke null",
-            ),
-        ))
-        .child(row(
-            l("Refresh", "Oppdater"),
-            l(
-                "manual — include new samples with Refresh",
-                "manuell — inkluder nye målinger med Oppdater",
-            ),
-        ))
-        .child(row(
-            l("Apps", "Apper"),
-            l(
-                "top 60 recorded names; absence does not prove inactivity",
-                "topp 60 registrerte navn; fravær beviser ikke inaktivitet",
-            ),
-        ))
-        .child(row(
-            "CPU",
-            l(
-                "app CPU can exceed 100% across cores",
-                "app-CPU kan overstige 100 % på flere kjerner",
-            ),
-        ))
-        .child(row(
-            l("GPU · Battery", "GPU · Batteri"),
-            l(
-                "legacy zero placeholders are omitted",
-                "eldre nullverdier er utelatt",
-            ),
-        ))
-        .child(row(
-            l("Power", "Effekt"),
-            l(
-                "estimates are not shown as measurements",
-                "estimater vises ikke som målinger",
-            ),
-        ))
-}
-
-fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElement {
+pub(crate) fn history_chart(values: &[Option<f64>], max: f64, color: Hsla, height: f32) -> impl IntoElement {
     let values = values.to_vec();
     canvas(
         move |_, _, _| (),
@@ -1004,61 +640,40 @@ fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElem
         },
     )
     .w_full()
-    .h(px(180.))
+    .h(px(height))
 }
 
 pub fn audio_output(
     audio: &crate::engine::AudioInfo,
+    volume_slider: &Entity<gpui_kit::component::slider::SliderState>,
     dark: bool,
     this: Entity<TideGaugeView>,
     pending: bool,
 ) -> Div {
     let id = audio.output_id;
-    let mut controls = div().flex().flex_col().gap_2().child(sub(l(
-        "Controls the default media output device, not individual apps.",
-        "Styrer standard lydutgang, ikke enkeltapper.",
-    )));
+    let mut controls = div().flex().flex_col().gap_2();
     if pending {
         return controls.child(sub(l("Updating output…", "Oppdaterer lydutgang…")));
     }
     let accent = t::Metric::Sound.accent(dark);
-    let mut buttons = div().flex().gap_3();
+    let mut buttons = div().flex().items_center().gap(t::SPACE_4);
     if audio.can_volume {
         if let Some(volume) = audio.device_volume {
-            let down = this.clone();
-            let up = this.clone();
-            buttons = buttons.child(
-                stepper_group("output-volume", l("Output volume", "Utgangsvolum"), dark)
-                    .child(step_button(
-                        "volume-down",
-                        l("− 10%", "− 10%"),
-                        format!("{} 10%", l("Decrease volume by", "Senk volumet med")),
-                        dark,
-                        accent,
-                        move |_, cx| {
-                            audio_action(&down, cx, move || {
-                                crate::audio::adjust_output_volume(id, -0.1)
-                            });
-                        },
-                    ))
-                    .child(step_value(format!("{:.0}%", volume * 100.), dark))
-                    .child(step_button(
-                        "volume-up",
-                        "+ 10%",
-                        format!("{} 10%", l("Increase volume by", "Øk volumet med")),
-                        dark,
-                        accent,
-                        move |_, cx| {
-                            audio_action(&up, cx, move || {
-                                crate::audio::adjust_output_volume(id, 0.1)
-                            });
-                        },
-                    )),
-            );
+            buttons = buttons
+                .child(svg().path("icons/volume-1.svg").size(px(14.)).text_color(t::ink_dim(dark)))
+                .child(crate::settings_page::slider(volume_slider, 220., accent))
+                .child(
+                    div()
+                        .w(px(44.))
+                        .text_size(t::TEXT_ROW)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(crate::engine::fmt_pct(volume as f64 * 100.)),
+                );
         }
     }
     if audio.can_mute {
         if let Some(muted) = audio.device_muted {
+            let this = this.clone();
             buttons = buttons.child(button_accent(
                 "output-mute",
                 if muted {
@@ -1076,10 +691,89 @@ pub fn audio_output(
         }
     }
     controls = controls.child(buttons);
+    if audio.outputs.len() > 1 {
+        controls = controls.child(device_choice("output", &audio.outputs, id, crate::audio::Direction::Output, dark, accent, this.clone()));
+    }
     if !audio.can_volume || !audio.can_mute {
         controls = controls.child(sub(l("This output does not expose all volume/mute controls. Use macOS Sound settings for unsupported controls.", "Denne utgangen støtter ikke alle volum-/dempefunksjoner. Bruk lydinnstillingene i macOS for funksjoner som ikke støttes.")));
     }
     controls
+}
+
+/// One button per device; choosing one makes it the default on its side.
+fn device_choice(
+    key: &'static str,
+    devices: &[(u32, String)],
+    current: u32,
+    direction: crate::audio::Direction,
+    dark: bool,
+    accent: Hsla,
+    this: Entity<TideGaugeView>,
+) -> Div {
+    div().flex().flex_wrap().gap_2().children(devices.iter().map(|(id, name)| {
+        let (id, target) = (*id, this.clone());
+        button_accent(format!("{key}-device-{id}"), name.clone(), id == current, dark, accent, move |_, cx| {
+            if id != current {
+                audio_action(&target, cx, move || crate::audio::set_default_device(direction, id));
+            }
+        })
+    }))
+}
+
+/// The input device (microphone): its name, volume, mute and the choice of
+/// device. Controls a device lacks are left out and said so.
+pub fn audio_input(
+    audio: &crate::engine::AudioInfo,
+    input_slider: &Entity<gpui_kit::component::slider::SliderState>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    pending: bool,
+) -> Div {
+    use crate::audio::Direction;
+    let input = &audio.input;
+    let accent = t::Metric::Sound.accent(dark);
+    let id = input.id;
+    let mut card = crate::ui::card(dark).child(
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(svg().path("icons/mic.svg").size(px(20.)).text_color(accent))
+            .child(
+                div()
+                    .flex_1()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Input device", "Lydinngang")))
+                    .child(sub(input.name.clone()).text_color(t::ink_dim(dark))),
+            )
+            .when(input.muted == Some(true), |d| d.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Muted", "Dempet")))),
+    );
+    if id == 0 {
+        return card;
+    }
+    if pending {
+        return card.child(sub(l("Updating input…", "Oppdaterer lydinngang…")));
+    }
+    let mut row = div().flex().items_center().gap(t::SPACE_4);
+    if let (true, Some(volume)) = (input.can_volume, input.volume) {
+        row = row
+            .child(svg().path("icons/mic.svg").size(px(14.)).text_color(t::ink_dim(dark)))
+            .child(crate::settings_page::slider(input_slider, 220., accent))
+            .child(div().w(px(44.)).text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(crate::engine::fmt_pct(volume as f64 * 100.)));
+    }
+    if let (true, Some(muted)) = (input.can_mute, input.muted) {
+        let target = this.clone();
+        row = row.child(button_accent("input-mute", if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") }, muted, dark, accent, move |_, cx| {
+            audio_action(&target, cx, move || crate::audio::toggle_mute(Direction::Input, id));
+        }));
+    }
+    card = card.child(row);
+    if audio.inputs.len() > 1 {
+        card = card.child(device_choice("input", &audio.inputs, id, Direction::Input, dark, accent, this));
+    }
+    if !input.can_volume || !input.can_mute {
+        card = card.child(sub(l("This input does not expose all volume/mute controls. Use macOS Sound settings for unsupported controls.", "Denne inngangen støtter ikke alle volum-/dempefunksjoner. Bruk lydinnstillingene i macOS for funksjoner som ikke støttes.")).text_color(t::ink_dim(dark)));
+    }
+    card
 }
 
 fn audio_action(
@@ -1095,8 +789,11 @@ fn audio_action(
         view.audio_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let (result, output) =
-                smol::unblock(move || (action(), crate::audio::output_state())).await;
+            let (result, output, input, outputs, inputs) = smol::unblock(move || {
+                use crate::audio::Direction;
+                (action(), crate::audio::output_state(), crate::audio::device_state(Direction::Input), crate::audio::devices(Direction::Output), crate::audio::devices(Direction::Input))
+            })
+            .await;
             let _ = this.update(cx, |view, cx| {
                 view.audio_pending = false;
                 view.audio_error = result.err();
@@ -1106,6 +803,9 @@ fn audio_action(
                 view.snap.audio.device_muted = output.muted;
                 view.snap.audio.can_volume = output.can_volume;
                 view.snap.audio.can_mute = output.can_mute;
+                view.snap.audio.input = input;
+                view.snap.audio.outputs = outputs;
+                view.snap.audio.inputs = inputs;
                 cx.notify();
             });
         })

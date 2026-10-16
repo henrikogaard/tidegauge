@@ -34,6 +34,22 @@ fn classify(name: &str) -> &'static str {
     else { t("Device", "Enhet") }
 }
 
+/// A line icon for a device, from the same name hints as its kind.
+pub fn device_icon(name: &str) -> &'static str {
+    let l = name.to_lowercase();
+    if l.contains("airpods") || l.contains("beats") { "icons/headphones.svg" }
+    else if l.contains("mouse") { "icons/mouse.svg" }
+    else if l.contains("keyboard") { "icons/keyboard.svg" }
+    else if l.contains("trackpad") { "icons/mouse-pointer-2.svg" }
+    else if l.contains("pencil") { "icons/pencil.svg" }
+    else if l.contains("watch") { "icons/watch.svg" }
+    else if l.contains("ipad") { "icons/tablet.svg" }
+    else if l.contains("iphone") { "icons/smartphone.svg" }
+    else if l.contains("controller") || l.contains("dualsense") { "icons/gamepad-2.svg" }
+    else if l.contains("speaker") || l.contains("homepod") { "icons/speaker.svg" }
+    else { "icons/bluetooth.svg" }
+}
+
 fn battery_of(v: &serde_json::Value) -> Option<f64> {
     v.get("device_batteryLevel")
         .or_else(|| v.get("device_battery_level"))

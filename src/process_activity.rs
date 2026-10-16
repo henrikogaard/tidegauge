@@ -1,9 +1,7 @@
 //! Session-local process attribution. A missing sample is not evidence of exit.
 
-use crate::locale::text as l;
-use crate::processes::{bundle_root, proc_bsd, proc_path, ProcInfo};
+use crate::processes::{bundle_root, proc_bsd, ProcInfo};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Identity {
@@ -19,7 +17,7 @@ impl Identity {
         }
     }
 
-    fn of_native(p: &crate::ffi::proc_bsdinfo) -> Self {
+    pub(crate) fn of_native(p: &crate::ffi::proc_bsdinfo) -> Self {
         Self {
             pid: p.pbi_pid as i32,
             started: p.pbi_start_tvsec * 1_000_000 + p.pbi_start_tvusec,
@@ -241,7 +239,7 @@ fn registered_apps(procs: &[ProcInfo]) -> Vec<RegisteredApp> {
         .collect()
 }
 
-fn confirmed_exit(id: Identity) -> bool {
+pub(crate) fn confirmed_exit(id: Identity) -> bool {
     if let Some(info) = proc_bsd(id.pid) {
         if info.pbi_pid == id.pid as u32 && info.pbi_start_tvsec > 0 {
             return Identity::of_native(&info) != id || info.pbi_status == 5;
@@ -250,146 +248,6 @@ fn confirmed_exit(id: Identity) -> bool {
     unsafe {
         libc::kill(id.pid, 0) != 0
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-    }
-}
-
-pub fn controllable(p: &ProcInfo, bundle: &str) -> bool {
-    let uid = unsafe { libc::getuid() };
-    uid != 0
-        && p.uid == uid
-        && p.pid > 1
-        && p.pid != std::process::id() as i32
-        && p.start_unix > 0.
-        && !p.exe_path.is_empty()
-        && ![
-            "/System/",
-            "/usr/libexec/",
-            "/usr/sbin/",
-            "/sbin/",
-            "/Library/Apple/",
-        ]
-        .iter()
-        .any(|prefix| p.exe_path.starts_with(prefix) || bundle.starts_with(prefix))
-}
-
-fn validate(expected: &ProcInfo, bundle: &str) -> Result<(), String> {
-    if !controllable(expected, bundle) {
-        return Err(l(
-            "This process is protected or belongs to another user.",
-            "Denne prosessen er beskyttet eller tilhører en annen bruker.",
-        )
-        .into());
-    }
-    let Some(info) = proc_bsd(expected.pid) else {
-        return Err(l(
-            "The process is gone or its identity cannot be verified.",
-            "Prosessen er avsluttet, eller identiteten kan ikke bekreftes.",
-        )
-        .into());
-    };
-    if Identity::of_native(&info) != Identity::of(expected)
-        || info.pbi_uid != expected.uid
-        || info.pbi_ruid != expected.uid
-        || proc_path(expected.pid) != expected.exe_path
-    {
-        return Err(l(
-            "The process identity changed. Nothing was stopped.",
-            "Prosessidentiteten er endret. Ingenting ble stoppet.",
-        )
-        .into());
-    }
-    Ok(())
-}
-
-pub fn stop_remaining(row: &ProcessRow, bundle: &str) -> Result<String, String> {
-    let id = Identity::of(&row.process);
-    let current = crate::engine::latest();
-    let matches = current.process_groups.iter().any(|g| {
-        g.bundle == bundle
-            && !g.mains.iter().any(|main| Identity::of(main) == id)
-            && g.rows.iter().any(|r| {
-                r.remaining
-                    && r.origin.as_ref().is_some_and(|o| o.observed_ancestor)
-                    && Identity::of(&r.process) == id
-                    && r.origin == row.origin
-            })
-    });
-    if !row.remaining
-        || !matches
-        || !row
-            .origin
-            .as_ref()
-            .is_some_and(|o| o.observed_ancestor && o.main != id && confirmed_exit(o.main))
-    {
-        return Err(l("The confirmed helper is no longer eligible. Refresh and review its state.", "Den bekreftede hjelpeprosessen kan ikke stoppes nå. Oppdater og kontroller tilstanden.").into());
-    }
-    validate(&row.process, bundle)?;
-    if unsafe { libc::kill(id.pid, libc::SIGTERM) } != 0 {
-        return Err(format!(
-            "{} ({})",
-            l("The stop request failed", "Stoppforespørselen mislyktes"),
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-        ));
-    }
-    Ok(wait_for_exit(id, false))
-}
-
-pub fn quit_app(main: &ProcInfo, bundle: &str) -> Result<String, String> {
-    use objc2_app_kit::NSRunningApplication;
-    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(main.pid).ok_or_else(
-        || {
-            l(
-                "The app is no longer available.",
-                "Appen er ikke lenger tilgjengelig.",
-            )
-            .to_string()
-        },
-    )?;
-    if app
-        .bundleURL()
-        .and_then(|u| u.path())
-        .map(|s| s.to_string())
-        .as_deref()
-        != Some(bundle)
-        || app
-            .executableURL()
-            .and_then(|u| u.path())
-            .map(|s| s.to_string())
-            .as_deref()
-            != Some(&main.exe_path)
-    {
-        return Err(l(
-            "The app identity changed. Nothing was quit.",
-            "Appidentiteten er endret. Ingenting ble avsluttet.",
-        )
-        .into());
-    }
-    validate(main, bundle)?;
-    if !app.terminate() {
-        return Err(l(
-            "The app did not accept the quit request.",
-            "Appen godtok ikke avslutningsforespørselen.",
-        )
-        .into());
-    }
-    Ok(wait_for_exit(Identity::of(main), true))
-}
-
-fn wait_for_exit(id: Identity, app: bool) -> String {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if confirmed_exit(id) {
-            return l(
-                "The selected process exited.",
-                "Den valgte prosessen er avsluttet.",
-            )
-            .into();
-        }
-        if Instant::now() >= deadline {
-            return if app { l("Quit requested; the app is still running. It may need you to save or dismiss a dialog.", "Avslutning forespurt; appen kjører fortsatt. Du må kanskje lagre eller lukke en dialog.") }
-                else { l("SIGTERM sent; the process is still running or its exit cannot be verified. A service may restart it.", "SIGTERM sendt; prosessen kjører fortsatt, eller avslutning kan ikke bekreftes. En tjeneste kan starte den på nytt.") }.into();
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -580,24 +438,6 @@ mod tests {
             helper_row.origin.as_ref().unwrap().main,
             Identity::of(&first)
         );
-    }
-    #[test]
-    fn protected_targets_are_not_controllable() {
-        let mut p = proc(
-            std::process::id() as i32,
-            1,
-            "/Apps/Test.app/Contents/MacOS/Test",
-        );
-        p.uid = unsafe { libc::getuid() };
-        assert!(!controllable(&p, "/Apps/Test.app"));
-        p.pid = 1;
-        assert!(!controllable(&p, "/Apps/Test.app"));
-        p.pid = 12345;
-        p.uid = unsafe { libc::getuid() }.wrapping_add(1);
-        assert!(!controllable(&p, "/Apps/Test.app"));
-        p.uid = unsafe { libc::getuid() };
-        p.exe_path = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder".into();
-        assert!(!controllable(&p, "/System/Library/CoreServices/Finder.app"));
     }
     #[test]
     fn observed_ancestry_survives_app_relaunch_without_reassignment() {

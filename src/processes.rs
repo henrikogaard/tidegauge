@@ -84,14 +84,16 @@ pub fn proc_bsd(pid: i32) -> Option<proc_bsdinfo> {
     }
 }
 
+/// Resource use for a process, in the version 6 layout. Where version 6 is
+/// not offered, the version 4 prefix is read and the energy fields stay zero.
 pub fn proc_rusage(pid: i32) -> Option<rusage_info_v4> {
     unsafe {
         let mut r: rusage_info_v4 = Default::default();
-        if proc_pid_rusage(pid, RUSAGE_INFO_V4, &mut r) >= 0 {
-            Some(r)
-        } else {
-            None
+        if proc_pid_rusage(pid, RUSAGE_INFO_V6, &mut r) >= 0 {
+            return Some(r);
         }
+        let mut r: rusage_info_v4 = Default::default();
+        (proc_pid_rusage(pid, RUSAGE_INFO_V4, &mut r) >= 0).then_some(r)
     }
 }
 
@@ -104,6 +106,46 @@ pub fn proc_path(pid: i32) -> String {
             String::new()
         }
     }
+}
+
+/// Command-line arguments of a process you may inspect, used only to tell
+/// programs apart (for example a coding agent from its background host).
+/// Arguments can hold secrets, so callers must never display or store them.
+/// `None` when macOS refuses (other users' processes) or the data is malformed.
+pub fn proc_args(pid: i32) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0
+        || size < 4
+        || size > 1 << 20
+    {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr() as *mut c_void, &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    parse_procargs(&buf)
+}
+
+/// KERN_PROCARGS2 layout: argc (i32), the executable path, NUL padding, then
+/// argc NUL-terminated arguments (followed by the environment, ignored).
+fn parse_procargs(buf: &[u8]) -> Option<Vec<String>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if !(0..=4096).contains(&argc) {
+        return None;
+    }
+    let rest = buf.get(4..)?;
+    let path_end = rest.iter().position(|&b| b == 0)?;
+    let rest = &rest[path_end..];
+    let args_start = rest.iter().position(|&b| b != 0)?;
+    let args: Vec<String> = rest[args_start..]
+        .split(|&b| b == 0)
+        .take(argc as usize)
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect();
+    (args.len() == argc as usize).then_some(args)
 }
 
 pub fn proc_cwd(pid: i32) -> String {
@@ -147,6 +189,71 @@ fn app_name(bundle_path: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Bundles along a path that a person would recognise: apps, XPC services
+/// and extensions. Frameworks are plumbing and left out.
+fn bundles(path: &str) -> Vec<(usize, &str)> {
+    let mut end = 0;
+    let mut found = Vec::new();
+    for part in path.split('/') {
+        end += part.len() + 1;
+        if [".app", ".xpc", ".appex"].iter().any(|ext| part.ends_with(ext)) {
+            found.push((end - 1, part));
+        }
+    }
+    found
+}
+
+/// A path short enough to read in one line: the outer bundle and the nested
+/// bundle the program runs from, or the plain path with `~` for home.
+/// "/Applications/ChatGPT.app › Codex (Service).app"
+pub fn path_summary(path: &str) -> String {
+    let found = bundles(path);
+    let shown = match (found.first(), found.last()) {
+        (Some(&(outer_end, _)), Some(&(_, inner))) if found.len() > 1 => format!("{} › {inner}", &path[..outer_end]),
+        (Some(&(outer_end, _)), _) => path[..outer_end].to_string(),
+        _ => path.to_string(),
+    };
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && shown.starts_with(&home) => format!("~{}", &shown[home.len()..]),
+        _ => shown,
+    }
+}
+
+/// The nested bundle a helper runs from inside its app, if any.
+pub fn nested_bundle(path: &str) -> Option<String> {
+    let found = bundles(path);
+    (found.len() > 1).then(|| found.last().unwrap().1.to_string())
+}
+
+/// Programs whose files don't name them well, grouped under one name.
+fn known_tool(path: &str) -> Option<&'static str> {
+    // Claude Code runs as `…/claude/versions/2.1.300` from the installer and
+    // as `…/Claude/claude-code/<version>/…/claude.app` inside the desktop app.
+    (path.contains("/claude/versions/") || path.contains("/Claude/claude-code/")).then_some("Claude Code")
+}
+
+/// A readable name for a program outside an app bundle.
+fn tool_name(file_name: &str) -> String {
+    // Reverse-DNS names (com.apple.Virtualization.VirtualMachine): keep the
+    // last part and space out its words.
+    let looks_reverse_dns = file_name.matches('.').count() >= 2
+        && file_name.split('.').all(|part| part.chars().next().is_some_and(|c| c.is_ascii_alphabetic()));
+    if !looks_reverse_dns {
+        return file_name.to_string();
+    }
+    let last = file_name.rsplit('.').next().unwrap_or(file_name);
+    let mut name = String::new();
+    let chars: Vec<char> = last.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+        if i > 0 && c.is_uppercase() && (chars[i - 1].is_lowercase() || next_lower) {
+            name.push(' ');
+        }
+        name.push(c);
+    }
+    name
+}
+
 /// Group processes into apps. Returns (app_key -> pids) by walking each
 /// process's bundle path first, then its parent chain.
 pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
@@ -175,7 +282,9 @@ pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
     };
 
     for p in procs {
-        let key = if let Some(root) = bundle_root(&p.exe_path) {
+        let key = if let Some(tool) = known_tool(&p.exe_path) {
+            format!("proc:{tool}")
+        } else if let Some(root) = bundle_root(&p.exe_path) {
             root
         } else if let Some(k) = resolve(p.pid, &belong, &by_pid) {
             k
@@ -195,7 +304,7 @@ pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
                 .entry(key.clone())
                 .or_insert_with(|| app_name(&key, &p.comm));
         } else {
-            let n = key.trim_start_matches("proc:").to_string();
+            let n = tool_name(key.trim_start_matches("proc:"));
             app_name_of.entry(key.clone()).or_insert(n);
         }
     }
@@ -228,6 +337,72 @@ pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_code_copies_group_under_one_name() {
+        let proc = |pid, path: &str| super::ProcInfo { pid, ppid: 1, exe_path: path.into(), ..Default::default() };
+        let groups = super::group_procs(&[
+            proc(10, "/Users/x/.local/share/claude/versions/2.1.300"),
+            proc(11, "/Users/x/Library/Application Support/Claude/claude-code/2.1.295/9d64/claude.app/Contents/MacOS/claude"),
+            proc(12, "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine"),
+        ]);
+        let names: Vec<_> = groups.iter().map(|g| (g.name.as_str(), g.pids.len())).collect();
+        assert!(names.contains(&("Claude Code", 2)), "{names:?}");
+        assert!(names.contains(&("Virtual Machine", 1)), "{names:?}");
+    }
+
+    #[test]
+    fn long_paths_are_summarised() {
+        let helper = "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/155.0/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)";
+        assert_eq!(super::path_summary(helper), "/Applications/ChatGPT.app › Codex (Service).app");
+        assert_eq!(super::nested_bundle(helper).as_deref(), Some("Codex (Service).app"));
+        let main = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
+        assert_eq!(super::path_summary(main), "/Applications/CuaDriver.app");
+        assert_eq!(super::nested_bundle(main), None);
+        assert_eq!(super::path_summary("/usr/libexec/trustd"), "/usr/libexec/trustd");
+    }
+
+    #[test]
+    fn plain_names_stay_as_they_are() {
+        assert_eq!(super::tool_name("iconservicesagent"), "iconservicesagent");
+        assert_eq!(super::tool_name("node"), "node");
+        assert_eq!(super::tool_name("2.1.300"), "2.1.300");
+        assert_eq!(super::tool_name("com.apple.WebKit.WebContent"), "Web Content");
+    }
+
+    #[test]
+    fn procargs_layout_is_parsed_and_bounded() {
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/bin/node\0\0\0node\0/opt/gemini\0HOME=/x\0");
+        assert_eq!(super::parse_procargs(&buf), Some(vec!["node".into(), "/opt/gemini".into()]));
+        let mut short = 3i32.to_ne_bytes().to_vec();
+        short.extend_from_slice(b"/bin/x\0x\0");
+        assert_eq!(super::parse_procargs(&short), None);
+        assert_eq!(super::parse_procargs(&[1, 0]), None);
+    }
+
+    /// Apple silicon only: a virtual Mac may report no energy at all.
+    #[test]
+    #[ignore = "needs Apple silicon hardware"]
+    fn native_own_energy_rises_with_work() {
+        let pid = std::process::id() as i32;
+        let before = super::proc_rusage(pid).expect("own rusage").ri_energy_nj;
+        let start = std::time::Instant::now();
+        let mut x = 0u64;
+        while start.elapsed() < std::time::Duration::from_millis(300) {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+        }
+        std::hint::black_box(x);
+        let after = super::proc_rusage(pid).unwrap().ri_energy_nj;
+        let watts = (after - before) as f64 / 0.3 / 1e9;
+        assert!(watts > 0.01 && watts < 50., "one busy core drew {watts:.3} W");
+    }
+
+    #[test]
+    fn own_arguments_are_readable() {
+        let args = super::proc_args(std::process::id() as i32).expect("own argv");
+        assert!(!args.is_empty());
+    }
+
     #[test]
     fn own_working_directory_is_not_truncated() {
         let actual = super::proc_cwd(std::process::id() as i32);

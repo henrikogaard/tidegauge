@@ -4,7 +4,8 @@ use crate::locale::text as l;
 use rusqlite::{params, Connection, OpenFlags};
 
 pub const BUCKETS: usize = 180;
-pub const RANGES: [(u32, (&str, &str)); 4] = [
+pub const RANGES: [(u32, (&str, &str)); 5] = [
+    (1, ("1 h", "1 t")),
     (12, ("12 h", "12 t")),
     (24, ("24 h", "24 t")),
     (168, ("7 d", "7 d")),
@@ -63,6 +64,23 @@ impl Metric {
         }
     }
 
+    /// A stable name for exported files, the same in every language.
+    pub fn id(self, app: bool) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::DiskRead if app => "disk_io",
+            Self::DiskRead => "disk_read",
+            Self::DiskWrite => "disk_write",
+            Self::Download if app => "network_io",
+            Self::Download => "download",
+            Self::Upload => "upload",
+            Self::Gpu => "gpu",
+            Self::Battery => "battery",
+            Self::Power => "power",
+        }
+    }
+
     fn keys(self) -> (&'static str, &'static str) {
         match self {
             Self::Cpu => ("cpu", ""),
@@ -104,6 +122,9 @@ pub struct Data {
     pub apps: Vec<String>,
     pub start: f64,
     pub end: f64,
+    /// The first sample this source ever recorded, when that falls inside
+    /// the range: recording began then, so the plot is empty before it.
+    pub recording_began: Option<f64>,
 }
 
 pub fn load(request: &Request) -> Result<Data, String> {
@@ -120,14 +141,21 @@ pub fn load(request: &Request) -> Result<Data, String> {
     query().map_err(read_error)
 }
 
+/// One app's CPU and memory over the last hour, for its row in Apps &
+/// processes. Same rules as History: gaps stay gaps.
+pub fn app_hour(app: &str) -> Result<(Data, Data), String> {
+    let request = |metric| Request { metric, hours: 1, app: Some(app.to_owned()), end: crate::metrics::now_unix() };
+    Ok((load(&request(Metric::Cpu))?, load(&request(Metric::Memory))?))
+}
+
 fn read_error(error: rusqlite::Error) -> String {
     if matches!(error, rusqlite::Error::SqliteFailure(code, _) if matches!(code.code, rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase))
     {
         l("The history database is damaged. Back it up before recovery; refreshing will not repair it.", "Historikkdatabasen er skadet. Ta en sikkerhetskopi før gjenoppretting; oppdatering reparerer ikke databasen.").into()
     } else {
         l(
-            "History could not be read. Try Refresh.",
-            "Historikken kunne ikke leses. Prøv Oppdater.",
+            "History could not be read. Tidegauge tries again in a minute.",
+            "Historikken kunne ikke leses. Tidegauge prøver igjen om et minutt.",
         )
         .into()
     }
@@ -194,10 +222,218 @@ pub fn query_connection(c: &Connection, request: &Request) -> rusqlite::Result<D
             data.counts[index] = count;
         }
     }
+    // The real first sample of this source, not a bucket boundary: any
+    // system metric for System, the app's own rows for an app.
+    let first: Option<f64> = match &request.app {
+        Some(app) => c.query_row("SELECT MIN(ts) FROM app_metric WHERE app = ?1", params![app], |r| r.get(0))?,
+        None => c.query_row("SELECT MIN(ts) FROM metric", [], |r| r.get(0))?,
+    };
+    data.recording_began = first.filter(|ts| *ts > data.start && *ts < data.end);
     Ok(data)
 }
 
+/// The local calendar day of `ts`, "YYYY-MM-DD".
+pub fn local_day(ts: f64) -> String {
+    format_time(ts, c"%Y-%m-%d")
+}
+
+/// One recorded day of battery health.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatteryDay {
+    pub day: String,
+    pub health: f64,
+    pub cycles: Option<i64>,
+}
+
+/// The year up to the latest recorded day, oldest first: by calendar date,
+/// so days Tidegauge did not run never push recent days out.
+pub fn battery_days_connection(c: &Connection) -> rusqlite::Result<Vec<BatteryDay>> {
+    let mut statement = c.prepare(
+        "SELECT day, health, cycles FROM battery_daily
+         WHERE health > 0 AND health < 1e300
+           AND day >= date((SELECT MAX(day) FROM battery_daily WHERE health > 0 AND health < 1e300), '-365 days')
+         ORDER BY day",
+    )?;
+    let rows = statement
+        .query_map([], |r| Ok(BatteryDay { day: r.get(0)?, health: r.get(1)?, cycles: r.get(2)? }))?
+        .collect();
+    rows
+}
+
+/// The battery days for the Battery page, read off the UI thread: the page
+/// gets the last result at once, and a read older than ten minutes starts
+/// a new one in the background.
+pub fn battery_days() -> Vec<BatteryDay> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static CACHE: OnceLock<Mutex<(Option<Instant>, Vec<BatteryDay>)>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new((None, Vec::new())));
+    let mut guard = cache.lock().unwrap();
+    if guard.0.is_none_or(|at| at.elapsed() > Duration::from_secs(600)) {
+        guard.0 = Some(Instant::now());
+        std::thread::spawn(move || {
+            let path = crate::history::database_path();
+            let read = || -> rusqlite::Result<Vec<BatteryDay>> {
+                let c = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                c.busy_timeout(Duration::from_millis(500))?;
+                battery_days_connection(&c)
+            };
+            // An older database has no such table yet: no days, not an error.
+            if let Ok(days) = read() {
+                cache.lock().unwrap().1 = days;
+            }
+        });
+    }
+    guard.1.clone()
+}
+
+/// The days from the first recorded one to the last, with `None` for a day
+/// Tidegauge did not run, so the chart shows gaps as gaps.
+pub fn battery_series(days: &[BatteryDay]) -> Vec<Option<f64>> {
+    let parse = |d: &str| {
+        let mut parts = d.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+        let (y, m, day) = (parts.next()??, parts.next()??, parts.next()??);
+        // Days since 1970-01-01 for a proleptic Gregorian date.
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let doy = (153 * ((m + 9) % 12) + 2) / 5 + day - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        Some(era * 146_097 + doe - 719_468)
+    };
+    let (Some(first), Some(last)) = (days.first().and_then(|d| parse(&d.day)), days.last().and_then(|d| parse(&d.day))) else {
+        return Vec::new();
+    };
+    // Anchored at the latest day: at most a year, and the newest always in.
+    let first = first.max(last - 365);
+    let mut series = vec![None; (last - first + 1).max(0) as usize];
+    for d in days {
+        if let Some(n) = parse(&d.day).filter(|n| *n >= first) {
+            if let Some(slot) = series.get_mut((n - first) as usize) {
+                *slot = Some(d.health);
+            }
+        }
+    }
+    series
+}
+
+/// Every recorded sample in the request's range, oldest first, under the
+/// same rules as the chart: no legacy placeholders, no unvalidated power.
+pub fn samples_connection(c: &Connection, request: &Request) -> rusqlite::Result<Vec<(f64, f64)>> {
+    if !RANGES.iter().any(|(h, _)| *h == request.hours) || !request.end.is_finite() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let start = request.end - f64::from(request.hours) * 3600.;
+    let map = |r: &rusqlite::Row| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?));
+    if let Some(app) = &request.app {
+        let column = match request.metric {
+            Metric::Cpu => "cpu",
+            Metric::Memory => "mem",
+            Metric::DiskRead => "disk",
+            Metric::Download => "net",
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        };
+        let sql = format!("SELECT ts, {column} FROM app_metric WHERE ts >= ?1 AND ts < ?2 AND app = ?3 AND {column} >= 0 AND {column} < 1e300 ORDER BY ts");
+        let mut statement = c.prepare(&sql)?;
+        let rows = statement.query_map(params![start, request.end, app], map)?.collect();
+        rows
+    } else {
+        let (key, legacy) = request.metric.keys();
+        let mut statement = c.prepare(
+            "SELECT ts, value FROM metric m WHERE ts >= ?1 AND ts < ?2 AND value >= 0 AND value < 1e300
+             AND (metric = ?3 OR (metric = ?4 AND ?4 != '' AND value > 0
+                 AND NOT EXISTS (SELECT 1 FROM metric newer WHERE newer.ts = m.ts AND newer.metric = ?3)))
+             ORDER BY ts",
+        )?;
+        let rows = statement.query_map(params![start, request.end, key, legacy], map)?.collect();
+        rows
+    }
+}
+
+/// The samples as CSV: one row each, local time first, with the source,
+/// metric and unit spelled out so the file stands on its own.
+pub fn csv(request: &Request, samples: &[(f64, f64)]) -> String {
+    let app = request.app.is_some();
+    let source = cell(request.app.as_deref().unwrap_or("System"));
+    let (metric, unit) = (request.metric.id(app), request.metric.unit(app));
+    let mut out = String::from("local_time,unix_time,source,metric,unit,value\n");
+    for (ts, value) in samples {
+        out.push_str(&format!("{},{ts},{source},{metric},{unit},{value}\n", format_time(*ts, c"%Y-%m-%d %H:%M:%S")));
+    }
+    out
+}
+
+/// A quoted text cell. A name starting like a formula gets a leading
+/// apostrophe, so a spreadsheet shows it as text instead of running it.
+fn cell(text: &str) -> String {
+    let text = if text.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{text}") } else { text.to_string() };
+    format!("\"{}\"", text.replace('"', "\"\""))
+}
+
+/// A new file in `dir` named `name`, or "name 2.csv", "name 3.csv"… when
+/// that is taken, so an earlier export is never overwritten.
+fn create_new(dir: &std::path::Path, name: &str) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    let stem = name.strip_suffix(".csv").unwrap_or(name);
+    for n in 1..100 {
+        let path = if n == 1 { dir.join(name) } else { dir.join(format!("{stem} {n}") + ".csv") };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
+}
+
+/// Writes the request's samples to a CSV file in Downloads and returns it.
+pub fn export(request: &Request) -> Result<std::path::PathBuf, String> {
+    let path = crate::history::database_path();
+    let samples = if path.exists() {
+        let read = || -> rusqlite::Result<Vec<(f64, f64)>> {
+            let mut c = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            c.busy_timeout(std::time::Duration::from_millis(500))?;
+            let transaction = c.transaction()?;
+            samples_connection(&transaction, request)
+        };
+        read().map_err(read_error)?
+    } else {
+        Vec::new()
+    };
+    let downloads = directories::UserDirs::new()
+        .and_then(|d| d.download_dir().map(std::path::Path::to_path_buf))
+        .ok_or_else(|| l("Downloads could not be found.", "Fant ikke Nedlastinger.").to_string())?;
+    let failed = |_| l("The file could not be saved in Downloads.", "Filen kunne ikke lagres i Nedlastinger.").to_string();
+    let (path, mut file) = create_new(&downloads, &file_name(request)).map_err(failed)?;
+    std::io::Write::write_all(&mut file, csv(request, &samples).as_bytes()).map_err(failed)?;
+    Ok(path)
+}
+
+/// "Tidegauge Safari cpu 12h 2026-10-16 0815.csv"; no slashes or colons from
+/// an app's name reach the file system.
+fn file_name(request: &Request) -> String {
+    let app = request.app.is_some();
+    let source: String = request
+        .app
+        .as_deref()
+        .unwrap_or("System")
+        .chars()
+        .map(|c| if matches!(c, '/' | ':' | '\\') || c.is_control() { '-' } else { c })
+        .collect();
+    let parts = [
+        "Tidegauge".to_string(),
+        source.trim().to_string(),
+        request.metric.id(app).to_string(),
+        request.hours.to_string() + "h",
+        format_time(request.end, c"%Y-%m-%d %H%M"),
+    ];
+    parts.join(" ") + ".csv"
+}
+
 pub fn local_time(ts: f64) -> String {
+    format_time(ts, c"%Y-%m-%d %H:%M")
+}
+
+fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
     let time = ts as libc::time_t;
     let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
     let mut output = [0u8; 48];
@@ -208,7 +444,7 @@ pub fn local_time(ts: f64) -> String {
         let size = libc::strftime(
             output.as_mut_ptr().cast(),
             output.len(),
-            c"%Y-%m-%d %H:%M".as_ptr(),
+            format.as_ptr(),
             &date,
         );
         String::from_utf8_lossy(&output[..size]).into_owned()
@@ -228,8 +464,8 @@ mod tests {
         assert_eq!(
             read_error(rusqlite::Error::InvalidQuery),
             l(
-                "History could not be read. Try Refresh.",
-                "Historikken kunne ikke leses. Prøv Oppdater."
+                "History could not be read. Tidegauge tries again in a minute.",
+                "Historikken kunne ikke leses. Tidegauge prøver igjen om et minutt."
             )
         );
     }
@@ -272,6 +508,16 @@ mod tests {
     }
 
     #[test]
+    fn recording_start_is_the_first_real_sample() {
+        let c = database();
+        let r = Request { metric: Metric::Cpu, hours: 12, app: None, end: 43200. };
+        c.execute_batch("INSERT INTO metric VALUES(5000.5,'memory',1),(9000,'cpu',2);").unwrap();
+        assert_eq!(query_connection(&c, &r).unwrap().recording_began, Some(5000.5), "any metric marks the start, not the bucket");
+        c.execute("INSERT INTO metric VALUES(-10,'memory',1)", []).unwrap();
+        assert_eq!(query_connection(&c, &r).unwrap().recording_began, None, "recording began before the range");
+    }
+
+    #[test]
     fn legacy_optional_zeros_and_synthetic_power_are_not_measurements() {
         let c = database();
         c.execute_batch("INSERT INTO metric VALUES(0,'gpu',0),(240,'gpu',20),(480,'gpu_measured',0),(480,'gpu',99),(0,'power',5);").unwrap();
@@ -289,6 +535,96 @@ mod tests {
             .values
             .iter()
             .all(Option::is_none));
+    }
+
+    #[test]
+    fn the_hour_range_uses_twenty_second_intervals() {
+        let c = database();
+        c.execute_batch("INSERT INTO app_metric VALUES(10,'Editor',5,1,0,0,0),(15,'Editor',15,1,0,0,0),(25,'Editor',30,1,0,0,0);").unwrap();
+        let r = Request { metric: Metric::Cpu, hours: 1, app: Some("Editor".into()), end: 3600. };
+        let d = query_connection(&c, &r).unwrap();
+        assert_eq!(d.values.len(), BUCKETS);
+        assert_eq!(&d.values[..3], &[Some(10.), Some(30.), None], "0–20 s averages two samples, 20–40 s holds one");
+    }
+
+    #[test]
+    fn battery_days_keep_gaps_between_recorded_days() {
+        let day = |d: &str, h: f64| BatteryDay { day: d.into(), health: h, cycles: None };
+        let series = battery_series(&[day("2026-02-27", 99.), day("2026-03-01", 98.), day("2026-03-02", 97.5)]);
+        assert_eq!(series, [Some(99.), None, Some(98.), Some(97.5)], "Feb 28 is a gap, and the year has no Feb 29");
+        assert!(battery_series(&[]).is_empty());
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE battery_daily(day TEXT PRIMARY KEY, ts REAL, health REAL, cycles INTEGER, full_mah INTEGER, design_mah INTEGER);
+            INSERT INTO battery_daily VALUES('2026-03-02',0,97.5,12,0,0),('2026-03-01',0,98,11,0,0),('2026-03-03',0,0,13,0,0);").unwrap();
+        let days = battery_days_connection(&c).unwrap();
+        assert_eq!(days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(), ["2026-03-01", "2026-03-02"], "oldest first, no zero health");
+        assert_eq!(days[1].cycles, Some(12));
+    }
+
+    #[test]
+    fn a_year_and_more_with_gaps_keeps_the_newest_days() {
+        let day = |d: &str, h: f64| BatteryDay { day: d.into(), health: h, cycles: None };
+        let series = battery_series(&[day("2025-01-01", 100.), day("2026-03-01", 95.), day("2026-03-02", 94.)]);
+        assert_eq!(series.len(), 366);
+        assert_eq!(series.last(), Some(&Some(94.)), "the newest day is on the chart");
+        assert_eq!(series.iter().flatten().count(), 2, "the day older than a year is left out");
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE battery_daily(day TEXT PRIMARY KEY, ts REAL, health REAL, cycles INTEGER, full_mah INTEGER, design_mah INTEGER);
+            INSERT INTO battery_daily VALUES('2025-01-01',0,100,1,0,0),('2026-03-01',0,95,2,0,0),('2026-03-02',0,94,3,0,0);").unwrap();
+        let days = battery_days_connection(&c).unwrap();
+        assert_eq!(days.first().map(|d| d.day.as_str()), Some("2026-03-01"), "labels start inside the year shown");
+    }
+
+    #[test]
+    fn exports_hold_every_sample_in_range_and_no_placeholders() {
+        let c = database();
+        c.execute_batch(
+            "INSERT INTO metric VALUES(-1,'cpu',9),(10,'cpu',5),(20,'cpu',0),(30,'gpu',0),(40,'gpu',20),(3600,'cpu',7);
+             INSERT INTO app_metric VALUES(15,'Editor',12.5,2048,0,0,0),(25,'Other',1,1,0,0,0);",
+        )
+        .unwrap();
+        let mut r = Request { metric: Metric::Cpu, hours: 1, app: None, end: 3600. };
+        assert_eq!(samples_connection(&c, &r).unwrap(), [(10., 5.), (20., 0.)], "start in, end out, zero kept");
+        r.metric = Metric::Gpu;
+        assert_eq!(samples_connection(&c, &r).unwrap(), [(40., 20.)], "a legacy zero is not a sample");
+        r.metric = Metric::Memory;
+        r.app = Some("Editor".into());
+        let samples = samples_connection(&c, &r).unwrap();
+        assert_eq!(samples, [(15., 2048.)]);
+        let text = csv(&r, &samples);
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("local_time,unix_time,source,metric,unit,value"));
+        assert!(lines.next().unwrap().ends_with(",15,\"Editor\",memory,B,2048"));
+        r.metric = Metric::Power;
+        assert!(samples_connection(&c, &r).is_err(), "per-app power is not exported");
+    }
+
+    #[test]
+    fn formula_like_names_are_kept_as_text() {
+        for name in ["=HYPERLINK(\"x\")", "+1", "-2", "@SUM(A1)"] {
+            assert!(cell(name).starts_with("\"'"), "{name} → {}", cell(name));
+        }
+        assert_eq!(cell("Safari"), "\"Safari\"");
+    }
+
+    #[test]
+    fn a_second_export_gets_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("tidegauge-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (first, _) = create_new(&dir, "Tidegauge x.csv").unwrap();
+        std::fs::write(&first, "kept").unwrap();
+        let (second, _) = create_new(&dir, "Tidegauge x.csv").unwrap();
+        assert_eq!(second.file_name().unwrap(), "Tidegauge x 2.csv");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "kept", "the first export is untouched");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn export_names_are_safe_and_quotes_are_escaped() {
+        let r = Request { metric: Metric::Cpu, hours: 12, app: Some("a/b:\"c\"".into()), end: 0. };
+        let name = file_name(&r);
+        assert!(name.starts_with("Tidegauge a-b-\"c\" cpu 12h ") && name.ends_with(".csv"), "{name}");
+        assert!(csv(&r, &[(1., 2.)]).contains(",\"a/b:\"\"c\"\"\","));
     }
 
     #[test]

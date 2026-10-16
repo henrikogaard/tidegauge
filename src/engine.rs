@@ -70,7 +70,11 @@ pub struct AudioInfo {
     pub device_muted: Option<bool>,
     pub can_volume: bool,
     pub can_mute: bool,
-    pub devices: Vec<String>,
+    /// Every output device, by id and name, for choosing the default.
+    pub outputs: Vec<(u32, String)>,
+    /// The default input device (microphone) and every input device.
+    pub input: crate::audio::OutputState,
+    pub inputs: Vec<(u32, String)>,
     pub apps: Vec<AudioApp>,
 }
 
@@ -182,6 +186,10 @@ pub struct Snapshot {
     pub bt: BtInfo,
     pub projects: Vec<ProjectGroup>,
     pub apps: Vec<AppGroup>,
+    /// Every sampled process, for per-process rows and quit actions.
+    pub procs: Vec<crate::processes::ProcInfo>,
+    pub agents: Vec<crate::agents::Session>,
+    pub plans: crate::agents::Plans,
     pub process_groups: Vec<crate::process_activity::ProcessGroup>,
     pub resource_activity: Vec<crate::resource_activity::Activity>,
     pub proc_count: usize,
@@ -190,8 +198,8 @@ pub struct Snapshot {
     pub power_w: Option<f64>,
     pub power_hist: Hist,
     pub thermal: String,
-    pub neural: Option<f64>,
-    pub neural_hist: Hist,
+    /// The same state as a level, 0 nominal to 3 critical, for alerts.
+    pub thermal_level: Option<u8>,
     pub uptime: Duration,
     pub alerts: Vec<Alert>,
 }
@@ -224,6 +232,9 @@ impl Default for Snapshot {
             bt: BtInfo::default(),
             projects: Vec::new(),
             apps: Vec::new(),
+            procs: Vec::new(),
+            agents: Vec::new(),
+            plans: crate::agents::Plans::Missing,
             process_groups: Vec::new(),
             resource_activity: Vec::new(),
             proc_count: 0,
@@ -232,8 +243,7 @@ impl Default for Snapshot {
             power_w: None,
             power_hist: h(),
             thermal: "—".into(),
-            neural: None,
-            neural_hist: h(),
+            thermal_level: None,
             uptime: Duration::ZERO,
             alerts: Vec::new(),
         }
@@ -317,6 +327,7 @@ impl Engine {
         s.cpu_hist.push(s.cpu_pct);
         s.load_avg = load_avg();
         s.thermal = thermal_state().unwrap_or("—").into();
+        s.thermal_level = crate::metrics::thermal_level();
 
         // Memory
         s.mem = mem_stats();
@@ -361,6 +372,9 @@ impl Engine {
 
         // GPU
         s.gpu = gpu_stats();
+        let power = crate::gpu_power::sample();
+        s.gpu.power_w = power.gpu;
+        s.gpu.neural_engine_w = power.neural_engine;
         if let Some(utilization) = s.gpu.utilization {
             s.gpu_hist.push(utilization);
         }
@@ -390,7 +404,7 @@ impl Engine {
                         (cpu_ns.saturating_sub(pv.cpu_ns)) as f64 / dt / 1e9 * 100.0,
                         (r.ri_diskio_bytesread.saturating_sub(pv.disk_read)) as f64 / dt,
                         (r.ri_diskio_byteswritten.saturating_sub(pv.disk_write)) as f64 / dt,
-                        (r.ri_billed_energy.saturating_sub(pv.energy_nj)) as f64 / dt / 1e9,
+                        (r.ri_energy_nj.saturating_sub(pv.energy_nj)) as f64 / dt / 1e9,
                     )
                 } else {
                     (0.0, 0.0, 0.0, 0.0)
@@ -402,7 +416,7 @@ impl Engine {
                     cpu_ns as f64 / life / 1e9 * 100.0,
                     r.ri_diskio_bytesread as f64 / life,
                     r.ri_diskio_byteswritten as f64 / life,
-                    r.ri_billed_energy as f64 / life / 1e9,
+                    r.ri_energy_nj as f64 / life / 1e9,
                 )
             };
             let exe = proc_path(pid);
@@ -421,7 +435,7 @@ impl Engine {
                 mem_bytes: r.ri_phys_footprint,
                 disk_read: r.ri_diskio_bytesread,
                 disk_write: r.ri_diskio_byteswritten,
-                energy_nj: r.ri_billed_energy,
+                energy_nj: r.ri_energy_nj,
                 interrupt_wakeups: Some(r.ri_interrupt_wkups),
                 cpu_pct: cpu_pct.clamp(0.0, 3200.0),
                 read_rate: rr.max(0.0),
@@ -434,7 +448,7 @@ impl Engine {
                     cpu_ns,
                     disk_read: r.ri_diskio_bytesread,
                     disk_write: r.ri_diskio_byteswritten,
-                    energy_nj: r.ri_billed_energy,
+                    energy_nj: r.ri_energy_nj,
                     start_unix: start,
                 },
             );
@@ -448,15 +462,20 @@ impl Engine {
         s.resource_activity = self.resource_tracker.sample(&procs, self.started.elapsed().as_secs_f64(), now_unix());
         s.apps = regroup_apps(&procs, &s.apps);
         s.app_count = s.apps.len();
+        s.procs = procs.clone();
 
         // attach per-app network via nettop (every other tick to save CPU)
         if self.tick % 2 == 0 {
             crate::projects::apply_nettop(&mut s.apps);
         }
 
-        // Battery terminal power and per-process estimates are not system power.
-        s.power_w = None;
-        s.power_hist.pts.clear();
+        // System power is the power controller's own measurement; battery
+        // terminal power and per-app energy are not the whole Mac.
+        s.power_w = s.battery.system_power_w;
+        match s.power_w {
+            Some(w) => s.power_hist.push(w),
+            None => s.power_hist.pts.clear(),
+        }
 
         s.audio = AudioInfo {
             apps: audio_apps,
@@ -469,14 +488,16 @@ impl Engine {
         s.audio.device_muted = output.muted;
         s.audio.can_volume = output.can_volume;
         s.audio.can_mute = output.can_mute;
+        s.audio.input = crate::audio::device_state(crate::audio::Direction::Input);
         if self.tick % 10 == 0 {
-            s.audio.devices = crate::audio::output_device_names();
+            s.audio.outputs = crate::audio::devices(crate::audio::Direction::Output);
+            s.audio.inputs = crate::audio::devices(crate::audio::Direction::Input);
         }
         s.bt = bt;
         s.projects = crate::projects::detect_projects(&procs);
+        s.agents = crate::agents::sessions(&procs, &s.projects);
+        s.plans = crate::agents::plans();
         s.uptime = self.started.elapsed();
-
-        s.neural = None; // No public ANE counter; leave the history empty.
     }
 }
 
@@ -503,18 +524,20 @@ pub fn fmt_bytes(n: f64) -> String {
     }
     let mut v = n;
     let mut i = 0;
-    while v >= 1024.0 && i < 4 {
+    // Divide by 1024 but move up a unit once the shown value would reach
+    // four digits ("1007 B", "1010 KB" become "0.98 KB", "0.99 MB").
+    while v >= if i == 0 { 1000.0 } else { 999.5 } && i < 4 {
         v /= 1024.0;
         i += 1;
     }
     if i == 0 {
         format!("{} B", v as u64)
     } else if v >= 100.0 {
-        format!("{:.0} {}", v, U[i])
+        format!("{} {}", crate::locale::number(v, 0), U[i])
     } else if v >= 10.0 {
-        format!("{:.1} {}", v, U[i])
+        format!("{} {}", crate::locale::number(v, 1), U[i])
     } else {
-        format!("{:.2} {}", v, U[i])
+        format!("{} {}", crate::locale::number(v, 2), U[i])
     }
 }
 pub fn fmt_rate(n: f64) -> String {
@@ -522,30 +545,40 @@ pub fn fmt_rate(n: f64) -> String {
 }
 pub fn fmt_watts(w: f64) -> String {
     if w < 0.05 {
-        "0.00 W".into()
+        format!("{} W", crate::locale::number(0.0, 2))
     } else if w < 10.0 {
-        format!("{:.2} W", w)
+        format!("{} W", crate::locale::number(w, 2))
     } else {
-        format!("{:.1} W", w)
+        format!("{} W", crate::locale::number(w, 1))
     }
 }
+/// Signed power with one decimal, for flows that can reverse ("+1.5 W").
+pub fn fmt_signed_watts(w: f64) -> String {
+    crate::locale::decimal(format!("{w:+.1} W"))
+}
+pub fn fmt_volts(v: f64) -> String {
+    format!("{} V", crate::locale::number(v, 2))
+}
+pub fn fmt_celsius(c: f64) -> String {
+    format!("{} °C", crate::locale::number(c, 1))
+}
+/// "2 h 5 min" / "2 t 5 min" (Norwegian hours are "timer", abbreviated "t").
+pub fn fmt_hours_minutes(minutes: i64) -> String {
+    format!("{} {} {} min", minutes / 60, l("h", "t"), minutes % 60)
+}
 pub fn fmt_pct(v: f64) -> String {
-    format!("{:.0}%", v)
+    crate::locale::percent(v, 0)
 }
 pub fn fmt_up(secs: f64) -> String {
     let s = secs as u64;
     if s < 90 {
-        let n = s.max(1);
-        format!("{} {}", n, if n == 1 { l("second", "sekund") } else { l("seconds", "sekunder") })
+        crate::locale::count(s.max(1), "second", "seconds", "sekund", "sekunder")
     } else if s < 5400 {
-        let n = s / 60;
-        format!("{} {}", n, if n == 1 { l("minute", "minutt") } else { l("minutes", "minutter") })
+        crate::locale::count(s / 60, "minute", "minutes", "minutt", "minutter")
     } else if s < 129600 {
-        let n = s / 3600;
-        format!("{} {}", n, if n == 1 { l("hour", "time") } else { l("hours", "timer") })
+        crate::locale::count(s / 3600, "hour", "hours", "time", "timer")
     } else {
-        let n = s / 86400;
-        format!("{} {}", n, if n == 1 { l("day", "døgn") } else { l("days", "dager") })
+        crate::locale::count(s / 86400, "day", "days", "døgn", "dager")
     }
 }
 
@@ -600,6 +633,32 @@ mod tests {
             };
             assert_eq!(fmt_up(secs), format!("{} {}", value, l(en, no)), "secs={secs}");
         }
+    }
+
+    #[test]
+    fn byte_values_never_show_four_digits() {
+        let point = if crate::locale::is_norwegian() { "," } else { "." };
+        assert_eq!(fmt_bytes(999.0), "999 B");
+        assert_eq!(fmt_bytes(1007.0), format!("0{point}98 KB"));
+        assert_eq!(fmt_rate(1007.0), format!("0{point}98 KB/s"));
+        assert_eq!(fmt_bytes(1010.0 * 1024.), format!("0{point}99 MB"));
+        assert_eq!(fmt_bytes(999.6 * 1024.), format!("0{point}98 MB"));
+        assert_eq!(fmt_bytes(1024.0), format!("1{point}00 KB"));
+    }
+
+    #[test]
+    fn displayed_numbers_follow_the_language() {
+        let nb = crate::locale::is_norwegian();
+        let (point, pct, hours) = if nb { (',', " %", "t") } else { ('.', "%", "h") };
+        assert_eq!(fmt_bytes(6.74 * 1024. * 1024. * 1024.), format!("6{point}74 GB"));
+        assert_eq!(fmt_bytes(512.0 * 1024.), "512 KB");
+        assert_eq!(fmt_rate(1.5 * 1024. * 1024.), format!("1{point}50 MB/s"));
+        assert_eq!(fmt_watts(12.34), format!("12{point}3 W"));
+        assert_eq!(fmt_signed_watts(-1.25), format!("-1{point}2 W"));
+        assert_eq!(fmt_celsius(32.5), format!("32{point}5 °C"));
+        assert_eq!(fmt_volts(12.6), format!("12{point}60 V"));
+        assert_eq!(fmt_pct(50.0), format!("50{pct}"));
+        assert_eq!(fmt_hours_minutes(125), format!("2 {hours} 5 min"));
     }
 
     #[test]

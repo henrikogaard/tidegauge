@@ -5,7 +5,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyClass;
 use objc2::msg_send;
-use objc2_foundation::{NSBundle, NSLocale, NSObject, NSString};
+use objc2_foundation::{NSBundle, NSObject, NSString};
 use std::cell::RefCell;
 
 const CHECK_FOR_UPDATES: &str = "Check for Updates…";
@@ -71,13 +71,26 @@ pub fn request_check() -> Result<(), Availability> {
     })
 }
 
+/// Ask for an update check from the dashboard or the menu-bar panel. Sparkle
+/// may show its own dialog, so the check runs from the main loop outside any
+/// UI update, like the native menu.
+pub static CHECK_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn ask_for_check() {
+    CHECK_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The installed app's version, as its bundle states it.
+pub fn app_version() -> Option<String> {
+    NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))
+        .and_then(|value| value.downcast::<NSString>().ok())
+        .map(|value| value.to_string())
+}
+
 /// Return the localized title used by the native menu item.
 pub fn check_for_updates_title() -> &'static str {
-    if is_norwegian() {
-        CHECK_FOR_UPDATES_NO
-    } else {
-        CHECK_FOR_UPDATES
-    }
+    crate::locale::text(CHECK_FOR_UPDATES, CHECK_FOR_UPDATES_NO)
 }
 
 /// Return the retained Sparkle controller for native target/action wiring.
@@ -96,10 +109,10 @@ impl UpdaterState {
         match mode(&bundle) {
             Some(BundleMode::Preview) => Self {
                 availability: Availability::Disabled {
-                    reason: localized(
+                    reason: crate::locale::text(
                         "Updater is disabled in preview bundles.",
                         "Oppdatering er deaktivert i forhåndsvisninger.",
-                    ),
+                    ).to_string(),
                 },
                 controller: None,
                 _framework: None,
@@ -118,10 +131,10 @@ impl UpdaterState {
             },
             _ => Self {
                 availability: Availability::Unavailable {
-                    reason: localized(
+                    reason: crate::locale::text(
                         "Sparkle is available only in a packaged app bundle.",
                         "Sparkle er bare tilgjengelig i en pakket app.",
-                    ),
+                    ).to_string(),
                 },
                 controller: None,
                 _framework: None,
@@ -154,24 +167,24 @@ fn load(bundle: &NSBundle) -> Result<(Retained<NSBundle>, Retained<NSObject>), S
             "/Contents/Frameworks/Sparkle.framework",
         ));
     let framework = NSBundle::bundleWithPath(&framework_path)
-        .ok_or_else(|| localized("Sparkle.framework is missing from the app bundle.", "Sparkle.framework mangler i apppakken."))?;
+        .ok_or_else(|| crate::locale::text("Sparkle.framework is missing from the app bundle.", "Sparkle.framework mangler i apppakken.").to_string())?;
     unsafe {
         framework
             .loadAndReturnError()
-            .map_err(|_| localized("Sparkle.framework could not be loaded.", "Sparkle.framework kunne ikke lastes."))?;
+            .map_err(|_| crate::locale::text("Sparkle.framework could not be loaded.", "Sparkle.framework kunne ikke lastes.").to_string())?;
     }
     let class = AnyClass::get(c"SPUStandardUpdaterController").ok_or_else(|| {
-        localized(
+        crate::locale::text(
             "Sparkle updater controller is unavailable.",
             "Sparkle-oppdateringskontrolleren er ikke tilgjengelig.",
-        )
+        ).to_string()
     })?;
     let allocated: *mut NSObject = unsafe { msg_send![class, alloc] };
     if allocated.is_null() {
-        return Err(localized(
+        return Err(crate::locale::text(
             "Sparkle updater could not be allocated.",
             "Sparkle-oppdateringen kunne ikke allokeres.",
-        ));
+        ).to_string());
     }
     let controller: *mut NSObject = unsafe {
         msg_send![
@@ -182,40 +195,21 @@ fn load(bundle: &NSBundle) -> Result<(Retained<NSBundle>, Retained<NSObject>), S
         ]
     };
     let controller = unsafe { Retained::from_raw(controller) }.ok_or_else(|| {
-        localized(
+        crate::locale::text(
             "Sparkle updater could not be initialised.",
             "Sparkle-oppdateringen kunne ikke startes.",
-        )
+        ).to_string()
     })?;
     Ok((framework, controller))
 }
 
 fn not_initialized() -> Availability {
     Availability::Unavailable {
-        reason: localized(
+        reason: crate::locale::text(
             "Updater has not been initialised.",
             "Oppdateringen er ikke initialisert.",
-        ),
+        ).to_string(),
     }
-}
-
-fn localized(english: &str, norwegian: &str) -> String {
-    if is_norwegian() {
-        norwegian.to_string()
-    } else {
-        english.to_string()
-    }
-}
-
-fn is_norwegian() -> bool {
-    let Some(language) = NSLocale::preferredLanguages().firstObject() else {
-        return false;
-    };
-    let language = language.to_string();
-    matches!(
-        language.split(['-', '_']).next(),
-        Some("nb") | Some("nn") | Some("no")
-    )
 }
 
 #[cfg(test)]

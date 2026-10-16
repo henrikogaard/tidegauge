@@ -147,6 +147,7 @@ class AppcastValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             shutil.copyfile(REPO_ROOT / "packaging/release.sh", packaging / "release.sh")
+            shutil.copyfile(REPO_ROOT / "packaging/retry.sh", packaging / "retry.sh")
             create_dmg = packaging / "create-dmg.sh"
             create_dmg.write_text(
                 "#!/bin/bash\n"

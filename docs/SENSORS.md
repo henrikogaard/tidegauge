@@ -81,6 +81,30 @@ For layout only, use `TIDEGAUGE_SENSOR_PREVIEW=1 cargo run` and open CPU.
 The explicit sample-data banner is mandatory. This debug-only fixture does not
 change collection or history and cannot be enabled in a release build.
 
+### Named sensors
+
+The CPU page leads with temperatures macOS names itself, read from the HID
+sensor service (`src/named_sensors.rs`): the chip's die sensors (`PMU tdie`),
+the SSD (`NAND`) and the battery (`gas gauge battery`). Calibration channels
+(`PMU tcal`) are left out. Run the read-only probe with
+`cargo test named_sensors::tests::native_named_sensors_read -- --ignored --nocapture`.
+
+### Checked on hardware
+
+**Mac17,7, Apple M5 Max, macOS 27.0.1 (26A434), 2026-10-16, on AC power, busy
+(a virtual Mac running).**
+
+| What | Result |
+|---|---|
+| SMC inventory | 342 temperature channels, 320 with values; `source: Ready` without extra permissions |
+| Fans | `F0Ac` 4,950 RPM, `F1Ac` 5,347 RPM under load; no independent source without root |
+| Battery | SMC `TB0T`/`TB1T`/`TB2T` 36.6/36.6/36.0 °C, identical to the HID battery sensors |
+| Chip | HID die sensors 54–62 °C (42 sensors); SMC `Tp*` 63–72 °C. Different sensors, both plausible |
+| Suspect SMC keys | `Tf*` read up to 99 °C and a `TV*` key reads 1.0: not confirmed as temperatures, so the headline no longer uses the SMC list |
+
+Not yet checked: idle readings, sleep/wake recovery, and fan RPM against an
+independent reader (`sudo powermetrics --samplers smc` needs the owner).
+
 Physical CPU/GPU locations, temperature accuracy, fan RPM, wake recovery, and
 new-chip compatibility remain unvalidated until compared with an independent
 native diagnostic on the actual machine. Record model, chip, macOS version,
