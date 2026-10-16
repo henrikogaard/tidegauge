@@ -373,6 +373,7 @@ pub fn history_panel(
         Metric::Gpu => t::Metric::Gpu,
         Metric::Battery => t::Metric::Battery,
         Metric::DiskRead | Metric::DiskWrite => t::Metric::Disk,
+        Metric::ChipTemp | Metric::SsdTemp | Metric::BatteryTemp => t::Metric::Cpu,
         _ => t::Metric::Network,
     }
     .accent(dark);

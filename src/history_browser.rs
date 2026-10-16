@@ -23,10 +23,13 @@ pub enum Metric {
     Gpu,
     Battery,
     Power,
+    ChipTemp,
+    SsdTemp,
+    BatteryTemp,
 }
 
 impl Metric {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::Cpu,
         Self::Memory,
         Self::DiskRead,
@@ -36,6 +39,9 @@ impl Metric {
         Self::Gpu,
         Self::Battery,
         Self::Power,
+        Self::ChipTemp,
+        Self::SsdTemp,
+        Self::BatteryTemp,
     ];
     pub const APP: [Self; 4] = [Self::Cpu, Self::Memory, Self::DiskRead, Self::Download];
 
@@ -52,6 +58,9 @@ impl Metric {
             Self::Gpu => "GPU",
             Self::Battery => l("Battery", "Batteri"),
             Self::Power => l("Power", "Effekt"),
+            Self::ChipTemp => l("Chip °C", "Brikke °C"),
+            Self::SsdTemp => "SSD °C",
+            Self::BatteryTemp => l("Battery °C", "Batteri °C"),
         }
     }
 
@@ -60,6 +69,7 @@ impl Metric {
             Self::Memory if app => "B",
             Self::Cpu | Self::Memory | Self::Gpu | Self::Battery => "%",
             Self::Power => "W",
+            Self::ChipTemp | Self::SsdTemp | Self::BatteryTemp => "°C",
             _ => "B/s",
         }
     }
@@ -78,6 +88,9 @@ impl Metric {
             Self::Gpu => "gpu",
             Self::Battery => "battery",
             Self::Power => "power",
+            Self::ChipTemp => "chip_temperature",
+            Self::SsdTemp => "ssd_temperature",
+            Self::BatteryTemp => "battery_temperature",
         }
     }
 
@@ -92,6 +105,9 @@ impl Metric {
             Self::Gpu => ("gpu_measured", "gpu"),
             Self::Battery => ("batt_measured", "batt"),
             Self::Power => ("power_measured", ""),
+            Self::ChipTemp => ("temp_chip", ""),
+            Self::SsdTemp => ("temp_ssd", ""),
+            Self::BatteryTemp => ("temp_battery", ""),
         }
     }
 }

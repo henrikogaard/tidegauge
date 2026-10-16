@@ -36,6 +36,9 @@ pub struct Settings {
     pub alert_thermal_enabled: bool,
     /// Alert when macOS reports warning or critical memory pressure.
     pub alert_pressure_enabled: bool,
+    /// Alert when the chip's hottest sensor stays above `alert_temp_c`.
+    pub alert_temp_enabled: bool,
+    pub alert_temp_c: f64,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
@@ -68,6 +71,8 @@ impl Default for Settings {
             alert_low_disk_enabled: false,
             alert_thermal_enabled: false,
             alert_pressure_enabled: false,
+            alert_temp_enabled: false,
+            alert_temp_c: CHIP_TEMP_DEFAULT,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
@@ -132,6 +137,7 @@ impl Settings {
         self.alert_mem_pct = valid_threshold(self.alert_mem_pct, 92.);
         self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
         self.alert_app_mem_gb = valid_app_memory_gb(self.alert_app_mem_gb);
+        self.alert_temp_c = valid_chip_temp(self.alert_temp_c);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
     }
@@ -199,6 +205,17 @@ pub fn valid_app_threshold(value: f64) -> f64 {
         value.clamp(APP_CPU_RANGE.0, APP_CPU_RANGE.1)
     } else {
         APP_CPU_DEFAULT
+    }
+}
+
+pub const CHIP_TEMP_DEFAULT: f64 = 95.;
+pub const CHIP_TEMP_RANGE: (f64, f64) = (70., 105.);
+
+pub fn valid_chip_temp(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(CHIP_TEMP_RANGE.0, CHIP_TEMP_RANGE.1)
+    } else {
+        CHIP_TEMP_DEFAULT
     }
 }
 

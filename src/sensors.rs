@@ -55,6 +55,9 @@ pub struct SensorSnapshot {
     pub source: SourceState,
     pub temperatures: Vec<Reading>,
     pub fans: Vec<Reading>,
+    /// Each fan's lowest and highest speed (`F0Mn`/`F0Mx`), in the order of
+    /// `fans`; either is `None` when the controller does not report it.
+    pub fan_limits: Vec<(Option<f64>, Option<f64>)>,
     pub fan_count: Option<u8>,
     pub collected_at: Option<Instant>,
     pub discovering: bool,
@@ -100,10 +103,17 @@ pub fn start() {
                             smc.key_count = count;
                             let opened = Instant::now();
                             while opened.elapsed() < Duration::from_secs(60) {
+                                let before = (std::time::SystemTime::now(), Instant::now());
                                 let mut sample = smc.sample();
                                 sample.named = crate::named_sensors::read();
                                 *out.lock().unwrap() = sample;
                                 std::thread::sleep(Duration::from_secs(2));
+                                // After sleep, start over with fresh connections
+                                // rather than trust ones opened before it.
+                                if slept(before.0.elapsed().unwrap_or_default(), before.1.elapsed()) {
+                                    crate::named_sensors::reset();
+                                    break;
+                                }
                             }
                             known_keys = smc.temperature_keys.clone();
                             if smc
@@ -374,15 +384,22 @@ impl Smc {
         let fan_count = self.read(fcc(b"FNum")).and_then(|(info, bytes)| {
             (info.data_type == fcc(b"ui8 ") && info.size == 1 && bytes[0] <= 16).then_some(bytes[0])
         });
+        let fan_key = |index: u8, kind: &[u8; 2]| [b'F', b"0123456789ABCDEF"[index as usize], kind[0], kind[1]];
         let fans = (0..fan_count.unwrap_or(0))
             .map(|index| {
-                let key = [b'F', b"0123456789ABCDEF"[index as usize], b'A', b'c'];
+                let key = fan_key(index, b"Ac");
                 Reading {
                     key: String::from_utf8_lossy(&key).into_owned(),
                     value: self
                         .read(fcc(&key))
                         .and_then(|(info, bytes)| decode_fan(info, &bytes)),
                 }
+            })
+            .collect();
+        let fan_limits = (0..fan_count.unwrap_or(0))
+            .map(|index| {
+                let mut limit = |kind: &[u8; 2]| self.read(fcc(&fan_key(index, kind))).and_then(|(info, bytes)| decode_fan(info, &bytes));
+                (limit(b"Mn"), limit(b"Mx"))
             })
             .collect();
         SensorSnapshot {
@@ -393,6 +410,7 @@ impl Smc {
             },
             temperatures,
             fans,
+            fan_limits,
             fan_count,
             collected_at: Some(collected_at),
             discovering: self
@@ -402,6 +420,18 @@ impl Smc {
             named: Vec::new(),
         }
     }
+}
+
+/// Whether the Mac slept between two points: wall time ran on while the
+/// monotonic clock, which stops during sleep, did not.
+pub fn slept(wall: Duration, monotonic: Duration) -> bool {
+    wall.saturating_sub(monotonic) > Duration::from_secs(20)
+}
+
+/// Where a fan's speed sits between its lowest and highest, 0–100 %.
+pub fn fan_share(rpm: f64, min: Option<f64>, max: Option<f64>) -> Option<f64> {
+    let (min, max) = (min.unwrap_or(0.), max?);
+    (max > min && rpm.is_finite()).then(|| ((rpm - min) / (max - min) * 100.).clamp(0., 100.))
 }
 
 fn accept_temperature_key(keys: &mut Vec<u32>, key: u32) -> bool {
@@ -467,6 +497,7 @@ pub fn preview() -> Option<SensorSnapshot> {
                     value: Some(0.0),
                 },
             ],
+            fan_limits: vec![(Some(1200.0), Some(6000.0)), (Some(0.0), Some(5000.0))],
             fan_count: Some(2),
             collected_at: Some(Instant::now()),
             ..Default::default()
@@ -520,6 +551,22 @@ mod tests {
         assert_eq!(decode(info, &bytes), None);
         assert!(!valid_temperature(0.0));
         assert!(!valid_temperature(999.0));
+    }
+
+    #[test]
+    fn sleep_is_seen_as_wall_time_without_monotonic_time() {
+        assert!(!slept(Duration::from_secs(2), Duration::from_secs(2)));
+        assert!(!slept(Duration::from_secs(10), Duration::from_secs(2)), "a little scheduling slack is not sleep");
+        assert!(slept(Duration::from_secs(600), Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn fan_share_places_speed_between_its_limits() {
+        assert_eq!(fan_share(4950., Some(2300.), Some(6550.)), Some(62.35294117647059));
+        assert_eq!(fan_share(1000., Some(2300.), Some(6550.)), Some(0.));
+        assert_eq!(fan_share(4000., None, Some(8000.)), Some(50.));
+        assert_eq!(fan_share(4000., Some(2000.), None), None, "no top, no share");
+        assert_eq!(fan_share(4000., Some(5000.), Some(5000.)), None);
     }
 
     #[test]

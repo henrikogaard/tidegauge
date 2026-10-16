@@ -21,6 +21,8 @@ const THERMAL_DURATION: f64 = 10.0;
 /// Warning (2) or critical (4) memory pressure, as macOS numbers them.
 const PRESSURE_LEVEL: f64 = 1.5;
 const PRESSURE_DURATION: f64 = 20.0;
+/// Long enough that a burst while compiling does not count.
+const TEMPERATURE_DURATION: f64 = 30.0;
 
 #[derive(Default)]
 struct Episode {
@@ -106,6 +108,7 @@ pub struct AlertEngine {
     low_disk: Episode,
     thermal: Episode,
     pressure: Episode,
+    temperature: Episode,
 }
 
 impl AlertEngine {
@@ -120,6 +123,7 @@ impl AlertEngine {
             low_disk: Episode::default(),
             thermal: Episode::default(),
             pressure: Episode::default(),
+            temperature: Episode::default(),
         }
     }
 
@@ -331,6 +335,26 @@ impl AlertEngine {
                     )
                 }
                 .into(),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        if let Some(alert) = self.temperature.check(
+            at,
+            settings.alert_temp_enabled,
+            crate::settings::valid_chip_temp(settings.alert_temp_c),
+            snapshot.temps.chip,
+            TEMPERATURE_DURATION,
+            |value| Alert {
+                metric: "temperature".into(),
+                message: format!(
+                    "{}: {} {}",
+                    crate::locale::text("Chip running hot", "Brikken er varm"),
+                    crate::engine::fmt_celsius(value),
+                    crate::locale::text("for over 30 seconds", "i over 30 sekunder")
+                ),
                 at,
             },
         ) {
@@ -555,6 +579,25 @@ mod tests {
         for at in [200., 300.] {
             s.at = at;
             assert!(engine.check(&s, &settings).is_empty(), "an unknown level never alerts");
+        }
+    }
+
+    #[test]
+    fn chip_temperature_alerts_after_thirty_seconds_above_the_level() {
+        let settings = Settings { alert_temp_enabled: true, alert_temp_c: 90., ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.);
+        s.temps.chip = Some(92.);
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 29.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 30.;
+        assert_eq!(engine.check(&s, &settings)[0].metric, "temperature");
+        let mut engine = AlertEngine::new();
+        s.temps.chip = None;
+        for at in [100., 200.] {
+            s.at = at;
+            assert!(engine.check(&s, &settings).is_empty(), "no reading is not a hot chip");
         }
     }
 
