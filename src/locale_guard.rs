@@ -551,6 +551,8 @@ fn has_digit_before(text: &str, mark: &str) -> bool {
 }
 
 fn has_decimal_point(text: &str) -> bool {
+    // A macOS version ("macOS 14.2") is a version, not a decimal.
+    let text = text.replace("macOS 14.2", "macOS");
     let chars: Vec<char> = text.chars().collect();
     chars
         .windows(3)

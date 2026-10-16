@@ -12,6 +12,10 @@ hardware acceptance checks. A merge and a published release are separate events.
   Battery °C), and an opt-in alert fires when the chip stays above a chosen
   temperature (95 °C by default) for 30 seconds.
 - Each fan shows where its speed sits between its own lowest and highest.
+- Per-app volume and mute on the Sound page (macOS 14.2 or later), with a
+  level meter for each app Tidegauge carries. macOS asks once for permission
+  to capture audio; nothing is recorded or saved, and at 100% or when
+  Tidegauge quits the app plays on its own again.
 
 ### Fixed
 

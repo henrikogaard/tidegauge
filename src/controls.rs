@@ -792,6 +792,64 @@ pub fn audio_input(
     card
 }
 
+/// Per-app volume: mute, a step down, the level and a step up, plus a meter
+/// of the app's own sound while Tidegauge carries it.
+pub fn app_volume_controls(
+    app: &crate::engine::AudioApp,
+    level: Option<crate::app_volume::Level>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+) -> Div {
+    let accent = t::Metric::Sound.accent(dark);
+    let volume = level.map(|l| l.volume).unwrap_or(1.0);
+    let object = app.object;
+    // Steps read the volume when clicked, so quick clicks each count.
+    let step = move |target: Entity<TideGaugeView>, delta: f32| {
+        move |_: &mut Window, cx: &mut App| {
+            app_volume_action(&target, cx, move || {
+                let now = crate::app_volume::levels().get(&object).map(|l| l.volume).unwrap_or(1.0);
+                crate::app_volume::set_volume(object, ((now + delta).clamp(0., 1.) * 10.).round() / 10.)
+            });
+        }
+    };
+    let set = move |target: Entity<TideGaugeView>, value: f32| {
+        move |_: &mut Window, cx: &mut App| {
+            app_volume_action(&target, cx, move || crate::app_volume::set_volume(object, value));
+        }
+    };
+    let muted = volume <= 0.;
+    let mut row = div().flex().items_center().gap_2();
+    if let Some(level) = level.filter(|l| l.live) {
+        row = row.child(
+            div()
+                .w(px(48.))
+                .h(px(4.))
+                .rounded(t::RADIUS_CHIP)
+                .bg(t::card_hi(dark))
+                .child(div().h_full().rounded(t::RADIUS_CHIP).bg(accent).w(relative(level.peak.clamp(0., 1.)))),
+        );
+    }
+    row.child(button_accent(format!("app-mute-{object}"), if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") }, muted, dark, accent, set(this.clone(), if muted { 1.0 } else { 0.0 })))
+        .child(button(format!("app-down-{object}"), "−", false, dark, step(this.clone(), -0.1)))
+        .child(div().w(px(40.)).flex().justify_center().text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(crate::engine::fmt_pct(volume as f64 * 100.)))
+        .child(button(format!("app-up-{object}"), "+", false, dark, step(this, 0.1)))
+}
+
+fn app_volume_action(this: &Entity<TideGaugeView>, cx: &mut App, action: impl FnOnce() -> Result<(), String> + Send + 'static) {
+    this.update(cx, |view, cx| {
+        view.audio_error = None;
+        cx.spawn(async move |this, cx| {
+            let (result, levels) = smol::unblock(move || (action(), crate::app_volume::levels())).await;
+            let _ = this.update(cx, |view, cx| {
+                view.audio_error = result.err();
+                view.snap.audio.levels = levels;
+                cx.notify();
+            });
+        })
+        .detach();
+    });
+}
+
 fn audio_action(
     this: &Entity<TideGaugeView>,
     cx: &mut App,

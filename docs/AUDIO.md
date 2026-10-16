@@ -1,6 +1,6 @@
 # Audio capabilities
 
-Tidegauge uses public CoreAudio properties. It neither installs an audio driver nor creates a process tap, records audio, or requests microphone/screen-recording access. Per-app volume is therefore not offered: macOS has no public per-app volume, and doing it needs audio routing (a driver or process taps with recording permission).
+Tidegauge uses public CoreAudio properties and, for per-app volume only, Core Audio process taps (macOS 14.2+). It installs no audio driver and records nothing.
 
 ## Output controls
 
@@ -16,13 +16,17 @@ The Sound page lists every device with output or input streams (`kAudioDevicePro
 
 The default **input** gets the same volume and mute handling as the output, in the input scope: read, capability-checked, and identity-checked on every write. Changing an input's volume or mute does not capture audio and needs no microphone permission.
 
+## Per-app volume
+
+Changing an app's volume creates a private process tap on that app's audio process with "muted when tapped", joins it to the default output in a private aggregate device, and plays the tapped stereo mix to that output at the chosen volume (0–100 %, steps of 10 %). Nothing is written to disk. At 100 % the tap and aggregate device are removed and the app plays on its own again; when Tidegauge quits, every tap ends with it. The taps follow the default output and end when their process does. The first tap makes macOS ask for audio-capture permission, with the reason from `NSAudioCaptureUsageDescription`. The row's meter shows the app's own level while Tidegauge carries it. Tidegauge never lists or taps its own audio.
+
 ## Per-process limits
 
 The process-object list and `kAudioProcessPropertyIsRunningInput` / `IsRunningOutput` describe I/O activity, not a signal level or volume. Process activity APIs require compatible macOS versions (process objects were introduced in macOS 14.2); an empty result on an older system does not establish that all apps are silent.
 
 `kAudioDevicePropertyProcessMute` (`appm`) applies to the **calling process** on a real device, not to an arbitrary process object/PID. It cannot implement another app's mute button. `kAudioHardwarePropertyProcessIsAudible` (`pmut`) likewise concerns the caller. The earlier unused setter and indicative-level path have been removed.
 
-Arbitrary per-app volume/mute needs a separately designed routing solution, permissions, and verification that only the intended output changes. That remains open; unsupported controls are not wired to an unrelated API. No synthetic level meter is displayed.
+Per-app volume and mute therefore use process taps (see Per-app volume above), not these properties. The per-app meter shows the tapped signal's own peak, only while Tidegauge carries that app.
 
 ## Native references
 

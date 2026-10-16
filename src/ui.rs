@@ -1386,7 +1386,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
         ],
         Tab::Sound => vec![
             l("Controls the default output and input devices, not individual apps. Choosing a device here is the same as choosing it in macOS Sound settings.", "Styrer standard lydutgang og -inngang, ikke enkeltapper. Å velge en enhet her er det samme som å velge den i lydinnstillingene i macOS."),
-            l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd."),
+            l("Per-app volume passes that app's sound through Tidegauge (macOS 14.2 or later): macOS asks once for permission to capture audio. Nothing is recorded or saved, and at 100% the app plays on its own again. If Tidegauge quits, every app plays on its own.", "Volum per app sender appens lyd gjennom Tidegauge (macOS 14.2 eller nyere): macOS ber én gang om tillatelse til å fange opp lyd. Ingenting tas opp eller lagres, og på 100 % spiller appen på egen hånd igjen. Avsluttes Tidegauge, spiller alle apper på egen hånd."),
         ],
         Tab::Bluetooth => vec![l(
             "Battery levels show only for devices that report them.",
@@ -3335,7 +3335,10 @@ fn sound_tab(
                                 .child(a.name.clone()),
                         )
                         .child(div().text_xs().text_color(t::ink_dim(dark)).child(status)),
-                ),
+                )
+                .when(a.running_output || s.audio.levels.contains_key(&a.object), |d| {
+                    d.child(crate::controls::app_volume_controls(a, s.audio.levels.get(&a.object).copied(), dark, this.clone()))
+                }),
         );
     }
     let idle_line = (idle > 0).then(|| {

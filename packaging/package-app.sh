@@ -132,6 +132,7 @@ plutil -insert CFBundleShortVersionString -string "$VERSION" "$PLIST"
 plutil -insert CFBundleVersion -string "$BUILD_VERSION" "$PLIST"
 plutil -insert LSMinimumSystemVersion -string 11.0 "$PLIST"
 plutil -insert LSUIElement -bool YES "$PLIST"
+plutil -insert NSAudioCaptureUsageDescription -string "Tidegauge changes the volume of single apps by passing their sound through itself. Nothing is recorded or saved." "$PLIST"
 plutil -insert TidegaugeUpdaterMode -string "$MODE" "$PLIST"
 
 if [ "$MODE" = "production" ] || [ "$MODE" = "qa" ]; then

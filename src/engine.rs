@@ -56,6 +56,8 @@ pub struct DiskSample {
 #[derive(Clone, Default)]
 pub struct AudioApp {
     pub pid: i32,
+    /// The Core Audio process object, which per-app volume taps.
+    pub object: u32,
     pub name: String,
     pub icon_path: Option<String>,
     pub running_output: bool,
@@ -76,6 +78,8 @@ pub struct AudioInfo {
     pub input: crate::audio::OutputState,
     pub inputs: Vec<(u32, String)>,
     pub apps: Vec<AudioApp>,
+    /// Volumes Tidegauge holds per audio process object.
+    pub levels: std::collections::HashMap<u32, crate::app_volume::Level>,
 }
 
 #[derive(Clone, Default)]
@@ -483,8 +487,11 @@ impl Engine {
             None => s.power_hist.pts.clear(),
         }
 
+        // Taps follow their apps and the default output.
+        crate::app_volume::follow(&audio_apps.iter().map(|a| a.object).collect::<Vec<_>>());
         s.audio = AudioInfo {
             apps: audio_apps,
+            levels: crate::app_volume::levels(),
             ..s.audio.clone()
         };
         let output = crate::audio::output_state();
