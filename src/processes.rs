@@ -84,14 +84,16 @@ pub fn proc_bsd(pid: i32) -> Option<proc_bsdinfo> {
     }
 }
 
+/// Resource use for a process, in the version 6 layout. Where version 6 is
+/// not offered, the version 4 prefix is read and the energy fields stay zero.
 pub fn proc_rusage(pid: i32) -> Option<rusage_info_v4> {
     unsafe {
         let mut r: rusage_info_v4 = Default::default();
-        if proc_pid_rusage(pid, RUSAGE_INFO_V4, &mut r) >= 0 {
-            Some(r)
-        } else {
-            None
+        if proc_pid_rusage(pid, RUSAGE_INFO_V6, &mut r) >= 0 {
+            return Some(r);
         }
+        let mut r: rusage_info_v4 = Default::default();
+        (proc_pid_rusage(pid, RUSAGE_INFO_V4, &mut r) >= 0).then_some(r)
     }
 }
 
@@ -376,6 +378,23 @@ mod tests {
         short.extend_from_slice(b"/bin/x\0x\0");
         assert_eq!(super::parse_procargs(&short), None);
         assert_eq!(super::parse_procargs(&[1, 0]), None);
+    }
+
+    /// Apple silicon only: a virtual Mac may report no energy at all.
+    #[test]
+    #[ignore = "needs Apple silicon hardware"]
+    fn native_own_energy_rises_with_work() {
+        let pid = std::process::id() as i32;
+        let before = super::proc_rusage(pid).expect("own rusage").ri_energy_nj;
+        let start = std::time::Instant::now();
+        let mut x = 0u64;
+        while start.elapsed() < std::time::Duration::from_millis(300) {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+        }
+        std::hint::black_box(x);
+        let after = super::proc_rusage(pid).unwrap().ri_energy_nj;
+        let watts = (after - before) as f64 / 0.3 / 1e9;
+        assert!(watts > 0.01 && watts < 50., "one busy core drew {watts:.3} W");
     }
 
     #[test]

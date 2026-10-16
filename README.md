@@ -108,7 +108,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 - Project Stop rechecks ownership, start time, project eligibility, and a confirmed listening port. It requests termination with SIGTERM and reports whether the original process exited; it never escalates to force-kill. As with any PID-based API, validation and signaling are not an atomic operation.
 - Process signing metadata is fetched only on request and is not signature validation or a safety verdict. It never changes Quit/Stop eligibility. See [process semantics](docs/PROCESSES.md).
 - Sound controls apply to the default **media output**, not individual apps or the microphone. Unsupported device controls are unavailable. Per-app volume, mute, and signal meters remain deferred; no audio is captured. See [audio capabilities](docs/AUDIO.md).
-- Neural Engine usage is not measured. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
+- Neural Engine usage is not measured. GPU and battery detail depend on hardware and available system properties. Per-app watts are the energy macOS accounts to each process (Apple silicon), from its energy model rather than a meter.
 - Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
 - Launch at login is
   available on macOS 13+ only for a bundle installed in `/Applications` or
