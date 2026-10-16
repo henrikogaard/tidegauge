@@ -129,7 +129,6 @@ pub enum Metric {
     Sound,
     Bluetooth,
     Projects,
-    Neural,
     Power,
 }
 
@@ -146,7 +145,6 @@ impl Metric {
             (Metric::Sound, true) => 0xe87bcc,
             (Metric::Bluetooth, true) => 0x51c4df,
             (Metric::Projects, true) => 0xf28d60,
-            (Metric::Neural, true) => 0xc28df2,
             (Metric::Cpu, false) => 0x246fc7,
             (Metric::Memory, false) => 0x6550bb,
             (Metric::Gpu, false) => 0xb94378,
@@ -156,7 +154,6 @@ impl Metric {
             (Metric::Sound, false) => 0xab338c,
             (Metric::Bluetooth, false) => 0x087d99,
             (Metric::Projects, false) => 0xba4f22,
-            (Metric::Neural, false) => 0x8648b8,
         })
     }
     /// Softer version for chart fills.
