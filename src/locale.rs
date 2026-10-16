@@ -95,6 +95,27 @@ pub fn number(value: f64, decimals: usize) -> String {
     decimal(format!("{value:.decimals$}"))
 }
 
+fn whole_in(norwegian: bool, value: f64) -> String {
+    let digits = format!("{:.0}", value.abs());
+    let separator = if norwegian { '\u{a0}' } else { ',' };
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push(separator);
+        }
+        grouped.push(c);
+    }
+    if value.round() < 0. {
+        grouped.insert(0, '-');
+    }
+    grouped
+}
+
+/// A whole number with the language's thousands separator: "57,602" / "57 602".
+pub fn whole(value: f64) -> String {
+    whole_in(is_norwegian(), value)
+}
+
 fn percent_in(norwegian: bool, value: f64, decimals: usize, signed: bool) -> String {
     let digits = if signed {
         format!("{value:+.decimals$}")
@@ -145,6 +166,16 @@ mod tests {
         assert_eq!(decimal_in(false, "6.74 GB".into()), "6.74 GB");
         assert_eq!(decimal_in(true, "6.74 GB".into()), "6,74 GB");
         assert_eq!(decimal_in(true, "1500".into()), "1500");
+    }
+
+    #[test]
+    fn whole_numbers_group_thousands() {
+        assert_eq!(whole_in(false, 57602.), "57,602");
+        assert_eq!(whole_in(true, 57602.), "57\u{a0}602");
+        assert_eq!(whole_in(false, 999.), "999");
+        assert_eq!(whole_in(false, 1234567.), "1,234,567");
+        assert_eq!(whole_in(false, -0.2), "0", "no negative zero");
+        assert_eq!(whole_in(false, -1500.), "-1,500");
     }
 
     #[test]
