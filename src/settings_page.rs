@@ -17,6 +17,8 @@ use gpui_kit::*;
 pub struct Sliders {
     pub cpu: Entity<SliderState>,
     pub mem: Entity<SliderState>,
+    /// One app's CPU, which can pass 100 % across cores.
+    pub app: Entity<SliderState>,
     pub volume: Entity<SliderState>,
     /// When the volume was last dragged; the device's reading lags, so the
     /// slider isn't pulled back to it for a moment.
@@ -29,19 +31,20 @@ impl Sliders {
         let threshold = |value: f64| SliderState::new().min(10.).max(100.).step(5.).default_value(value as f32);
         let cpu = cx.new(|_| threshold(settings.alert_cpu_pct));
         let mem = cx.new(|_| threshold(settings.alert_mem_pct));
+        let (low, high) = crate::settings::APP_CPU_RANGE;
+        let app = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(10.).default_value(settings.alert_app_cpu_pct as f32));
         let volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
-        for (state, cpu_alert) in [(&cpu, true), (&mem, false)] {
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 3] = [
+            (&cpu, |s, v| s.alert_cpu_pct = v),
+            (&mem, |s, v| s.alert_mem_pct = v),
+            (&app, |s, v| s.alert_app_cpu_pct = v),
+        ];
+        for (state, set) in setters {
             cx.subscribe(state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
                 let value = match event {
                     SliderEvent::Change(value) | SliderEvent::Release(value) => value.end() as f64,
                 };
-                let saved = crate::settings::mutate(|s| {
-                    if cpu_alert {
-                        s.alert_cpu_pct = value;
-                    } else {
-                        s.alert_mem_pct = value;
-                    }
-                });
+                let saved = crate::settings::mutate(|s| set(s, value));
                 view.settings_error = saved.err().map(|_| {
                     l("Settings could not be saved. Try again.", "Innstillingene kunne ikke lagres. Prøv igjen.").to_string()
                 });
@@ -60,14 +63,18 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, volume, volume_touched: None }
+        Self { cpu, mem, app, volume, volume_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
     /// the person is moving them right now.
     pub fn sync(&self, view_volume: Option<f32>, window: &mut Window, cx: &mut App) {
         let settings = Settings::load();
-        for (state, value) in [(&self.cpu, settings.alert_cpu_pct as f32), (&self.mem, settings.alert_mem_pct as f32)] {
+        for (state, value) in [
+            (&self.cpu, settings.alert_cpu_pct as f32),
+            (&self.mem, settings.alert_mem_pct as f32),
+            (&self.app, settings.alert_app_cpu_pct as f32),
+        ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
             }
@@ -379,6 +386,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             None,
             settings.alert_network_enabled,
         ),
+        (
+            "app",
+            l("Any one app", "Én enkelt app"),
+            format!("{} {} {}", l("CPU above", "CPU over"), pct(settings.alert_app_cpu_pct), l("for 5 minutes", "i 5 minutter")),
+            Some(&view.sliders.app),
+            settings.alert_app_enabled,
+        ),
     ];
     group(
         l("Alerts", "Varsler"),
@@ -390,7 +404,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                     .items_center()
                     .gap(t::SPACE_4)
                     .when_some(threshold, |d, state| {
-                        let metric = if key == "cpu" { t::Metric::Cpu } else { t::Metric::Memory };
+                        let metric = if key == "mem" { t::Metric::Memory } else { t::Metric::Cpu };
                         d.child(slider(state, 140., metric.accent(dark)))
                     })
                     .child(preference_switch(
@@ -403,6 +417,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "cpu" => s.alert_cpu_enabled = value,
                             "mem" => s.alert_mem_enabled = value,
                             "disk" => s.alert_disk_enabled = value,
+                            "app" => s.alert_app_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));

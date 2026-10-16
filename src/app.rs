@@ -19,14 +19,20 @@ pub fn drain_alerts(settings: &Settings) -> Vec<Alert> {
             .lock()
             .unwrap(),
     );
-    alerts.retain(|alert| match alert.metric.as_str() {
+    alerts.retain(|alert| still_enabled(&alert.metric, settings));
+    alerts
+}
+
+/// Whether the switch behind an alert is still on when it is delivered.
+fn still_enabled(metric: &str, settings: &Settings) -> bool {
+    match metric {
         "cpu" => settings.alert_cpu_enabled,
         "memory" => settings.alert_mem_enabled,
         "disk" => settings.alert_disk_enabled,
         "network" => settings.alert_network_enabled,
+        app if app.starts_with("app:") => settings.alert_app_enabled,
         _ => false,
-    });
-    alerts
+    }
 }
 
 /// Background sampler: process/audio/projects every ~2s; BT every ~20s
@@ -180,5 +186,28 @@ pub fn toggle_panel(cx: &mut gpui_kit::App) {
         let _ = h2.update(cx, |_, window, _| {
             window.activate_window();
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::still_enabled;
+    use crate::settings::Settings;
+
+    #[test]
+    fn every_alert_kind_reaches_delivery_while_its_switch_is_on() {
+        let on = Settings {
+            alert_cpu_enabled: true,
+            alert_mem_enabled: true,
+            alert_disk_enabled: true,
+            alert_network_enabled: true,
+            alert_app_enabled: true,
+            ..Settings::default()
+        };
+        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy"] {
+            assert!(still_enabled(metric, &on), "{metric} was dropped");
+            assert!(!still_enabled(metric, &Settings::default()), "{metric} passed while off");
+        }
+        assert!(!still_enabled("unknown", &on));
     }
 }

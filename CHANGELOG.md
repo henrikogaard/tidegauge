@@ -19,6 +19,11 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Expanding an app in Apps & processes shows its CPU and memory over the last
   hour, with Open in History for longer ranges. History gains a 1-hour range
   ([#64](https://github.com/henrikogaard/tidegauge/pull/64)).
+- An alert for one busy app: when any single app stays above a CPU level
+  (80% of one core by default, up to 400%) for five minutes. Off by default;
+  turn it on in Settings → Alerts. Each app alerts once until it calms down or
+  quits, with its own ten-minute cooldown
+  ([#65](https://github.com/henrikogaard/tidegauge/pull/65)).
 
 ### Fixed
 
