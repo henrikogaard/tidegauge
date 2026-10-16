@@ -8,6 +8,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- An opt-in memory-pressure alert, when macOS reports warning or critical
+  pressure for 20 seconds. While it does, the menu-bar memory reading turns
+  orange or red.
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired
