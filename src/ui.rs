@@ -3167,12 +3167,65 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                 .child(stat_card(l("Full-charge capacity", "Fulladekapasitet"), b.full_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Design capacity", "Designkapasitet"), b.design_capacity_mah.map(|c| format!("{} mAh", c)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("macOS condition", "Tilstand fra macOS"), b.condition_label().into(), None, dark)))
+            .when(preview.is_none(), |d| d.child(battery_trend(dark)))
             .child(section_header(l("Electrical details", "Elektriske detaljer"), "", dark))
             .child(div().grid().grid_cols(4).gap_3()
                 .child(stat_card(l("Battery flow", "Batteristrøm"), b.power_w.map(fmt_signed_watts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Voltage", "Spenning"), b.voltage_v.map(fmt_volts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Current", "Strømstyrke"), b.current_ma.map(|a| format!("{:+} mA", a)).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Adapter rating", "Adapterkapasitet"), b.adapter_rating_w.map(|w| format!("{} W", w)).unwrap_or("—".into()), None, dark))))
+}
+
+/// Capacity health per day, kept by History beyond its 30 days, so wear
+/// shows over months. Days Tidegauge did not run are gaps.
+fn battery_trend(dark: bool) -> Div {
+    use crate::locale::text as l;
+    let days = crate::history_browser::battery_days();
+    let accent = Metric::Battery.accent(dark);
+    let (Some(first), Some(last)) = (days.first(), days.last()) else {
+        return card(dark).child(sub(l("Tidegauge keeps the battery's capacity health once a day while it runs; the trend shows here from the second day.", "Tidegauge tar vare på batteriets kapasitetshelse én gang om dagen mens det kjører; utviklingen vises her fra andre dag.")).text_color(t::ink_dim(dark)));
+    };
+    if days.len() < 2 {
+        return card(dark).child(sub(format!("{} {} · {}", l("Recorded since", "Registrert siden"), first.day, l("the trend shows from the second day.", "utviklingen vises fra andre dag."))).text_color(t::ink_dim(dark)));
+    }
+    // Wear is a few percent a year, invisible on a scale from zero, so the
+    // chart shows a labelled band from a round floor below the lowest day.
+    let low = days.iter().map(|d| d.health).fold(f64::MAX, f64::min);
+    let peak = days.iter().map(|d| d.health).fold(100., f64::max);
+    let floor = health_floor(low);
+    let series: Vec<Option<f64>> = crate::history_browser::battery_series(&days)
+        .into_iter()
+        .map(|v| v.map(|v| v - floor))
+        .collect();
+    let cycles = match (first.cycles, last.cycles) {
+        (Some(a), Some(b)) => format!(" · {} {a} → {b}", l("cycle count", "syklustall")),
+        _ => String::new(),
+    };
+    card(dark)
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .child(caption(l("Capacity health · per day", "Kapasitetshelse · per dag"), dark))
+                .child(sub(format!("{} → {}{cycles}", fmt_pct(first.health), fmt_pct(last.health)))),
+        )
+        .child(crate::controls::history_chart(&series, peak - floor, accent, 80.))
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .text_xs()
+                .text_color(t::ink_dim(dark))
+                .child(first.day.clone())
+                .child(format!("{} {}–{}", l("Scale", "Skala"), fmt_pct(floor), fmt_pct(peak)))
+                .child(last.day.clone()),
+        )
+}
+
+/// The bottom of the battery chart: ten points or more under the lowest
+/// day, on a multiple of ten, never below zero.
+fn health_floor(low: f64) -> f64 {
+    (((low - 5.) / 10.).floor() * 10.).clamp(0., 90.)
 }
 
 // ---------- sound ----------
@@ -3764,6 +3817,14 @@ pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn battery_chart_floor_sits_a_round_step_below_the_lowest_day() {
+        assert_eq!(super::health_floor(96.), 90.);
+        assert_eq!(super::health_floor(100.), 90.);
+        assert_eq!(super::health_floor(81.), 70.);
+        assert_eq!(super::health_floor(3.), 0.);
+    }
+
     use super::{
         ChartScale, MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
         temperature_display_caption, temperature_summary,

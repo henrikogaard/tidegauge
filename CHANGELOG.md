@@ -21,6 +21,9 @@ hardware acceptance checks. A merge and a published release are separate events.
   ⌃⌥⌘M in Settings → General → Open the panel. Off by default; it needs no
   Accessibility permission, and a shortcut another app holds is reported
   ([#70](https://github.com/henrikogaard/tidegauge/pull/70)).
+- The Battery page charts capacity health per day, kept once a day beyond
+  History's 30 days so wear shows over months, with the cycle count's change
+  ([#71](https://github.com/henrikogaard/tidegauge/pull/71)).
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired

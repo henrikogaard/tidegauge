@@ -40,6 +40,10 @@ Export CSV under the chart saves what History shows (the chosen range, source an
 
 Expanding an app in Apps & processes shows its CPU and memory over the last hour, read the same way as History (180 interval averages, gaps left blank) and reloaded every minute while the app stays expanded. The figure above each chart is the highest interval average, not a true peak. Open in History shows the same app there, at 1 hour.
 
+## Battery health
+
+On a Mac with a battery, History also keeps one row per local day in `battery_daily`: the day's latest capacity health (full-charge over design capacity), cycle count and both capacities. These rows are outside the 30-day pruning, because a battery wears over months, and are one small row a day. The Battery page charts the last year per day. Days Tidegauge did not run stay gaps, and the chart's band starts at a round floor below the lowest day, labelled as Scale. Health is only recorded when macOS reports it.
+
 ## Damaged databases
 
 SQLite corruption is reported separately from temporary read failures. Refreshing cannot repair a damaged database; the browser never repairs or replaces it automatically. Quit Tidegauge and preserve `history.db` together with any accompanying `history.db-wal` and `history.db-shm` files before attempting recovery. Work on a copy, not the only remaining database. Do not delete history merely to dismiss an error.

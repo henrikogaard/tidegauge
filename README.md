@@ -84,6 +84,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
 | Menu-bar panel | Live CPU, memory, network and disk with recent curves, AI plans, the busiest apps, and quick actions; optionally opened from any app with ⌃⌥⌘T or ⌃⌥⌘M (Settings → General) |
 | Overview | Favorite metric cards, busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
+| Battery health | Capacity health and cycle count kept once a day beyond History's 30 days, charted per day on the Battery page |
 | Metric pages | CPU, Memory, Disk, Network, GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
 | Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
