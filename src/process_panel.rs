@@ -544,6 +544,7 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
         .flex_col()
         .gap_1()
         .child(div().pt_1().pb_1().child(actions))
+        .when(!view.only_remaining, |d| d.child(app_hour(view, app, dark, this.clone())))
         .when_some(app.icon_path.clone(), |d, path| d.child(mono(path, dark)));
     for p in procs.iter().take(if all { total } else { HELPERS_SHOWN }) {
         detail = detail.child(process_row(view, p, app.icon_path.as_deref(), remaining.contains(&p.pid), dark, this.clone()));
@@ -573,6 +574,97 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
 
 /// Processes listed under an expanded app before "Show all".
 const HELPERS_SHOWN: usize = 12;
+
+/// The expanded app's last hour from local History.
+pub struct AppHistory {
+    pub app: String,
+    pub loaded_at: Instant,
+    pub data: Option<Result<(crate::history_browser::Data, crate::history_browser::Data), String>>,
+}
+
+/// The app whose hour should load now: the expanded one, when it has none
+/// yet, belongs to another app, or is a minute old.
+pub fn app_history_due(view: &TideGaugeView) -> Option<String> {
+    if view.destination() != crate::ui::Destination::Apps {
+        return None;
+    }
+    let key = view.expanded_process_group.as_deref()?;
+    let name = &view.snap.apps.iter().find(|a| a.key == key)?.name;
+    match &view.app_history {
+        Some(h) if h.app == *name && (h.data.is_none() || h.loaded_at.elapsed() < Duration::from_secs(60)) => None,
+        _ => Some(name.clone()),
+    }
+}
+
+pub fn load_app_history(this: &Entity<TideGaugeView>, app: String, cx: &mut App) {
+    this.update(cx, |view, cx| {
+        // A reload keeps the old charts up until the new ones arrive.
+        let keep = view.app_history.take().filter(|h| h.app == app).and_then(|h| h.data);
+        view.app_history = Some(AppHistory { app: app.clone(), loaded_at: Instant::now(), data: keep });
+        cx.spawn(async move |this, cx| {
+            let name = app.clone();
+            let result = smol::unblock(move || crate::history_browser::app_hour(&name)).await;
+            let _ = this.update(cx, |view, cx| {
+                if let Some(h) = view.app_history.as_mut().filter(|h| h.app == app) {
+                    h.data = Some(result);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    });
+}
+
+/// CPU and memory over the last hour, and a way into History for more.
+fn app_hour(view: &TideGaugeView, app: &AppGroup, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let data = view.app_history.as_ref().filter(|h| h.app == app.name).and_then(|h| h.data.as_ref());
+    let chart = |label: &str, values: &[Option<f64>], color: Hsla, format: &dyn Fn(f64) -> String, floor: f64| {
+        let peak = values.iter().flatten().copied().fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))));
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .text_size(t::TEXT_CAPTION)
+                    .text_color(t::ink_dim(dark))
+                    .child(label.to_string())
+                    .child(peak.map(|p| format!("{} {}", l("Highest average", "Høyeste snitt"), format(p))).unwrap_or_default()),
+            )
+            .child(crate::controls::history_chart(values, peak.unwrap_or(0.).max(floor), color, 44.))
+    };
+    let body = match data {
+        Some(Ok((cpu, mem))) if cpu.values.iter().chain(&mem.values).any(Option::is_some) => div()
+            .flex()
+            .gap_4()
+            .child(chart(l("CPU · last hour", "CPU · siste time"), &cpu.values, Metric::Cpu.accent(dark), &|v| crate::locale::percent(v, 1), 100.))
+            .child(chart(l("Memory · last hour", "Minne · siste time"), &mem.values, Metric::Memory.accent(dark), &|v| fmt_bytes(v), 1.)),
+        Some(Ok(_)) => sub(l("Nothing recorded for this app in the last hour. History records every ten seconds or so.", "Ingenting registrert for denne appen den siste timen. Historikken registrerer omtrent hvert tiende sekund.")).text_color(t::ink_dim(dark)),
+        Some(Err(error)) => sub(error.clone()).text_color(t::ink_dim(dark)),
+        None => sub(l("Loading the last hour…", "Laster siste time…")).text_color(t::ink_dim(dark)),
+    };
+    let name = app.name.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .py_1()
+        .child(body)
+        .child(div().flex().child(button(format!("app-history-{}", app.key), l("Open in History", "Åpne i Historikk"), false, dark, move |_, cx| {
+            this.update(cx, |v, _| {
+                v.history_request.app = Some(name.clone());
+                v.history_request.hours = 1;
+                if !crate::history_browser::Metric::APP.contains(&v.history_request.metric) {
+                    v.history_request.metric = crate::history_browser::Metric::Cpu;
+                }
+            });
+            crate::ui::navigate(&this, crate::ui::Destination::Tab(crate::ui::Tab::History), cx);
+        })))
+}
 
 /// The program's own name: macOS truncates `comm` to 16 characters.
 fn program_name(p: &ProcInfo) -> String {

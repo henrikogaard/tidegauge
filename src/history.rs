@@ -87,7 +87,7 @@ fn record_on(c: &Connection, s: &Snapshot) {
     if let Ok(mut st) = c.prepare(
         "INSERT OR REPLACE INTO app_metric(ts,app,cpu,mem,disk,net,power) VALUES(?,?,?,?,?,?,?)",
     ) {
-        for a in s.apps.iter().take(60) {
+        for a in recorded_apps(&s.apps) {
             let _ = st.execute(rusqlite::params![
                 ts,
                 a.name,
@@ -105,6 +105,26 @@ fn record_on(c: &Connection, s: &Snapshot) {
         let _ = c.execute("DELETE FROM app_metric WHERE ts < ?", [cutoff]);
     }
     let _ = transaction.commit();
+}
+
+/// The apps one tick records: the 60 using the most memory (the order
+/// `apps` arrives in), plus the busiest by CPU, disk and network, so an app
+/// that is busy but small is never left out of its own history.
+fn recorded_apps(apps: &[crate::processes::AppGroup]) -> Vec<&crate::processes::AppGroup> {
+    let mut chosen: Vec<&crate::processes::AppGroup> = apps.iter().take(60).collect();
+    let mut add_top = |n: usize, key: fn(&crate::processes::AppGroup) -> f64| {
+        let mut ranked: Vec<&crate::processes::AppGroup> = apps.iter().filter(|a| key(a) > 0.).collect();
+        ranked.sort_by(|a, b| key(b).total_cmp(&key(a)));
+        for app in ranked.into_iter().take(n) {
+            if !chosen.iter().any(|c| c.name == app.name) {
+                chosen.push(app);
+            }
+        }
+    };
+    add_top(20, |a| a.cpu_pct);
+    add_top(10, |a| a.disk_read_rate + a.disk_write_rate);
+    add_top(10, |a| a.net_in_rate + a.net_out_rate);
+    chosen
 }
 
 fn should_prune(ts: f64) -> bool {
@@ -139,6 +159,23 @@ pub fn series(metric: &str, secs: f64) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_small_apps_are_recorded_alongside_the_largest() {
+        let app = |name: &str, mem: u64, cpu: f64| crate::processes::AppGroup {
+            name: name.into(),
+            mem_bytes: mem,
+            cpu_pct: cpu,
+            ..Default::default()
+        };
+        // Arrives sorted by memory, as the engine delivers it.
+        let mut apps: Vec<_> = (0..70).map(|i| app(&format!("big{i}"), 1000 - i, 0.)).collect();
+        apps.push(app("busy-small", 1, 90.));
+        let names: Vec<&str> = recorded_apps(&apps).iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names.len(), 61);
+        assert!(names.contains(&"busy-small"), "a busy app with little memory is recorded");
+        assert!(!names.contains(&"big65"), "idle apps past the memory cut stay out");
+    }
 
     #[test]
     fn optional_history_records_measured_zero_not_unavailable_placeholders() {

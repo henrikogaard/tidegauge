@@ -528,7 +528,7 @@ pub fn history_panel(
                         .child(sub(crate::locale::count(samples, "sample", "samples", "måling", "målinger")))
                         .child(sub(format_value(max))),
                 )
-                .child(history_chart(&data.values, max, accent))
+                .child(history_chart(&data.values, max, accent, 180.))
                 .child(sub(format_value(0.)))
                 .child(
                     div()
@@ -565,7 +565,7 @@ pub fn history_panel(
     panel
 }
 
-fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElement {
+pub(crate) fn history_chart(values: &[Option<f64>], max: f64, color: Hsla, height: f32) -> impl IntoElement {
     let values = values.to_vec();
     canvas(
         move |_, _, _| (),
@@ -605,7 +605,7 @@ fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElem
         },
     )
     .w_full()
-    .h(px(180.))
+    .h(px(height))
 }
 
 pub fn audio_output(

@@ -6,6 +6,17 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Expanding an app in Apps & processes shows its CPU and memory over the last
+  hour, with Open in History for longer ranges. History gains a 1-hour range.
+
+### Fixed
+
+- History recorded only the 60 apps using the most memory, so a busy app with
+  little memory had no history. It now also records the busiest apps by CPU,
+  disk and network.
+
 ## [0.3.3](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.3) — 2026-10-16
 
 ### Fixed

@@ -171,6 +171,8 @@ pub struct TideGaugeView {
     pub history_app_picker: bool,
     /// When History last loaded; it reloads every minute while it is open.
     pub(crate) history_loaded_at: Option<std::time::Instant>,
+    /// The expanded app's last hour, shown in its row in Apps & processes.
+    pub(crate) app_history: Option<crate::process_panel::AppHistory>,
     tab_scrolls: Vec<ScrollHandle>,
     settings_scroll: ScrollHandle,
 }
@@ -260,6 +262,7 @@ impl TideGaugeView {
             history_generation: 0,
             history_app_picker: false,
             history_loaded_at: None,
+            app_history: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: ScrollHandle::new(),
         };
@@ -268,8 +271,10 @@ impl TideGaugeView {
             async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| loop {
                 smol::Timer::after(std::time::Duration::from_millis(1000)).await;
                 let _ = cx.update(|cx: &mut App| {
+                    let mut app_history_due = None;
                     let history_due = this
                         .update(cx, |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
+                            app_history_due = crate::process_panel::app_history_due(v);
                             v.snap = latest();
                             if v.toast.as_ref().is_some_and(Toast::expired) {
                                 v.toast = None;
@@ -284,6 +289,9 @@ impl TideGaugeView {
                     // History keeps itself current while it is open.
                     if let (true, Some(this)) = (history_due, this.upgrade()) {
                         crate::controls::refresh_history(&this, cx);
+                    }
+                    if let (Some(app), Some(this)) = (app_history_due, this.upgrade()) {
+                        crate::process_panel::load_app_history(&this, app, cx);
                     }
                 });
             },
