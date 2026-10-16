@@ -118,6 +118,32 @@ pub fn anchor() -> Option<Anchor> {
     place(click, &displays)
 }
 
+/// The shortcut acts like a click on the item. The panel opens where the
+/// item was last clicked; before any click, under the item's own window if
+/// macOS reports one on a screen, or else at the right of the main menu bar.
+pub fn toggle_from_keyboard() {
+    let mut click = CLICK_AT.lock().unwrap();
+    if click.is_none() {
+        let item = ITEM.with(|item| item.borrow().as_ref().map(|(item, _)| item.clone()));
+        let frame = item
+            .and_then(|item| item.button(mtm()))
+            .and_then(|button| button.window())
+            .map(|window| window.frame())
+            .filter(|f| f.size.width > 0. && NSScreen::screens(mtm()).iter().any(|s| {
+                let r = s.frame();
+                f.origin.x >= r.origin.x && f.origin.x <= r.origin.x + r.size.width
+            }));
+        *click = match frame {
+            Some(f) => Some((f.origin.x + f.size.width / 2., f.origin.y + f.size.height / 2.)),
+            None => NSScreen::mainScreen(mtm()).map(|s| {
+                let r = s.frame();
+                (r.origin.x + r.size.width - 200., r.origin.y + r.size.height - 10.)
+            }),
+        };
+    }
+    TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+}
+
 /// Show the native menu from the item, as a right click would.
 pub fn show_item_menu() {
     let target = ITEM.with(|item| item.borrow().as_ref().map(|(_, target)| target.clone()));
@@ -295,8 +321,13 @@ impl StatusBar {
                 readouts
                     .iter()
                     .map(|r| {
+                        let pressure = match r.tint {
+                            Some(Tint::Caution) => l(", memory pressure warning", ", minnepress: advarsel"),
+                            Some(Tint::Critical) => l(", memory pressure critical", ", minnepress: kritisk"),
+                            None => "",
+                        };
                         format!(
-                            "{} {}",
+                            "{} {}{pressure}",
                             localized_metric_label(r.metric).unwrap_or(l("Metric", "Måling")),
                             r.value
                         )
@@ -330,6 +361,33 @@ struct Readout {
     style: String,
     value: String,
     history: Vec<f64>,
+    /// Drawn in colour instead of the menu bar's own ink: memory while macOS
+    /// reports memory pressure.
+    tint: Option<Tint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tint {
+    Caution,
+    Critical,
+}
+
+impl Tint {
+    fn color(self) -> Retained<NSColor> {
+        match self {
+            Tint::Caution => NSColor::systemOrangeColor(),
+            Tint::Critical => NSColor::systemRedColor(),
+        }
+    }
+}
+
+/// Memory is tinted while macOS reports warning or critical pressure.
+fn memory_tint(pressure: Option<crate::metrics::Pressure>) -> Option<Tint> {
+    match pressure? {
+        crate::metrics::Pressure::Normal => None,
+        crate::metrics::Pressure::Warning => Some(Tint::Caution),
+        crate::metrics::Pressure::Critical => Some(Tint::Critical),
+    }
 }
 
 impl Readout {
@@ -453,6 +511,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                 style: preference.style.clone(),
                 value,
                 history,
+                tint: if metric == "memory" { memory_tint(s.mem.pressure) } else { None },
             })
         })
         .collect()
@@ -491,7 +550,22 @@ fn symbol_image(metric: &str) -> Option<Retained<NSImage>> {
     )
 }
 
-fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
+/// The ink for unremarkable text and lines: black in a template image, which
+/// macOS tints itself, and the label colour once the image carries colour.
+fn ink(template: bool) -> Retained<NSColor> {
+    if template { NSColor::blackColor() } else { NSColor::labelColor() }
+}
+
+/// Images drawn black (the logo, SF Symbols) take `color` once the menu-bar
+/// image is no longer a template that macOS tints for us.
+fn recolor(rect: objc2_foundation::NSRect, template: bool, color: &NSColor) {
+    if !template {
+        color.set();
+        NSRectFillUsingOperation(rect, NSCompositingOperation::SourceAtop);
+    }
+}
+
+fn draw_text(text: &str, x: f64, font_size: f64, value: bool, color: &NSColor) {
     use objc2::runtime::AnyObject;
     use objc2_foundation::NSDictionary;
     let weight = unsafe { NSFontWeightMedium };
@@ -500,9 +574,8 @@ fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
     } else {
         NSFont::systemFontOfSize_weight(font_size, weight)
     };
-    let color = NSColor::blackColor();
-    let font_object: &AnyObject = &font;
-    let color_object: &AnyObject = &color;
+    let font_object: &AnyObject = font.as_ref();
+    let color_object: &AnyObject = color.as_ref();
     unsafe {
         let attributes = NSDictionary::from_slices(
             &[NSFontAttributeName, NSForegroundColorAttributeName],
@@ -520,9 +593,9 @@ fn draw_text(text: &str, x: f64, font_size: f64, value: bool) {
     }
 }
 
-fn draw_graph(history: &[f64], x: f64, metric: &str) {
+fn draw_graph(history: &[f64], x: f64, metric: &str, color: &NSColor) {
     if history.len() < 2 {
-        draw_text("—", x + 6., 10., false);
+        draw_text("—", x + 6., 10., false, color);
         return;
     }
     let maximum = if matches!(metric, "cpu" | "memory" | "gpu" | "battery") {
@@ -538,7 +611,7 @@ fn draw_graph(history: &[f64], x: f64, metric: &str) {
     let points = &history[history.len() - count..];
     let path = NSBezierPath::bezierPath();
     path.setLineWidth(1.);
-    NSColor::blackColor().setStroke();
+    color.setStroke();
     for (i, value) in points.iter().enumerate() {
         let point = objc2_foundation::NSPoint {
             x: x + i as f64 / (count - 1) as f64 * GRAPH_WIDTH,
@@ -564,33 +637,39 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
         + if show_icon { 16. } else { 0. }
         + (readouts.len() + usize::from(show_icon)).saturating_sub(1) as f64 * ITEM_GAP;
     let readouts = readouts.to_vec();
+    // A template image is all one ink, so colour needs a plain image; it
+    // stays a template whenever nothing is tinted.
+    let template = readouts.iter().all(|r| r.tint.is_none());
     let logo = LOGO.with(Clone::clone);
     // AppKit invokes the drawing block at the display's backing scale.
     let drawing = block2::RcBlock::new(move |_bounds: NSRect| {
         let mut x = 0.;
         if show_icon {
             if let Some(logo) = logo.as_ref() {
+                let rect = NSRect { origin: NSPoint { x, y: 0. }, size: NSSize { width: 16., height: 16. } };
                 logo.drawInRect_fromRect_operation_fraction(
-                    NSRect { origin: NSPoint { x, y: 0. }, size: NSSize { width: 16., height: 16. } },
+                    rect,
                     NSRect { origin: NSPoint { x: 0., y: 0. }, size: NSSize { width: 0., height: 0. } },
                     NSCompositingOperation::SourceOver, 1.,
                 );
+                recolor(rect, template, &ink(template));
             } else {
-                draw_text("T", x + 3., 12., true);
+                draw_text("T", x + 3., 12., true, &ink(template));
             }
             x += 16. + ITEM_GAP;
         }
         for readout in &readouts {
             if readout.style == "icon" {
                 if let Some(symbol) = symbol_image(readout.metric) {
-                    symbol.drawInRect_fromRect_operation_fraction(
-                        NSRect {
-                            origin: NSPoint { x, y: 1. },
-                            size: NSSize {
-                                width: 14.,
-                                height: 14.,
-                            },
+                    let rect = NSRect {
+                        origin: NSPoint { x, y: 1. },
+                        size: NSSize {
+                            width: 14.,
+                            height: 14.,
                         },
+                    };
+                    symbol.drawInRect_fromRect_operation_fraction(
+                        rect,
                         NSRect {
                             origin: NSPoint { x: 0., y: 0. },
                             size: NSSize {
@@ -601,14 +680,16 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
                         NSCompositingOperation::SourceOver,
                         1.,
                     );
+                    recolor(rect, template, &readout.tint.map(Tint::color).unwrap_or_else(|| ink(template)));
                 } else {
-                    draw_text(readout.label, x, 8., false);
+                    draw_text(readout.label, x, 8., false, &ink(template));
                 }
             } else {
-                draw_text(readout.label, x, 9., false);
+                let accent = readout.tint.map(Tint::color).unwrap_or_else(|| ink(template));
+                draw_text(readout.label, x, 9., false, &ink(template));
                 let value_x = x + readout.label_width + 4.;
                 if readout.style != "graph" {
-                    draw_text(&readout.value, value_x, 11., true);
+                    draw_text(&readout.value, value_x, 11., true, &accent);
                 }
                 if matches!(readout.style.as_str(), "graph" | "both") {
                     let graph_x = if readout.style == "both" {
@@ -616,7 +697,7 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
                     } else {
                         value_x
                     };
-                    draw_graph(&readout.history, graph_x, readout.metric);
+                    draw_graph(&readout.history, graph_x, readout.metric, &accent);
                 }
             }
             x += readout.width() + ITEM_GAP;
@@ -631,13 +712,22 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
         false,
         &drawing,
     );
-    image.setTemplate(true);
+    image.setTemplate(template);
     image
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_is_tinted_only_under_pressure() {
+        use crate::metrics::Pressure;
+        assert_eq!(memory_tint(None), None, "an unknown level is not tinted");
+        assert_eq!(memory_tint(Some(Pressure::Normal)), None);
+        assert_eq!(memory_tint(Some(Pressure::Warning)), Some(Tint::Caution));
+        assert_eq!(memory_tint(Some(Pressure::Critical)), Some(Tint::Critical));
+    }
 
     #[test]
     fn a_press_on_the_item_is_not_an_outside_click() {

@@ -319,6 +319,33 @@ pub fn refresh_history(this: &Entity<TideGaugeView>, cx: &mut App) {
     });
 }
 
+/// Saves what History shows, every sample rather than the chart's averages,
+/// as a CSV file in Downloads and shows it in Finder.
+fn export_history(this: Entity<TideGaugeView>, cx: &mut App) {
+    let request = this.read(cx).history_request.clone();
+    cx.spawn(async move |cx| {
+        let result = smol::unblock(move || crate::history_browser::export(&request)).await;
+        if let Ok(path) = &result {
+            crate::storage::reveal(path);
+        }
+        this.update(cx, |v, cx| {
+            v.toast = Some(crate::ui::Toast::new(
+                match &result {
+                    Ok(path) => format!(
+                        "{} {}",
+                        l("Saved in Downloads:", "Lagret i Nedlastinger:"),
+                        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    ),
+                    Err(error) => error.clone(),
+                },
+                result.is_err(),
+            ));
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
 fn change_history(
     this: &Entity<TideGaugeView>,
     cx: &mut App,
@@ -549,9 +576,17 @@ pub fn history_panel(
                         .text_color(t::ink_dim(dark)),
                 );
             }
+            let target = this.clone();
             panel = panel
                 .child(section_header(metric.label(app), metric.unit(app), dark))
-                .child(plot);
+                .child(plot)
+                .child(div().flex().child(button(
+                    "history-export",
+                    l("Export CSV", "Eksporter CSV"),
+                    false,
+                    dark,
+                    move |_, cx| export_history(target.clone(), cx),
+                )));
         }
     } else if let Some(Err(error)) = &view.history_data {
         panel = panel.child(empty_state(

@@ -40,6 +40,7 @@ mod storage;
 mod tools_panel;
 mod settings;
 mod settings_page;
+mod shortcut;
 mod statusbar;
 mod theme;
 mod ui;
@@ -133,6 +134,9 @@ fn main() {
         #[cfg(target_os = "macos")]
         {
             let mut bar = statusbar::StatusBar::new();
+            // A shortcut another app has taken since stays off; Settings
+            // says so, since what is in effect is read from shortcut::active.
+            let _ = shortcut::apply(settings::Settings::load().panel_shortcut.as_deref());
             // status bar pump: refresh readouts + handle toggles
             cx.spawn(async move |cx: &mut AsyncApp| {
                 loop {

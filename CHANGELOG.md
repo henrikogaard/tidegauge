@@ -8,8 +8,22 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- An opt-in memory-pressure alert, when macOS reports warning or critical
+  pressure for 20 seconds. While it does, the menu-bar memory reading turns
+  orange or red ([#67](https://github.com/henrikogaard/tidegauge/pull/67)).
+- An opt-in alert when one app holds more memory than a set amount (4 GB by
+  default, 1–64 GB) for five minutes, alongside the one-app CPU alert
+  ([#68](https://github.com/henrikogaard/tidegauge/pull/68)).
+- Export CSV on the History page saves every recorded sample of what is shown
+  (range, source and metric) to a file in Downloads
+  ([#69](https://github.com/henrikogaard/tidegauge/pull/69)).
+- A keyboard shortcut that opens the menu-bar panel from any app: ⌃⌥⌘T or
+  ⌃⌥⌘M in Settings → General → Open the panel. Off by default; it needs no
+  Accessibility permission, and a shortcut another app holds is reported
+  ([#70](https://github.com/henrikogaard/tidegauge/pull/70)).
 - The Battery page charts capacity health per day, kept once a day beyond
-  History's 30 days so wear shows over months, with the cycle count's change.
+  History's 30 days so wear shows over months, with the cycle count's change
+  ([#71](https://github.com/henrikogaard/tidegauge/pull/71)).
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired

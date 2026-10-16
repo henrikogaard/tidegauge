@@ -32,6 +32,10 @@ Legacy system power estimates are not presented as measured watts. Per-app energ
 
 Each sample stores the 60 app groups using the most memory, plus the 20 busiest by CPU and the 10 busiest by disk and by network when those are not already among them, so an app that is busy but small still has a history. Rows use the recorded **name** rather than a stable bundle identifier. Identical names can collide. An absent app row does not establish that the app was stopped or using zero resources. Historical zero rates cannot establish that an older collector successfully measured every source. These are limits of the stored data, not an invitation to infer missing values.
 
+## Export
+
+Export CSV under the chart saves what History shows (the chosen range, source and metric) to a file in Downloads and shows it in Finder. The file holds every recorded sample, not the chart's interval averages, under the same rules: legacy placeholders and per-app power are left out, and gaps are simply missing rows. Columns: `local_time` (`YYYY-MM-DD HH:MM:SS`), `unix_time`, `source` (System or the app's recorded name), `metric` (a stable English id such as `cpu` or `disk_read`), `unit` and `value`. A source name that starts like a spreadsheet formula (`=`, `+`, `-`, `@`) is written with a leading apostrophe so it stays text, and a second export never overwrites the first: it is saved as "… 2.csv".
+
 ## In Apps & processes
 
 Expanding an app in Apps & processes shows its CPU and memory over the last hour, read the same way as History (180 interval averages, gaps left blank) and reloaded every minute while the app stays expanded. The figure above each chart is the highest interval average, not a true peak. Open in History shows the same app there, at 1 hour.
