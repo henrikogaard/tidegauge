@@ -4,7 +4,7 @@ The History tab reads the existing `history.db` in Tidegauge's macOS application
 
 ## Ranges and rendering
 
-- Choose 12 hours, 24 hours, 7 days, or 30 days. Refresh captures a new end time; changing a range/source/metric also refreshes.
+- Choose 1 hour, 12 hours, 24 hours, 7 days, or 30 days. Refresh captures a new end time; changing a range/source/metric also refreshes.
 - SQLite timestamps are Unix seconds. The dashboard labels the range in local time using `YYYY-MM-DD HH:MM`.
 - Queries include the start and exclude the end: `[start, end)`.
 - Each range is divided into 180 equally spaced buckets. A bar is the arithmetic mean of available samples within that bucket, not a peak or a time-weighted estimate.
@@ -30,7 +30,11 @@ Older GPU/battery rows can contain zero placeholders that cannot be distinguishe
 
 Legacy system power estimates are not presented as measured watts. Per-app energy counters have not been validated as measured watts and are not selectable in History. Existing rows remain in the database until normal retention removes them.
 
-Only up to 60 app groups are stored per sample, using the existing recorded **name** rather than a stable bundle identifier. Identical names can collide. An absent app row does not establish that the app was stopped or using zero resources. Historical zero rates cannot establish that an older collector successfully measured every source. These are limits of the stored data, not an invitation to infer missing values.
+Each sample stores the 60 app groups using the most memory, plus the 20 busiest by CPU and the 10 busiest by disk and by network when those are not already among them, so an app that is busy but small still has a history. Rows use the recorded **name** rather than a stable bundle identifier. Identical names can collide. An absent app row does not establish that the app was stopped or using zero resources. Historical zero rates cannot establish that an older collector successfully measured every source. These are limits of the stored data, not an invitation to infer missing values.
+
+## In Apps & processes
+
+Expanding an app in Apps & processes shows its CPU and memory over the last hour, read the same way as History (180 interval averages, gaps left blank) and reloaded every minute while the app stays expanded. The figure above each chart is the highest interval average, not a true peak. Open in History shows the same app there, at 1 hour.
 
 ## Damaged databases
 
