@@ -92,7 +92,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Sound | Default media-output volume/mute controls where the device supports them, plus read-only process audio activity |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
 | Development servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
-| History | Local 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps |
+| History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour |
 | Alerts | Opt-in CPU, used-memory, disk, and network alerts; configurable CPU/memory thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
 | Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
@@ -115,7 +115,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
   available on macOS 13+ only for a bundle installed in `/Applications` or
   `~/Applications`; approval may be required in System Settings > General >
   Login Items. Closing the dashboard hides it while collection continues.
-- Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and top-60 app recording have important limitations; see [history semantics](docs/HISTORY.md).
+- Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and the selection of recorded apps have important limitations; see [history semantics](docs/HISTORY.md).
 - Keep awake prevents **idle system sleep only**. Displays may sleep, and closing the lid or explicitly sleeping still takes precedence. It releases on expiry, Stop, or app exit and does not resume automatically after restart.
 - Dashboard reset affects only tab order, favorites, and compact layout. It does not reset menu-bar readings, appearance, login, or alert preferences. Overview and Settings remain reachable.
 - Startup inventory is partial. Modern login/background items are managed through System Settings. Third-party disable, removal and restoration are deliberately unavailable until managed/protected registration eligibility can be established safely; a plist or an absent launchctl override does not establish effective state.
@@ -154,7 +154,7 @@ The app uses defaults when the settings file is absent or cannot be parsed. You 
 
 Available metric identifiers are `cpu`, `memory`, `network`, `disk`, `battery`, `gpu`, and `power`. The menu-bar pump reloads this file while the app runs. Appearance can be set to System, Light, or Dark for the dashboard.
 
-History includes app names and resource usage. The sampler records headline metrics and the first 60 app groups sorted by memory usage approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
+History includes app names and resource usage. The sampler records headline metrics and the app groups using the most memory, CPU, disk and network approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
 
 ## Architecture
 

@@ -11,17 +11,23 @@ hardware acceptance checks. A merge and a published release are separate events.
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired
-  memory.
+  memory ([#63](https://github.com/henrikogaard/tidegauge/pull/63)).
 - The CPU page leads with the temperatures macOS names itself: chip hottest
   and average, SSD and battery. The SMC channel list stays behind Show
   channels, since some of its codes are not temperatures
   ([#62](https://github.com/henrikogaard/tidegauge/pull/62)).
+- Expanding an app in Apps & processes shows its CPU and memory over the last
+  hour, with Open in History for longer ranges. History gains a 1-hour range
+  ([#64](https://github.com/henrikogaard/tidegauge/pull/64)).
 
 ### Fixed
 
 - Per-app power was about 50 times too low. It now reads macOS's processor
   energy counter and is labelled CPU power, since GPU, display and radio are
   not included ([#61](https://github.com/henrikogaard/tidegauge/pull/61)).
+- History recorded only the 60 apps using the most memory, so a busy app with
+  little memory had no history. It now also records the busiest apps by CPU,
+  disk and network ([#64](https://github.com/henrikogaard/tidegauge/pull/64)).
 
 ## [0.3.3](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.3) — 2026-10-16
 
