@@ -19,6 +19,8 @@ pub struct Sliders {
     pub mem: Entity<SliderState>,
     /// One app's CPU, which can pass 100 % across cores.
     pub app: Entity<SliderState>,
+    /// One app's memory, in GB.
+    pub app_memory: Entity<SliderState>,
     pub volume: Entity<SliderState>,
     /// When the volume was last dragged; the device's reading lags, so the
     /// slider isn't pulled back to it for a moment.
@@ -33,11 +35,14 @@ impl Sliders {
         let mem = cx.new(|_| threshold(settings.alert_mem_pct));
         let (low, high) = crate::settings::APP_CPU_RANGE;
         let app = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(10.).default_value(settings.alert_app_cpu_pct as f32));
+        let (low, high) = crate::settings::APP_MEMORY_RANGE;
+        let app_memory = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_app_mem_gb as f32));
         let volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
-        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 3] = [
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 4] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
             (&app, |s, v| s.alert_app_cpu_pct = v),
+            (&app_memory, |s, v| s.alert_app_mem_gb = v),
         ];
         for (state, set) in setters {
             cx.subscribe(state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
@@ -63,7 +68,7 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, volume, volume_touched: None }
+        Self { cpu, mem, app, app_memory, volume, volume_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
@@ -74,6 +79,7 @@ impl Sliders {
             (&self.cpu, settings.alert_cpu_pct as f32),
             (&self.mem, settings.alert_mem_pct as f32),
             (&self.app, settings.alert_app_cpu_pct as f32),
+            (&self.app_memory, settings.alert_app_mem_gb as f32),
         ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -426,6 +432,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             Some(&view.sliders.mem),
             settings.alert_mem_enabled,
         ),
+        (
+            "pressure",
+            l("Memory pressure", "Minnepress"),
+            l("Warning or critical for 20 seconds", "Advarsel eller kritisk i 20 sekunder").to_string(),
+            None,
+            settings.alert_pressure_enabled,
+        ),
         ("disk", "Disk", l("Above 400 MB/s for 30 seconds", "Over 400 MB/s i 30 sekunder").to_string(), None, settings.alert_disk_enabled),
         (
             "net",
@@ -440,6 +453,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             format!("{} {} {}", l("CPU above", "CPU over"), pct(settings.alert_app_cpu_pct), l("for 5 minutes", "i 5 minutter")),
             Some(&view.sliders.app),
             settings.alert_app_enabled,
+        ),
+        (
+            "app-memory",
+            l("Any one app's memory", "Minne for én app"),
+            format!("{} {} GB {}", l("Above", "Over"), crate::locale::number(settings.alert_app_mem_gb, 0), l("for 5 minutes", "i 5 minutter")),
+            Some(&view.sliders.app_memory),
+            settings.alert_app_mem_enabled,
         ),
         (
             "low-disk",
@@ -466,7 +486,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                     .items_center()
                     .gap(t::SPACE_4)
                     .when_some(threshold, |d, state| {
-                        let metric = if key == "mem" { t::Metric::Memory } else { t::Metric::Cpu };
+                        let metric = if matches!(key, "mem" | "app-memory") { t::Metric::Memory } else { t::Metric::Cpu };
                         d.child(slider(state, 140., metric.accent(dark)))
                     })
                     .child(preference_switch(
@@ -480,8 +500,10 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "mem" => s.alert_mem_enabled = value,
                             "disk" => s.alert_disk_enabled = value,
                             "app" => s.alert_app_enabled = value,
+                            "app-memory" => s.alert_app_mem_enabled = value,
                             "low-disk" => s.alert_low_disk_enabled = value,
                             "thermal" => s.alert_thermal_enabled = value,
+                            "pressure" => s.alert_pressure_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));
