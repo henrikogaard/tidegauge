@@ -1401,9 +1401,10 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "Verdiene er gjennomsnitt per intervall, aldri topper. Manglende data er hull, ikke null.",
             ),
             l(
-                "Apps: the 60 busiest names are recorded, so an app that is missing may still have been active.",
-                "Apper: de 60 travleste navnene registreres, så en app som mangler kan likevel ha vært aktiv.",
+                "Apps: the 60 using the most memory are recorded, plus the busiest by CPU, disk and network, so an app that is missing may still have been active.",
+                "Apper: de 60 som bruker mest minne registreres, pluss de travleste etter CPU, disk og nettverk, så en app som mangler kan likevel ha vært aktiv.",
             ),
+            l("Export CSV saves every recorded sample of what is shown, not the averages, to Downloads.", "Eksporter CSV lagrer hver registrerte måling av det som vises, ikke snittene, i Nedlastinger."),
             l("App CPU can exceed 100% across cores. Power is processor energy only, from macOS's energy model, not a meter.", "App-CPU kan overstige 100 % på flere kjerner. Effekt er kun prosessorenergi, fra macOS sin energimodell, ikke en måler."),
         ],
     }

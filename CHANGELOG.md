@@ -14,6 +14,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 - An opt-in alert when one app holds more memory than a set amount (4 GB by
   default, 1–64 GB) for five minutes, alongside the one-app CPU alert
   ([#68](https://github.com/henrikogaard/tidegauge/pull/68)).
+- Export CSV on the History page saves every recorded sample of what is shown
+  (range, source and metric) to a file in Downloads
+  ([#69](https://github.com/henrikogaard/tidegauge/pull/69)).
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired
