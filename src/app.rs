@@ -122,8 +122,8 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         return;
     }
     let Some(anchor) = crate::statusbar::anchor() else {
-        // Without a known position, open the full window instead.
-        toggle_panel(cx);
+        // Without a known position, the menu instead.
+        crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
         return;
     };
     let (width, height) = (crate::menu_panel::WIDTH as f64, crate::menu_panel::HEIGHT as f64);
@@ -146,8 +146,10 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         },
         |window, cx| cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main)),
     );
-    if let Ok(handle) = opened {
-        *POPOVER.lock().unwrap() = Some(handle.into());
+    match opened {
+        Ok(handle) => *POPOVER.lock().unwrap() = Some(handle.into()),
+        // A click must always do something: without the panel, the menu.
+        Err(_) => crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst),
     }
 }
 

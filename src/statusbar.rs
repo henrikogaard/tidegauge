@@ -11,7 +11,7 @@ use crate::settings::{localized_metric_label, Settings, MENU_METRICS};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, AllocAnyThread, ClassType};
 use objc2_app_kit::*;
-use objc2_foundation::{MainThreadMarker, NSObject, NSString};
+use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
@@ -43,45 +43,77 @@ pub struct Anchor {
     pub display_width: f64,
 }
 
-/// The status item's position, for placing the panel under it.
-pub fn anchor() -> Option<Anchor> {
-    ITEM.with(|item| {
-        let item = item.borrow();
-        let (item, _) = item.as_ref()?;
-        let button = item.button(mtm())?;
-        let window = button.window()?;
-        let screen = window.screen()?;
-        let frame = window.frame();
-        let screen_frame = screen.frame();
-        let number = screen
-            .deviceDescription()
-            .objectForKey(&NSString::from_str("NSScreenNumber"))?
-            .downcast::<objc2_foundation::NSNumber>()
-            .ok()?
-            .unsignedLongLongValue();
-        Some(Anchor {
-            display: number,
-            left: frame.origin.x - screen_frame.origin.x,
-            width: frame.size.width,
-            // Cocoa counts up from the bottom; the panel wants the distance
-            // from the top of the display down to the item's lower edge.
-            bottom: screen_frame.origin.y + screen_frame.size.height - frame.origin.y,
-            display_width: screen_frame.size.width,
-        })
+/// Where the last click on the item landed, in Cocoa screen points.
+static CLICK_AT: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+/// A display as placement needs it: its number, its frame (x, y, width,
+/// height, Cocoa points) and the top of its area below the menu bar.
+#[derive(Clone, Copy, Debug)]
+struct Display {
+    number: u64,
+    frame: (f64, f64, f64, f64),
+    visible_top: f64,
+}
+
+/// Place the panel under a click on the item. The item's own window can't
+/// be trusted for this: newer macOS draws status items in another process,
+/// so the click point is the one position that is always real.
+fn place(click: (f64, f64), displays: &[Display]) -> Option<Anchor> {
+    let (x, y) = click;
+    let display = displays.iter().find(|d| {
+        let (dx, dy, w, h) = d.frame;
+        x >= dx && x <= dx + w && y >= dy && y <= dy + h
+    })?;
+    let (dx, dy, w, h) = display.frame;
+    // The menu bar's height: the gap between the display's top and the top
+    // of its usable area. A hidden menu bar leaves none; keep a usual gap.
+    let menu_bar = (dy + h - display.visible_top).max(24.);
+    Some(Anchor {
+        display: display.number,
+        left: x - dx - 10.,
+        width: 20.,
+        bottom: menu_bar,
+        display_width: w,
     })
+}
+
+/// The panel's place under the last click on the item.
+pub fn anchor() -> Option<Anchor> {
+    let click = (*CLICK_AT.lock().unwrap())?;
+    let displays: Vec<Display> = NSScreen::screens(mtm())
+        .iter()
+        .filter_map(|screen| {
+            let number = screen
+                .deviceDescription()
+                .objectForKey(&NSString::from_str("NSScreenNumber"))?
+                .downcast::<objc2_foundation::NSNumber>()
+                .ok()?
+                .unsignedLongLongValue();
+            let frame = screen.frame();
+            let visible = screen.visibleFrame();
+            Some(Display {
+                number,
+                frame: (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height),
+                visible_top: visible.origin.y + visible.size.height,
+            })
+        })
+        .collect();
+    place(click, &displays)
 }
 
 /// Show the native menu from the item, as a right click would.
 pub fn show_item_menu() {
-    let item = ITEM.with(|item| item.borrow().clone());
-    let Some((item, target)) = item else {
+    let target = ITEM.with(|item| item.borrow().as_ref().map(|(_, target)| target.clone()));
+    let Some(target) = target else {
         return;
     };
-    item.setMenu(Some(&context_menu(&target)));
-    if let Some(button) = item.button(mtm()) {
-        unsafe { button.performClick(None) };
-    }
-    item.setMenu(None);
+    // At the click, in screen points: like the panel, the menu doesn't rely
+    // on the item's own window, which newer macOS hosts elsewhere.
+    let (x, y) = (*CLICK_AT.lock().unwrap()).unwrap_or_else(|| {
+        let at = NSEvent::mouseLocation();
+        (at.x, at.y)
+    });
+    context_menu(&target).popUpMenuPositioningItem_atLocation_inView(None, NSPoint::new(x, y - 4.), None);
 }
 
 thread_local! {
@@ -115,6 +147,8 @@ define_class!(
                 event.r#type() == NSEventType::RightMouseUp
                     || event.modifierFlags().contains(NSEventModifierFlags::Control)
             });
+            let at = NSEvent::mouseLocation();
+            *CLICK_AT.lock().unwrap() = Some((at.x, at.y));
             if secondary {
                 SHOW_ITEM_MENU.store(true, Ordering::SeqCst);
             } else {
@@ -583,6 +617,17 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_panel_sits_under_the_click_on_the_display_clicked() {
+        let main = Display { number: 1, frame: (0., 0., 3840., 2160.), visible_top: 2126. };
+        let left = Display { number: 2, frame: (-1920., 0., 1920., 1080.), visible_top: 1080. };
+        let at = place((3000., 2150.), &[main, left]).unwrap();
+        assert_eq!((at.display, at.left, at.bottom, at.display_width), (1, 2990., 34., 3840.));
+        let at = place((-100., 1075.), &[main, left]).unwrap();
+        assert_eq!((at.display, at.left, at.bottom), (2, 1810., 24.), "a hidden menu bar keeps a usual gap");
+        assert!(place((9999., 9999.), &[main]).is_none());
+    }
 
     #[test]
     fn menu_readings_are_identified_ordered_and_do_not_resize_for_new_values() {
