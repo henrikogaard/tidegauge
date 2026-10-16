@@ -229,8 +229,8 @@ impl StatusBar {
         let readouts = menu_readouts(settings, snap, measure_label_width);
         let show_icon = settings.show_app_icon || readouts.is_empty();
         let menu_hint = l(
-            "Click for Open Dashboard, Settings, and Quit.",
-            "Klikk for å åpne oversikten, innstillinger eller avslutte.",
+            "Click for the panel; right-click for the menu.",
+            "Klikk for panelet; høyreklikk for menyen.",
         );
         let description = if readouts.is_empty() {
             format!("Tidegauge. {menu_hint}")

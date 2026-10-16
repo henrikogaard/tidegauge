@@ -153,7 +153,11 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
 
 pub fn close_popover(cx: &mut gpui_kit::App) {
     if let Some(handle) = POPOVER.lock().unwrap().take() {
-        let _ = handle.update(cx, |_, window, _| window.remove_window());
+        // Deferred: the panel may be the one asking (its own button or
+        // Escape), and a window can't be updated while it handles an event.
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
     }
 }
 

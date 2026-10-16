@@ -504,7 +504,8 @@ fn sidebar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
     let enabled_count = settings.dashboard_tabs.len();
     let mut rows = Vec::new();
     for (row_index, key) in order.into_iter().enumerate() {
-        let Some(tab) = Tab::from_key(&key) else {
+        // Projects shows inside Agents now, not as its own sidebar entry.
+        let Some(tab) = Tab::from_key(&key).filter(|tab| *tab != Tab::Projects) else {
             continue;
         };
         let position = settings.dashboard_tabs.iter().position(|x| x == &key);

@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 pub const WIDTH: f32 = 340.;
-pub const HEIGHT: f32 = 452.;
+pub const HEIGHT: f32 = 600.;
 
 pub struct MenuPanel {
     snap: Snapshot,
@@ -87,7 +87,7 @@ fn tile(
                 .child(div().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).truncate().child(detail)),
         )
         .child(div().text_size(t::TEXT_TITLE).font_weight(FontWeight::BOLD).child(value))
-        .child(div().h(px(26.)).child(crate::ui::area_chart(points, 26., color, max)))
+        .child(div().h(px(22.)).child(crate::ui::area_chart(points, 22., color, max)))
         .on_click(move |_, _, cx| open(&main, Destination::Tab(tab), cx))
         .capture_key_down(move |event, window, cx| {
             if crate::controls::is_activation_key(&event.keystroke) {
@@ -204,7 +204,7 @@ impl Render for MenuPanel {
                     .grid()
                     .grid_cols(2)
                     .gap(t::SPACE_2)
-                    .child(tile(Tab::Cpu, fmt_pct(s.cpu_pct), format!("{} {}", s.chip.cores, l("cores", "kjerner")), &s.cpu_hist.pts, Some(100.), dark, main.clone()))
+                    .child(tile(Tab::Cpu, fmt_pct(s.cpu_pct), crate::locale::count(s.chip.cores as u64, "core", "cores", "kjerne", "kjerner"), &s.cpu_hist.pts, Some(100.), dark, main.clone()))
                     .child(tile(Tab::Memory, fmt_bytes(s.mem.used as f64), fmt_pct(mem_pct), &s.mem_hist.pts, Some(100.), dark, main.clone()))
                     .child(tile(
                         Tab::Network,
@@ -227,30 +227,25 @@ impl Render for MenuPanel {
             )
             .when(!plans.is_empty(), |d| {
                 d.child(caption(l("AI plans", "AI-abonnementer"))).child(
-                    div().flex().gap(t::SPACE_2).children(plans.into_iter().map(|plan| {
+                    div().rounded(t::RADIUS_CONTROL).bg(t::card(dark)).py(t::SPACE_1).flex().flex_col().children(plans.into_iter().map(|plan| {
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .p(t::SPACE_2)
-                            .rounded(t::RADIUS_CONTROL)
-                            .bg(t::card(dark))
+                            .h(px(28.))
+                            .px(t::SPACE_2)
                             .flex()
                             .items_center()
                             .gap(t::SPACE_2)
-                            .child(div().size(px(22.)).flex_shrink_0().child(crate::ui::donut(&plan.ring, 22., t::card_hi(dark))))
+                            .child(div().size(px(18.)).flex_shrink_0().child(crate::ui::donut(&plan.ring, 18., t::card_hi(dark))))
+                            .child(div().flex_1().min_w_0().text_size(t::TEXT_BODY).truncate().child(plan.name))
+                            .child(div().text_size(t::TEXT_SMALL).text_color(plan.note_color).child(plan.note))
                             .child(
                                 div()
-                                    .min_w_0()
+                                    .w(px(44.))
                                     .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(t::TEXT_SMALL)
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .truncate()
-                                            .child(format!("{} {}", plan.name, crate::agents_panel::left_text(plan.left))),
-                                    )
-                                    .child(div().text_size(t::TEXT_CAPTION).text_color(plan.note_color).truncate().child(plan.note)),
+                                    .justify_end()
+                                    .text_size(t::TEXT_BODY)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(plan.color)
+                                    .child(crate::agents_panel::left_text(plan.left)),
                             )
                     })),
                 )
@@ -258,14 +253,12 @@ impl Render for MenuPanel {
             .child(caption(l("Busiest apps", "Mest aktive apper")))
             .child(
                 div()
-                    .flex_1()
-                    .min_h_0()
                     .rounded(t::RADIUS_CONTROL)
                     .bg(t::card(dark))
                     .py(t::SPACE_1)
                     .flex()
                     .flex_col()
-                    .children(busiest.iter().take(4).enumerate().map(|(i, app)| {
+                    .children(busiest.iter().take(3).enumerate().map(|(i, app)| {
                         let target = main.clone();
                         div()
                             .id(SharedString::from(format!("panel-app-{i}")))
@@ -282,6 +275,7 @@ impl Render for MenuPanel {
                             .on_click(move |_, _, cx| open(&target, Destination::Apps, cx))
                     })),
             )
+            .child(div().flex_1())
             .child(
                 div()
                     .flex()

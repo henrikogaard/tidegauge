@@ -174,7 +174,10 @@ pub(crate) fn chrome(view: &TideGaugeView) -> crate::ui::PageChrome {
                 "Listen holder rekkefølgen mens pekeren er over den, så et klikk aldri treffer feil rad.",
             ),
             l("CPU: 100% is one full core.", "CPU: 100 % er én hel kjerne."),
-        ],
+        ]
+        .into_iter()
+        .chain(view.process_recent.then(|| crate::tools_panel::about_notes(crate::tools_panel::Page::Activity)).into_iter().flatten())
+        .collect(),
         ..Default::default()
     }
 }
@@ -184,29 +187,41 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let remaining = remaining_pids(s);
     let sort_cpu = view.process_sort_cpu;
 
+    // Three views of the same processes: every app, what an app left
+    // running after it quit, and the last minute's activity per process.
     let mut mode = segment_group("process-mode", l("Show", "Vis"), dark);
-    for (only_remaining, label) in [
-        (false, l("All apps", "Alle apper").to_string()),
-        (
-            true,
-            format!("{} · {}", l("Left running", "Fortsatt i gang"), remaining.len()),
-        ),
-    ] {
+    for (i, (only_remaining, recent, label)) in [
+        (false, false, l("All apps", "Alle apper").to_string()),
+        (true, false, format!("{} · {}", l("Left running", "Fortsatt i gang"), remaining.len())),
+        (false, true, l("Last minute", "Siste minutt").to_string()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let target = this.clone();
         mode = mode.child(segment(
-            format!("process-mode-{only_remaining}"),
+            format!("process-mode-{i}"),
             label,
-            view.only_remaining == only_remaining,
+            view.only_remaining == only_remaining && view.process_recent == recent,
             dark,
             t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.only_remaining = only_remaining;
+                    v.process_recent = recent;
                     v.expanded_process_group = None;
                     cx.notify();
                 });
             },
         ));
+    }
+    if view.process_recent {
+        return div()
+            .flex()
+            .flex_col()
+            .gap(t::SECTION_GAP)
+            .child(div().flex().child(mode))
+            .child(crate::tools_panel::activity(view, dark, this));
     }
     let mut sort = segment_group("process-sort", l("Sort by", "Sorter etter"), dark);
     for (cpu, label) in [(true, "CPU"), (false, l("Memory", "Minne"))] {

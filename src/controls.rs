@@ -301,6 +301,7 @@ pub fn refresh_history(this: &Entity<TideGaugeView>, cx: &mut App) {
         view.history_request.end = crate::metrics::now_unix();
         view.history_generation += 1;
         view.history_loading = true;
+        view.history_loaded_at = Some(std::time::Instant::now());
         let request = view.history_request.clone();
         let generation = view.history_generation;
         cx.spawn(async move |this, cx| {
@@ -368,7 +369,6 @@ pub fn history_panel(
             move |_, cx| change_history(&target, cx, |r| r.hours = hours),
         ));
     }
-    let refresh = this.clone();
     let mut metrics = segment_group("history-metrics", l("Metric", "Måling"), dark);
     for &metric in if app {
         &Metric::APP[..]
@@ -398,16 +398,7 @@ pub fn history_panel(
                         .items_center()
                         .gap_3()
                         .child(row_label(l("Range", "Tidsrom")))
-                        .child(ranges)
-                        .child(div().flex_1())
-                        .child(button_accent(
-                            "refresh-history",
-                            l("Refresh", "Oppdater"),
-                            false,
-                            dark,
-                            accent,
-                            move |_, cx| refresh_history(&refresh, cx),
-                        )),
+                        .child(ranges),
                 )
                 .child(
                     div()
@@ -550,13 +541,14 @@ pub fn history_panel(
                         .child(l("Local time", "Lokal tid"))
                         .child(crate::history_browser::local_time(data.end)),
                 );
-            if values.len() * 5 < data.values.len() {
-                // Under ~20% of the buckets hold data; say so instead of leaving
-                // a mostly blank plot unexplained.
-                plot = plot.child(sub(l(
-                    "Few recorded measurements in this range — most intervals have no data.",
-                    "Få registrerte målinger i dette tidsrommet — de fleste intervallene mangler data.",
-                )));
+            // When recording began inside the range, say when: that, not a
+            // fault, is why the left of the plot is empty.
+            if let Some(first) = data.values.iter().position(Option::is_some).filter(|&i| i > 0) {
+                let at = data.start + (data.end - data.start) * first as f64 / data.values.len().max(1) as f64;
+                plot = plot.child(
+                    sub(format!("{} {}", l("Recorded since", "Registrert siden"), crate::history_browser::local_time(at)))
+                        .text_color(t::ink_dim(dark)),
+                );
             }
             panel = panel
                 .child(section_header(metric.label(app), metric.unit(app), dark))
