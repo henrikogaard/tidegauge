@@ -24,7 +24,9 @@ cargo test native_ -- --ignored
 
 These checks require `nettop`, `lsof`, and `python3`. They read disk counters, transfer data over a disposable loopback connection, and start a busy local test server. The test server is stopped when its check completes. Run these checks serially when investigating counter baselines (`--test-threads=1`).
 
-The UI is English and Norwegian Bokmål, and the two never mix. Visible text goes
+The UI is English and Norwegian Bokmål, and the two never mix. It follows
+the first preferred macOS language unless Settings → General → Language picks
+one; the switch applies at once, menu-bar menu included. Visible text goes
 through `locale::text(english, norwegian)`, counts through `locale::count` or
 `locale::plural`, and numbers through `locale::number`, `locale::percent` or the
 `engine::fmt_*` helpers (Norwegian uses a decimal comma and "50 %"). The

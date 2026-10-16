@@ -27,6 +27,8 @@ pub struct Settings {
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
     pub compact_dashboard: bool,
+    /// The app's language: "en", "nb", or `None` to follow macOS.
+    pub language: Option<String>,
 }
 
 impl Default for Settings {
@@ -45,6 +47,7 @@ impl Default for Settings {
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
             compact_dashboard: false,
+            language: None,
         }
     }
 }

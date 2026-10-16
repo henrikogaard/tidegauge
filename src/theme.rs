@@ -176,6 +176,10 @@ pub fn caution(dark: bool) -> Hsla {
 pub fn ok(dark: bool) -> Hsla {
     hex(if dark { 0x30d158 } else { 0x248a3d })
 }
+/// Track of a switch that is on: the system green of macOS switches.
+pub fn switch_on(dark: bool) -> Hsla {
+    hex(if dark { 0x30d158 } else { 0x34c759 })
+}
 
 #[cfg(test)]
 mod design_tokens_tests {
@@ -191,6 +195,7 @@ mod design_tokens_tests {
         "agents_panel.rs",
         "tools_panel.rs",
         "history_browser.rs",
+        "settings_page.rs",
     ];
 
     /// Builder calls whose literal argument must come from a token.
@@ -211,6 +216,7 @@ mod design_tokens_tests {
         ("ui.rs", ".mx(px(3.", 1, "centres the 8 px swatch in the 14 px icon slot"),
         ("agents_panel.rs", ".ml(px(48.", 1, "aligns session detail under icon and name"),
         ("process_panel.rs", ".ml(px(38.", 1, "aligns app detail under icon and name"),
+        ("ui.rs", ".ml(px(52.", 1, "aligns a list row's detail under its name (row inset + icon + gap)"),
     ];
 
     fn read(file: &str) -> String {

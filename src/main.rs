@@ -37,6 +37,7 @@ mod startup;
 mod storage;
 mod tools_panel;
 mod settings;
+mod settings_page;
 mod statusbar;
 mod theme;
 mod ui;

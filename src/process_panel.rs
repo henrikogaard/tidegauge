@@ -1,7 +1,7 @@
 //! Apps & processes: every app with its helpers, sortable by CPU or memory,
 //! with confirmed Quit and Force Quit for anything you own.
 
-use crate::controls::{button, segment, segment_group};
+use crate::controls::{button, button_destructive, segment, segment_group};
 use crate::engine::{fmt_bytes, Snapshot};
 use crate::locale::text as l;
 use crate::process_activity::Identity;
@@ -87,6 +87,20 @@ fn held_chip(dark: bool) -> impl IntoElement {
         .text_color(t::ink_dim(dark))
         .child(svg().path("icons/pause.svg").size(px(11.)).text_color(t::ink_dim(dark)))
         .child(l("Order held", "Rekkefølge holdt"))
+}
+
+/// Quit is a framed button; Force Quit is the quieter red action beside it.
+fn quit_button(
+    id: String,
+    label: impl Into<String>,
+    force: Force,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    match force {
+        Force::Quit => button(id, label, false, dark, action).into_any_element(),
+        Force::ForceQuit => button_destructive(id, label, dark, action).into_any_element(),
+    }
 }
 
 fn remaining_pids(s: &Snapshot) -> HashSet<i32> {
@@ -449,13 +463,13 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::Processes { name: app.name.clone(), targets: left_running.clone(), force };
                 let target = this.clone();
-                actions = actions.child(button(
+                actions = actions.child(quit_button(
                     format!("leftover-{}-{force:?}", app.key),
                     match force {
                         Force::Quit => format!("{} ({})…", l("Quit all", "Avslutt alle"), left_running.len()),
                         Force::ForceQuit => format!("{} ({})…", l("Force quit all", "Tving avslutning av alle"), left_running.len()),
                     },
-                    false,
+                    force,
                     dark,
                     move |window, cx| request(action.clone(), target.clone(), window, cx),
                 ));
@@ -466,13 +480,13 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::App { main: main.clone(), name: app.name.clone(), helpers: procs.len(), memory: app.mem_bytes, force };
                 let target = this.clone();
-                actions = actions.child(button(
+                actions = actions.child(quit_button(
                     format!("app-{}-{force:?}", main.pid),
                     match force {
                         Force::Quit => format!("{} {}…", l("Quit", "Avslutt"), app.name),
                         Force::ForceQuit => format!("{} {}…", l("Force quit", "Tving avslutning av"), app.name),
                     },
-                    false,
+                    force,
                     dark,
                     move |window, cx| request(action.clone(), target.clone(), window, cx),
                 ));
@@ -484,13 +498,13 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::Processes { name: app.name.clone(), targets: eligible.clone(), force };
                 let target = this.clone();
-                actions = actions.child(button(
+                actions = actions.child(quit_button(
                     format!("group-{}-{force:?}", app.key),
                     match force {
                         Force::Quit => format!("{} ({})…", l("Quit all", "Avslutt alle"), eligible.len()),
                         Force::ForceQuit => format!("{} ({})…", l("Force quit all", "Tving avslutning av alle"), eligible.len()),
                     },
-                    false,
+                    force,
                     dark,
                     move |window, cx| request(action.clone(), target.clone(), window, cx),
                 ));
@@ -587,13 +601,13 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::Processes { name: program_name(p), targets: vec![p.clone()], force };
                 let target = this.clone();
-                controls = controls.child(button(
+                controls = controls.child(quit_button(
                     format!("proc-{}-{force:?}", p.pid),
                     match force {
                         Force::Quit => l("Quit…", "Avslutt…"),
                         Force::ForceQuit => l("Force Quit…", "Tving avslutning…"),
                     },
-                    false,
+                    force,
                     dark,
                     move |window, cx| request(action.clone(), target.clone(), window, cx),
                 ));

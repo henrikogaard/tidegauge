@@ -67,8 +67,18 @@ pub struct State {
     pub packages_busy: bool,
     pub package_source: Option<crate::packages::Source>,
     pub package_sort_source: bool,
-    pub package_page: usize,
-    pub startup_page: usize,
+    /// How many packages the list shows before "Show more".
+    pub package_limit: usize,
+    /// The package whose actions are open, by source and path.
+    pub package_selected: Option<String>,
+    /// How many startup entries the list shows before "Show more".
+    pub startup_limit: usize,
+    /// The startup entry whose details are open, by its plist path.
+    pub startup_selected: Option<std::path::PathBuf>,
+    /// Whether Apple's own registrations are listed.
+    pub startup_show_apple: bool,
+    /// The page whose "skipped" reasons are open.
+    pub skipped_open: Option<Page>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -88,8 +98,12 @@ impl Default for State {
             packages_busy: false,
             package_source: None,
             package_sort_source: false,
-            package_page: 0,
-            startup_page: 0,
+            package_limit: LIST_STEP,
+            package_selected: None,
+            startup_limit: LIST_STEP,
+            startup_selected: None,
+            startup_show_apple: false,
+            skipped_open: None,
         }
     }
 }
@@ -118,7 +132,7 @@ pub fn refresh_startup(this: &Entity<TideGaugeView>, cx: &mut App) {
     }
     this.update(cx, |v, cx| {
         v.tools.startup_busy = true;
-        v.tools.startup_page = 0;
+        v.tools.startup_limit = LIST_STEP;
         cx.notify();
     });
     let this = this.clone();
@@ -209,16 +223,45 @@ fn title(text: &str) -> Div {
         .child(text.to_owned())
 }
 
-const STARTUP_PAGE_SIZE: usize = 20;
-
-fn startup_page_range(page: usize, len: usize) -> std::ops::Range<usize> {
-    if len == 0 {
-        return 0..0;
+/// The name to show for a registration: its program's file name, unless the
+/// program is a shell or interpreter, which says nothing; then the last part
+/// of its label.
+fn startup_name(label: &str, executable: Option<&str>) -> String {
+    const RUNNERS: [&str; 9] = ["bash", "sh", "zsh", "env", "python3", "python", "node", "ruby", "perl"];
+    match executable.and_then(|x| std::path::Path::new(x).file_name()).map(|n| n.to_string_lossy().into_owned()) {
+        Some(name) if !RUNNERS.contains(&name.as_str()) => name,
+        _ => label.rsplit('.').next().filter(|last| !last.is_empty()).unwrap_or(label).to_string(),
     }
-    let page = page.min(len.saturating_sub(1) / STARTUP_PAGE_SIZE);
-    let start = page * STARTUP_PAGE_SIZE;
-    let end = (start + STARTUP_PAGE_SIZE).min(len);
-    start..end
+}
+
+/// Who a startup registration belongs to, for grouping: the app bundle its
+/// program lives in, else the maker named in its reverse-DNS label. The flag
+/// says whether it is part of macOS itself.
+fn startup_owner(label: &str, executable: Option<&str>) -> (String, bool) {
+    // Only the system's own folders count: /usr/local and /opt hold
+    // third-party tools.
+    const SYSTEM_DIRS: [&str; 6] = ["/System/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/"];
+    let apple = label.starts_with("com.apple.")
+        || executable.is_some_and(|exe| SYSTEM_DIRS.iter().any(|dir| exe.starts_with(dir)));
+    if apple {
+        return ("Apple".into(), true);
+    }
+    if let Some(bundle) = executable.and_then(crate::processes::bundle_root) {
+        if let Some(stem) = std::path::Path::new(&bundle).file_stem() {
+            return (stem.to_string_lossy().into_owned(), false);
+        }
+    }
+    let parts: Vec<&str> = label.split('.').collect();
+    let owner = match parts.as_slice() {
+        // A capitalised third part is usually the product: dev.orbstack.OrbStack…
+        [_, _, product, ..] if product.chars().any(char::is_uppercase) => product.to_string(),
+        [_, maker, ..] => {
+            let mut chars = maker.chars();
+            chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+        }
+        _ => label.to_string(),
+    };
+    (owner, false)
 }
 
 fn startup_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
@@ -270,182 +313,198 @@ fn startup_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>
 fn startup(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if view.tools.startup_busy {
-        body = body.child(sub(l(
-            "Reading startup registrations…",
-            "Leser oppstartsregistreringer…",
-        )));
+        body = body.child(sub(l("Reading startup registrations…", "Leser oppstartsregistreringer…")).text_color(t::ink_dim(dark)));
     }
-    if let Some(inventory) = &view.tools.startup {
-        if !inventory.warnings.is_empty() {
-            // A skipped entry is worth knowing, not worth alarming about:
-            // one quiet line, with the reasons after it.
-            body = body.child(
-                sub(format!(
-                    "{} {}",
-                    l(
-                        "Partial list: some registrations were skipped.",
-                        "Delvis liste: noen registreringer ble hoppet over.",
-                    ),
-                    inventory.warnings.join(" ")
-                ))
-                .text_color(t::ink_dim(dark)),
-            );
-        }
-        if inventory.entries.is_empty() {
-            body = body.child(empty_state(
-                Page::Startup.icon(),
-                t::accent(dark),
-                l("No registrations found", "Ingen registreringer funnet").into(),
-                l(
-                    "No registrations found in the inspected locations.",
-                    "Ingen registreringer funnet på de undersøkte stedene.",
-                )
-                .into(),
-                dark,
-            ));
-        } else {
-            let len = inventory.entries.len();
-            let range = startup_page_range(view.tools.startup_page, len);
-            body = body.child(crate::ui::section_header(
-                l("Startup registrations", "Oppstartsregistreringer"),
-                &format!(
-                    "{} {} {} {}",
-                    l("Showing", "Viser"),
-                    if range.end - range.start == 1 {
-                        range.end.to_string()
-                    } else {
-                        format!("{}–{}", range.start + 1, range.end)
-                    },
-                    l("of", "av"),
-                    len
-                ),
-                dark,
-            ));
-            let pages = len.div_ceil(STARTUP_PAGE_SIZE);
-            let page = range.start / STARTUP_PAGE_SIZE;
-            if pages > 1 {
-                let mut paging = div()
+    let Some(inventory) = &view.tools.startup else {
+        return body;
+    };
+    if !inventory.warnings.is_empty() {
+        // A skipped entry is worth knowing, not worth alarming about.
+        body = body.child(skipped_note(
+            Page::Startup,
+            l("Partial list: some registrations were skipped.", "Delvis liste: noen registreringer ble hoppet over.").into(),
+            &inventory.warnings,
+            view.tools.skipped_open == Some(Page::Startup),
+            dark,
+            this.clone(),
+        ));
+    }
+    if inventory.entries.is_empty() {
+        return body.child(empty_state(
+            Page::Startup.icon(),
+            t::accent(dark),
+            l("No registrations found", "Ingen registreringer funnet").into(),
+            l("No registrations found in the inspected locations.", "Ingen registreringer funnet på de undersøkte stedene.").into(),
+            dark,
+        ));
+    }
+    let query = view.startup_query.as_str();
+    let owned: Vec<(String, bool, &crate::startup::Entry)> = inventory
+        .entries
+        .iter()
+        .map(|e| {
+            let (owner, apple) = startup_owner(&e.label, e.executable.as_deref());
+            (owner, apple, e)
+        })
+        .collect();
+    let apple_count = owned.iter().filter(|(_, apple, _)| *apple).count();
+    let matches = |owner: &str, e: &crate::startup::Entry| {
+        query.is_empty()
+            || owner.to_lowercase().contains(query)
+            || e.label.to_lowercase().contains(query)
+            || e.executable.as_deref().is_some_and(|x| x.to_lowercase().contains(query))
+    };
+    let mut visible: Vec<&(String, bool, &crate::startup::Entry)> = owned
+        .iter()
+        .filter(|(owner, apple, e)| (view.tools.startup_show_apple || !apple) && matches(owner, e))
+        .collect();
+    // Third-party groups alphabetically, Apple's own last.
+    visible.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())).then_with(|| a.2.label.cmp(&b.2.label)));
+    let apple_target = this.clone();
+    let show_apple = view.tools.startup_show_apple;
+    body = body.child(
+        div()
+            .flex()
+            .items_center()
+            .gap(t::SPACE_3)
+            .child(
+                div()
+                    .w(px(260.))
+                    .h(t::CONTROL_H)
+                    .px(t::SPACE_2)
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(sub(format!("{}/{}", page + 1, pages)));
-                for (offset, label) in [(-1i32, l("Previous", "Forrige")), (1, l("Next", "Neste"))] {
-                    let next = page as i32 + offset;
-                    if next >= 0 && (next as usize) < pages {
-                        let target = this.clone();
-                        paging = paging.child(button(
-                            format!("startup-page-{offset}"),
-                            label,
-                            false,
-                            dark,
-                            move |_, cx| {
-                                target.update(cx, |v, cx| {
-                                    v.tools.startup_page = next as usize;
-                                    v.scroll.set_offset(point(px(0.), px(0.)));
-                                    cx.notify();
-                                });
-                            },
-                        ));
-                    }
-                }
-                body = body.child(paging);
-            }
-            let mut list = card(dark).p_0().py_1().gap_0();
-            for (i, entry) in inventory
-                .entries
-                .iter()
-                .enumerate()
-                .skip(range.start)
-                .take(range.len())
-            {
-                // Only an override says something; most entries have none.
-                let state = entry.disabled.map(|disabled| {
-                    if disabled {
-                        l("Disabled override", "Overstyring: deaktivert")
-                    } else {
-                        l("Enabled override", "Overstyring: aktivert")
-                    }
+                    .rounded(t::RADIUS_CONTROL)
+                    .border_1()
+                    .border_color(t::line(dark))
+                    .text_size(t::TEXT_BODY)
+                    .child(gpui_kit::base::input::Input::new(&view.startup_filter)),
+            )
+            .child(div().flex_1())
+            .child(sub(format!("{} ({apple_count})", l("Show Apple's own", "Vis Apples egne"))).text_color(t::ink_dim(dark)))
+            .child(crate::controls::switch("startup-apple", l("Show Apple's own registrations", "Vis Apples egne registreringer"), show_apple, dark, move |_, cx| {
+                apple_target.update(cx, |v, cx| {
+                    v.tools.startup_show_apple = !v.tools.startup_show_apple;
+                    v.tools.startup_limit = LIST_STEP;
+                    cx.notify();
                 });
-                // One table row per registration: label and program on the
-                // left, kind and state on the right; the plist path is the
-                // small line under the label.
-                let mut row = div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .when(i > range.start, |d| d.border_t_1().border_color(t::line(dark)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(t::TEXT_ROW)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(entry.label.clone()),
-                            )
-                            .child(mono(
-                                entry.executable.as_deref().map(crate::processes::path_summary).unwrap_or_else(|| {
-                                    l("Executable unknown", "Ukjent kjørbar fil").into()
-                                }),
-                                dark,
-                            ).truncate())
-                            .child(mono(entry.path.display().to_string(), dark).truncate())
-                            .when(!entry.reason.is_empty(), |d| {
-                                d.child(sub(entry.reason.clone()).text_color(t::caution(dark)))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px_2()
-                            .rounded(t::RADIUS_CHIP)
-                            .bg(t::card_hi(dark))
-                            .text_xs()
-                            .child(entry.source.clone()),
-                    )
-                    .when_some(state, |d, state| {
-                        d.child(
-                            div()
-                                .w(px(150.))
-                                .flex_shrink_0()
-                                .flex()
-                                .justify_end()
-                                .text_xs()
-                                .text_color(t::ink_dim(dark))
-                                .child(state),
-                        )
-                    });
-                if entry.manageable && !view.tools.startup_busy {
-                    if let Some(disabled) = entry.disabled {
-                        let target = this.clone();
-                        let entry = entry.clone();
-                        row = row.child(button(
-                            format!("startup-toggle-{i}"),
-                            if disabled {
-                                l("Enable…", "Aktiver…")
-                            } else {
-                                l("Disable…", "Deaktiver…")
-                            },
-                            false,
-                            dark,
-                            move |window, cx| {
-                                startup_change(&target, entry.clone(), !disabled, window, cx)
-                            },
-                        ));
-                    }
-                }
-                list = list.child(row);
-            }
-            body = body.child(list);
+            })),
+    );
+    if visible.is_empty() {
+        return body.child(empty_state(
+            Page::Startup.icon(),
+            t::accent(dark),
+            l("Nothing matches", "Ingenting passer").into(),
+            l("Try another name, or show Apple's own registrations.", "Prøv et annet navn, eller vis Apples egne registreringer.").into(),
+            dark,
+        ));
+    }
+    let shown = visible.len().min(view.tools.startup_limit);
+    let mut i = 0;
+    while i < shown {
+        let owner = visible[i].0.clone();
+        let group_len = visible[i..].iter().take_while(|(o, ..)| *o == owner).count();
+        let take = group_len.min(shown - i);
+        body = body.child(crate::ui::section_header(&owner, &group_len.to_string(), dark));
+        let mut list = card(dark).p_0().py_1().gap_0();
+        for (index, (_, _, entry)) in visible[i..i + take].iter().enumerate() {
+            list = startup_row(list, view, entry, i + index, dark, this.clone());
         }
+        body = body.child(list);
+        i += take;
+    }
+    if visible.len() > shown {
+        let target = this.clone();
+        body = body.child(show_more("startup-more", visible.len() - shown, dark, move |cx| {
+            target.update(cx, |v, cx| {
+                v.tools.startup_limit += LIST_STEP;
+                cx.notify();
+            });
+        }));
     }
     body
+}
+
+/// One registration: the program's name, its label underneath, its kind on
+/// the right; picking it shows the paths and the change action.
+fn startup_row(list: Div, view: &TideGaugeView, entry: &crate::startup::Entry, i: usize, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let selected = view.tools.startup_selected.as_ref() == Some(&entry.path);
+    let name = startup_name(&entry.label, entry.executable.as_deref());
+    let bundle = entry.executable.as_deref().and_then(crate::processes::bundle_root);
+    let icon = match bundle {
+        Some(path) => crate::ui::bundle_icon(Some(&path), dark),
+        None => crate::ui::glyph_tile("icons/power.svg", dark).into_any_element(),
+    };
+    let mut trailing: Vec<AnyElement> = Vec::new();
+    if let Some(disabled) = entry.disabled {
+        trailing.push(
+            crate::ui::chip(
+                if disabled { l("Disabled override", "Overstyring: deaktivert") } else { l("Enabled override", "Overstyring: aktivert") },
+                None,
+                dark,
+            )
+            .into_any_element(),
+        );
+    }
+    if !entry.reason.is_empty() {
+        trailing.push(svg().path("icons/triangle-alert.svg").size(px(13.)).text_color(t::caution(dark)).into_any_element());
+    }
+    trailing.push(
+        div()
+            .w(px(140.))
+            .flex_shrink_0()
+            .flex()
+            .justify_end()
+            .text_size(t::TEXT_SMALL)
+            .text_color(t::ink_dim(dark))
+            .child(entry.source.clone())
+            .into_any_element(),
+    );
+    let path = entry.path.clone();
+    let toggle_target = this.clone();
+    let mut list = list.child(crate::ui::list_row(
+        format!("startup-{i}"),
+        icon,
+        name,
+        Some(entry.label.clone()),
+        trailing,
+        selected,
+        dark,
+        Some(std::rc::Rc::new(move |cx: &mut App| {
+            toggle_target.update(cx, |v, cx| {
+                v.tools.startup_selected = if v.tools.startup_selected.as_ref() == Some(&path) { None } else { Some(path.clone()) };
+                cx.notify();
+            });
+        })),
+    ));
+    if selected {
+        let mut actions = div().flex().flex_wrap().gap(t::SPACE_2);
+        let plist = entry.path.clone();
+        actions = actions.child(button(format!("startup-reveal-{i}"), l("Reveal", "Vis i Finder"), false, dark, move |_, _| {
+            crate::storage::reveal(&plist)
+        }));
+        if entry.manageable && !view.tools.startup_busy {
+            if let Some(disabled) = entry.disabled {
+                let target = this.clone();
+                let entry = entry.clone();
+                actions = actions.child(button(
+                    format!("startup-toggle-{i}"),
+                    if disabled { l("Enable…", "Aktiver…") } else { l("Disable…", "Deaktiver…") },
+                    false,
+                    dark,
+                    move |window, cx| startup_change(&target, entry.clone(), !disabled, window, cx),
+                ));
+            }
+        }
+        list = list.child(
+            crate::ui::row_detail(dark)
+                .when(!entry.reason.is_empty(), |d| d.child(div().text_color(t::caution(dark)).child(entry.reason.clone())))
+                .child(mono(entry.executable.clone().unwrap_or_else(|| l("Executable unknown", "Ukjent kjørbar fil").into()), dark))
+                .child(mono(entry.path.display().to_string(), dark))
+                .child(actions),
+        );
+    }
+    list
 }
 
 fn startup_change(
@@ -549,55 +608,64 @@ fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         ));
     }
     let dash = || String::from("—");
-    let mut list = card(dark).gap_0().child(
-        activity_row(
-            div().child(l("Process", "Prosess")),
-            "PID".into(),
-            "CPU".into(),
-            l("Disk I/O", "Diskaktivitet").into(),
-            l("Wakeups/s", "Oppvåkninger/s").into(),
-        )
-        .text_color(t::ink_dim(dark))
-        .pb_2()
-        .border_b_1()
-        .border_color(t::line(dark)),
+    let cell = |width: f32, value: String| {
+        div()
+            .w(px(width))
+            .flex_shrink_0()
+            .flex()
+            .justify_end()
+            .text_size(t::TEXT_BODY)
+            .child(value)
+            .into_any_element()
+    };
+    // Header cells line up with the row cells: the row's icon and gaps sit
+    // in front of the name.
+    let mut list = card(dark).p_0().py_1().gap_0().child(
+        div()
+            .flex()
+            .items_center()
+            .gap(t::SPACE_3)
+            .mx(t::SPACE_2)
+            .px(t::SPACE_3)
+            .pt(t::SPACE_2)
+            .pb(t::SPACE_1)
+            .text_size(t::TEXT_CAPTION)
+            .text_color(t::ink_dim(dark))
+            .child(div().flex_1().child(l("Process", "Prosess").to_uppercase()))
+            .child(cell(56., "PID".into()))
+            .child(cell(64., "CPU".into()))
+            .child(cell(100., l("Disk I/O", "Diskaktivitet").to_uppercase()))
+            .child(cell(116., l("Wakeups/s", "Oppvåkninger/s").to_uppercase())),
     );
-    for r in rows.iter().take(80) {
-        list = list.child(
-            activity_row(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    // The kernel's process name stops at 16 characters; the
-                    // executable's file name is the full name.
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(
-                        std::path::Path::new(&r.path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .filter(|n| !n.is_empty())
-                            .unwrap_or_else(|| r.name.clone()),
-                    ))
-                    .child(mono(crate::processes::path_summary(&r.path), dark).truncate())
-                    // Coverage only matters while it is short of the full minute.
-                    .when(r.covered < 59.5 || r.wakeups_covered < 59.5, |d| {
-                        d.child(sub(format!(
-                            "{:.0} {} / {:.0} {}",
-                            r.covered,
-                            l("s CPU/I/O", "s CPU/I/O"),
-                            r.wakeups_covered,
-                            l("s wakeups", "s oppvåkninger")
-                        )).text_color(t::ink_dim(dark)))
-                    }),
-                r.pid.to_string(),
-                r.cpu.map(|v| crate::locale::percent(v, 1)).unwrap_or_else(dash),
-                r.io.map(crate::engine::fmt_rate).unwrap_or_else(dash),
-                r.interrupt_wakeups.map(|v| crate::locale::number(v, 1)).unwrap_or_else(dash),
-            )
-            .py_2()
-            .border_b_1()
-            .border_color(t::line(dark)),
-        );
+    for (i, r) in rows.iter().take(80).enumerate() {
+        // The kernel's process name stops at 16 characters; the executable's
+        // file name is the full name.
+        let name = std::path::Path::new(&r.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| r.name.clone());
+        let mut meta = crate::processes::path_summary(&r.path);
+        // Coverage only matters while it is short of the full minute.
+        if r.covered < 59.5 || r.wakeups_covered < 59.5 {
+            meta = format!("{meta} · {:.0} {}", r.covered.min(r.wakeups_covered), l("s observed", "s observert"));
+        }
+        let bundle = crate::processes::bundle_root(&r.path);
+        list = list.child(crate::ui::list_row(
+            format!("activity-{i}"),
+            crate::ui::bundle_icon(bundle.as_deref(), dark),
+            if r.own { format!("{name} · Tidegauge") } else { name },
+            Some(meta),
+            vec![
+                cell(56., r.pid.to_string()),
+                cell(64., r.cpu.map(|v| crate::locale::percent(v, 1)).unwrap_or_else(dash)),
+                cell(100., r.io.map(crate::engine::fmt_rate).unwrap_or_else(dash)),
+                cell(116., r.interrupt_wakeups.map(|v| crate::locale::number(v, 1)).unwrap_or_else(dash)),
+            ],
+            false,
+            dark,
+            None,
+        ));
     }
     body.child(list)
 }
@@ -608,30 +676,6 @@ fn mono(text: impl Into<String>, dark: bool) -> Div {
         .font_family("Menlo")
         .text_color(t::ink_dim(dark))
         .child(text.into())
-}
-
-/// One row of the activity table: the process on the left, then fixed-width
-/// right-aligned columns so the numbers line up from row to row.
-fn activity_row(name: Div, pid: String, cpu: String, io: String, wakeups: String) -> Div {
-    let cell = |width: f32, value: String| {
-        div()
-            .w(px(width))
-            .flex_shrink_0()
-            .flex()
-            .justify_end()
-            .text_xs()
-            .child(value)
-    };
-    div()
-        .flex()
-        .items_start()
-        .gap_3()
-        .text_xs()
-        .child(name.flex_1().min_w_0())
-        .child(cell(56., pid))
-        .child(cell(64., cpu))
-        .child(cell(100., io))
-        .child(cell(116., wakeups))
 }
 
 fn load_baseline(this: &Entity<TideGaugeView>, cx: &mut App) {
@@ -1030,7 +1074,7 @@ fn refresh_packages(this: &Entity<TideGaugeView>, updates: bool, cx: &mut App) {
         this.update(cx, |v, cx| {
             v.tools.packages = Some(inventory);
             v.tools.packages_busy = false;
-            v.tools.package_page = 0;
+            v.tools.package_limit = LIST_STEP;
             cx.notify();
         });
     })
@@ -1096,7 +1140,7 @@ fn package_action(
         this.update(cx, |v, cx| {
             v.tools.packages_busy = false;
             v.tools.packages = Some(inventory);
-            v.tools.package_page = 0;
+            v.tools.package_limit = LIST_STEP;
             v.tools.message = Some(match result {
                 Ok(s) | Err(s) => s,
             });
@@ -1126,6 +1170,87 @@ fn package_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>
     actions
 }
 
+/// Rows a long list shows at first and adds with each "Show more".
+pub(crate) const LIST_STEP: usize = 60;
+
+fn package_key(p: &crate::packages::Package) -> String {
+    format!("{:?}:{}:{}", p.source, p.name, p.path.display())
+}
+
+fn package_icon(p: &crate::packages::Package, dark: bool) -> AnyElement {
+    use crate::packages::Source;
+    match p.source {
+        Source::App => crate::ui::bundle_icon(p.path.to_str(), dark),
+        Source::BrewFormula => crate::ui::glyph_tile("icons/beer.svg", dark).into_any_element(),
+        Source::BrewCask => crate::ui::glyph_tile("icons/package.svg", dark).into_any_element(),
+        Source::Npm => crate::ui::glyph_tile("icons/hexagon.svg", dark).into_any_element(),
+    }
+}
+
+/// A newer version than the one installed, when a check found one.
+fn newer_version(p: &crate::packages::Package) -> Option<&str> {
+    p.latest.as_deref().filter(|latest| *latest != p.version)
+}
+
+/// One quiet line saying some items were skipped; clicking it shows why.
+fn skipped_note(page: Page, headline: String, reasons: &[String], open: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let keyboard = this.clone();
+    let toggle = move |this: &Entity<TideGaugeView>, cx: &mut App| {
+        this.update(cx, |v, cx| {
+            v.tools.skipped_open = if v.tools.skipped_open == Some(page) { None } else { Some(page) };
+            cx.notify();
+        });
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(t::SPACE_1)
+        .child(
+            div()
+                .id(SharedString::from(format!("{}-skipped", page.key())))
+                .role(Role::Button)
+                .aria_label(SharedString::from(headline.clone()))
+                .aria_expanded(open)
+                .tab_index(0)
+                .flex()
+                .items_center()
+                .gap(t::SPACE_1)
+                .cursor_pointer()
+                .text_size(t::TEXT_SMALL)
+                .text_color(t::ink_dim(dark))
+                .hover(|d| d.text_color(t::ink(dark)))
+                .child(svg().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(11.)).text_color(t::ink_dim(dark)))
+                .child(headline)
+                .on_click({
+                    let this = this.clone();
+                    move |_, _, cx| toggle(&this, cx)
+                })
+                .capture_key_down(move |event, window, cx| {
+                    if crate::controls::is_activation_key(&event.keystroke) {
+                        window.prevent_default();
+                        toggle(&keyboard, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+        )
+        .when(open, |d| {
+            d.children(reasons.iter().map(|reason| {
+                div().pl(t::SPACE_4).text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).child(reason.clone())
+            }))
+        })
+}
+
+/// "Show more" under a long list: adds another step of rows.
+fn show_more(id: &'static str, hidden: usize, dark: bool, add: impl Fn(&mut App) + 'static) -> Div {
+    div().flex().justify_center().pt(t::SPACE_1).child(button(
+        id,
+        format!("{} ({hidden})", l("Show more", "Vis flere")),
+        false,
+        dark,
+        move |_, cx| add(cx),
+    ))
+}
+
 fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     use crate::packages::Source;
     let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
@@ -1133,7 +1258,7 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
         body = body.child(sub(l(
             "Working… Other package actions are locked until this finishes.",
             "Arbeider… Andre pakkehandlinger er låst til dette er ferdig.",
-        )));
+        )).text_color(t::ink_dim(dark)));
     }
     let Some(inventory) = &view.tools.packages else {
         return body.child(empty_state(
@@ -1150,37 +1275,27 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
     };
     // Skipped items are worth knowing, not alarming: one quiet line.
     if !inventory.warnings.is_empty() {
-        body = body.child(
-            sub(format!(
-                "{} {}",
-                crate::locale::count(
-                    inventory.warnings.len() as u64,
-                    "item was skipped:",
-                    "items were skipped:",
-                    "element ble hoppet over:",
-                    "elementer ble hoppet over:",
-                ),
-                inventory.warnings.join(" ")
-            ))
-            .text_color(t::ink_dim(dark)),
-        );
+        body = body.child(skipped_note(
+            Page::Packages,
+            crate::locale::count(
+                inventory.warnings.len() as u64,
+                "item was skipped",
+                "items were skipped",
+                "element ble hoppet over",
+                "elementer ble hoppet over",
+            ),
+            &inventory.warnings,
+            view.tools.skipped_open == Some(Page::Packages),
+            dark,
+            this.clone(),
+        ));
     }
-    let mut filters = div().flex().flex_wrap().items_center().gap_2();
-    let mut sources =
-        segment_group("package-sources", l("Package source", "Pakkekilde"), dark).flex_wrap();
-    for (i, source) in [
-        None,
-        Some(Source::App),
-        Some(Source::BrewFormula),
-        Some(Source::BrewCask),
-        Some(Source::Npm),
-    ]
-    .into_iter()
-    .enumerate()
+    let mut sources = segment_group("package-sources", l("Package source", "Pakkekilde"), dark);
+    for (i, source) in [None, Some(Source::App), Some(Source::BrewFormula), Some(Source::BrewCask), Some(Source::Npm)]
+        .into_iter()
+        .enumerate()
     {
-        let label = source
-            .map(|s| s.label())
-            .unwrap_or(l("All sources", "Alle kilder"));
+        let label = source.map(|s| s.label()).unwrap_or(l("All sources", "Alle kilder"));
         let target = this.clone();
         sources = sources.child(segment(
             format!("package-source-{i}"),
@@ -1191,181 +1306,165 @@ fn packages(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Di
             move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.tools.package_source = source;
-                    v.tools.package_page = 0;
+                    v.tools.package_limit = LIST_STEP;
                     cx.notify();
                 });
             },
         ));
     }
-    filters = filters.child(sources);
-    let mut sorts = segment_group("package-sort", l("Sort", "Sortering"), dark);
-    for (source, label) in [
-        (false, l("Sort: name", "Sorter: navn")),
-        (true, l("Sort: source", "Sorter: kilde")),
-    ] {
-        let target = this.clone();
-        sorts = sorts.child(segment(
-            format!("package-sort-{source}"),
-            label,
-            view.tools.package_sort_source == source,
-            dark,
-            t::accent(dark),
-            move |_, cx| {
-                target.update(cx, |v, cx| {
-                    v.tools.package_sort_source = source;
-                    v.tools.package_page = 0;
-                    cx.notify();
-                });
-            },
-        ));
-    }
-    filters = filters.child(sorts);
-    body = body.child(filters);
+    let sort_target = this.clone();
+    let by_source = view.tools.package_sort_source;
     let mut rows: Vec<_> = inventory
         .items
         .iter()
         .filter(|p| view.tools.package_source.is_none_or(|s| p.source == s))
         .collect();
     rows.sort_by(|a, b| {
-        let order = if view.tools.package_sort_source {
-            a.source.label().cmp(b.source.label())
-        } else {
-            std::cmp::Ordering::Equal
-        };
-        order
+        let order = if by_source { a.source.label().cmp(b.source.label()) } else { std::cmp::Ordering::Equal };
+        // Packages with an update come first: that is what the page is for.
+        newer_version(b).is_some().cmp(&newer_version(a).is_some())
+            .then(order)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             .then_with(|| a.path.cmp(&b.path))
     });
-    let pages = rows.len().div_ceil(50).max(1);
-    let page = view.tools.package_page.min(pages - 1);
-    let mut paging = div().flex().items_center().gap_2().child(sub(format!(
-        "{} · {} {}/{}",
-        crate::locale::count(rows.len() as u64, "item", "items", "element", "elementer"),
-        l("Page", "Side"),
-        page + 1,
-        pages
-    )));
-    for (offset, label) in [(-1i32, l("Previous", "Forrige")), (1, l("Next", "Neste"))] {
-        let next = page as i32 + offset;
-        if next >= 0 && (next as usize) < pages {
-            let target = this.clone();
-            paging = paging.child(button(
-                format!("package-page-{offset}"),
-                label,
+    let updates = rows.iter().filter(|p| newer_version(p).is_some()).count();
+    body = body.child(
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(t::SPACE_3)
+            .child(sources)
+            .child(div().flex_1())
+            .child(button(
+                "package-sort",
+                if by_source { l("Sorted by source", "Sortert etter kilde") } else { l("Sorted by name", "Sortert etter navn") },
                 false,
                 dark,
                 move |_, cx| {
-                    target.update(cx, |v, cx| {
-                        v.tools.package_page = next as usize;
-                        v.scroll.set_offset(point(px(0.), px(0.)));
+                    sort_target.update(cx, |v, cx| {
+                        v.tools.package_sort_source = !v.tools.package_sort_source;
                         cx.notify();
                     });
                 },
-            ));
+            )),
+    );
+    body = body.child(crate::ui::section_header(
+        &crate::locale::count(rows.len() as u64, "item", "items", "element", "elementer"),
+        &if updates > 0 {
+            crate::locale::count(updates as u64, "update available", "updates available", "oppdatering tilgjengelig", "oppdateringer tilgjengelig")
+        } else {
+            String::new()
+        },
+        dark,
+    ));
+    let shown = rows.len().min(view.tools.package_limit);
+    let mut list = card(dark).p_0().py_1().gap_0();
+    for (i, p) in rows.iter().take(shown).enumerate() {
+        let key = package_key(p);
+        let selected = view.tools.package_selected.as_deref() == Some(key.as_str());
+        let toggle_target = this.clone();
+        let toggle_key = key.clone();
+        let mut trailing: Vec<AnyElement> = Vec::new();
+        if let Some(latest) = newer_version(p) {
+            trailing.push(crate::ui::chip(format!("{} {latest}", l("Update to", "Oppdater til")), Some(t::ok(dark)), dark).into_any_element());
         }
-    }
-    body = body.child(paging);
-    for (i, p) in rows.into_iter().skip(page * 50).take(50).enumerate() {
-        let mut row_actions = div().flex().flex_wrap().gap_2();
-        if p.path.is_absolute() {
-            let path = p.path.clone();
-            row_actions = row_actions.child(button(
-                format!("package-reveal-{i}"),
-                l("Reveal", "Vis i Finder"),
-                false,
-                dark,
-                move |_, _| crate::storage::reveal(&path),
-            ));
-        }
-        if !view.tools.packages_busy {
-            for (remove, enabled, label) in [
-                (false, p.can_update, l("Update…", "Oppdater…")),
-                (true, p.can_remove, l("Remove…", "Fjern…")),
-            ] {
-                if enabled {
-                    let target = this.clone();
-                    let package = p.clone();
-                    row_actions = row_actions.child(button(
-                        format!("package-act-{i}-{remove}"),
-                        label,
-                        false,
-                        dark,
-                        move |window, cx| {
+        trailing.push(
+            div()
+                .w(px(140.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_size(t::TEXT_SMALL)
+                .text_color(t::ink_dim(dark))
+                .child(p.source.label())
+                .into_any_element(),
+        );
+        list = list.child(crate::ui::list_row(
+            format!("package-{i}"),
+            package_icon(p, dark),
+            p.name.clone(),
+            Some(format!("{} · {}", p.version, crate::processes::path_summary(&p.path.display().to_string()))),
+            trailing,
+            selected,
+            dark,
+            Some(std::rc::Rc::new(move |cx: &mut App| {
+                toggle_target.update(cx, |v, cx| {
+                    v.tools.package_selected =
+                        if v.tools.package_selected.as_deref() == Some(toggle_key.as_str()) { None } else { Some(toggle_key.clone()) };
+                    cx.notify();
+                });
+            })),
+        ));
+        if selected {
+            let mut actions = div().flex().flex_wrap().gap(t::SPACE_2);
+            if p.path.is_absolute() {
+                let path = p.path.clone();
+                actions = actions.child(button(format!("package-reveal-{i}"), l("Reveal", "Vis i Finder"), false, dark, move |_, _| {
+                    crate::storage::reveal(&path)
+                }));
+            }
+            if !view.tools.packages_busy {
+                for (remove, enabled, label) in [
+                    (false, p.can_update, l("Update…", "Oppdater…")),
+                    (true, p.can_remove, l("Remove…", "Fjern…")),
+                ] {
+                    if enabled {
+                        let target = this.clone();
+                        let package = (*p).clone();
+                        actions = actions.child(button(format!("package-act-{i}-{remove}"), label, false, dark, move |window, cx| {
                             package_action(&target, package.clone(), remove, window, cx)
-                        },
-                    ));
+                        }));
+                    }
                 }
             }
+            list = list.child(
+                crate::ui::row_detail(dark)
+                    .when(!p.reason.is_empty(), |d| d.child(p.reason.clone()))
+                    .child(actions),
+            );
         }
-        body = body.child(
-            card(dark)
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("{} · {}", p.name, p.version)),
-                        )
-                        .child(sub(p.source.label())),
-                )
-                .child(sub(format!(
-                    "{}: {}",
-                    l("Available version", "Tilgjengelig versjon"),
-                    p.latest
-                        .as_deref()
-                        .unwrap_or(l("Not checked / unknown", "Ikke kontrollert / ukjent"))
-                )))
-                .child(sub(p.path.display().to_string()))
-                .child(sub(p.reason.clone()))
-                .child(row_actions),
-        );
+    }
+    body = body.child(list);
+    if rows.len() > shown {
+        let target = this.clone();
+        body = body.child(show_more("packages-more", rows.len() - shown, dark, move |cx| {
+            target.update(cx, |v, cx| {
+                v.tools.package_limit += LIST_STEP;
+                cx.notify();
+            });
+        }));
     }
     body
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{startup_page_range, STARTUP_PAGE_SIZE};
+    use super::{startup_name, startup_owner};
 
     #[test]
-    fn startup_page_range_empty() {
-        assert_eq!(startup_page_range(0, 0), 0..0);
-        assert_eq!(startup_page_range(usize::MAX, 0), 0..0);
+    fn startup_names_skip_shells() {
+        assert_eq!(startup_name("com.trycua.spacesd", Some("/bin/bash")), "spacesd");
+        assert_eq!(startup_name("com.google.keystone.agent", Some("/Library/Google/GoogleSoftwareUpdate/Agent")), "Agent");
+        assert_eq!(startup_name("com.example.thing", None), "thing");
     }
 
     #[test]
-    fn startup_page_range_boundaries() {
-        assert_eq!(startup_page_range(0, 1), 0..1);
-        assert_eq!(startup_page_range(0, 20), 0..20);
-        assert_eq!(startup_page_range(0, 21), 0..20);
-        assert_eq!(startup_page_range(1, 21), 20..21);
-        assert_eq!(startup_page_range(0, 40), 0..20);
-        assert_eq!(startup_page_range(1, 40), 20..40);
-        assert_eq!(startup_page_range(0, 41), 0..20);
-        assert_eq!(startup_page_range(1, 41), 20..40);
-        assert_eq!(startup_page_range(2, 41), 40..41);
-    }
-
-    #[test]
-    fn startup_page_range_clamps_to_last_page() {
-        assert_eq!(startup_page_range(usize::MAX, 41), 40..41);
-        assert_eq!(startup_page_range(usize::MAX, 20), 0..20);
-        assert_eq!(startup_page_range(usize::MAX, 1), 0..1);
-    }
-
-    #[test]
-    fn startup_pages_cover_every_entry_exactly_once() {
-        for len in [1usize, 19, 20, 21, 39, 40, 41, 100, 255] {
-            let mut covered = Vec::new();
-            for page in 0..len.div_ceil(STARTUP_PAGE_SIZE) {
-                covered.extend(startup_page_range(page, len));
-            }
-            assert_eq!(covered, (0..len).collect::<Vec<_>>(), "len {len}");
-        }
+    fn startup_entries_group_by_app_or_maker() {
+        let own = |label: &str, exe: Option<&str>| startup_owner(label, exe);
+        assert_eq!(
+            own("com.microsoft.update.agent", Some("/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app/Contents/MacOS/Microsoft Update Assistant.app/Contents/MacOS/x")),
+            ("Microsoft AutoUpdate".into(), false)
+        );
+        assert_eq!(own("dev.orbstack.OrbStack.privhelper", Some("/Library/PrivilegedHelperTools/dev.orbstack.OrbStack.privhelper")), ("OrbStack".into(), false));
+        assert_eq!(own("com.microsoft.update.agent", None), ("Microsoft".into(), false));
+        assert_eq!(own("com.apple.AMPArtworkAgent", Some("/System/Library/x")), ("Apple".into(), true));
+        assert_eq!(own("helper", Some("/usr/libexec/helper")), ("Apple".into(), true));
+        assert_eq!(own("standalone", None), ("standalone".into(), false));
+        assert_eq!(
+            own("homebrew.mxcl.postgresql", Some("/usr/local/opt/postgresql/bin/postgres")),
+            ("Mxcl".into(), false),
+            "/usr/local is third-party"
+        );
     }
 }

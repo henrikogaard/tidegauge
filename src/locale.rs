@@ -1,31 +1,59 @@
-//! The UI language, chosen once per run: Norwegian Bokmål when the first
-//! preferred macOS language is `nb`, `nn` or `no`, otherwise English.
+//! The UI language: English or Norwegian Bokmål. Settings can pick one;
+//! otherwise Norwegian when the first preferred macOS language is `nb`, `nn`
+//! or `no`, else English. It can change while the app runs.
 //!
 //! Every visible string goes through `text` (or `plural`/`count`), and every
 //! visible number goes through `number`/`percent`/`decimal`, so the two
 //! languages never mix. `locale_guard` fails the tests when text bypasses
 //! these helpers.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// 0 until decided, then 1 for English or 2 for Norwegian.
+static LANGUAGE: AtomicU8 = AtomicU8::new(0);
+
+/// What the first preferred macOS language asks for.
+fn system_is_norwegian() -> bool {
+    objc2_foundation::NSLocale::preferredLanguages()
+        .firstObject()
+        .map(|language| {
+            matches!(language.to_string().split(['-', '_']).next(), Some("nb" | "nn" | "no"))
+        })
+        .unwrap_or(false)
+}
+
+/// A saved choice ("en" or "nb") wins; otherwise macOS decides.
+fn decide(choice: Option<&str>) -> bool {
+    match choice {
+        Some("nb") => true,
+        Some("en") => false,
+        _ => system_is_norwegian(),
+    }
+}
 
 pub fn is_norwegian() -> bool {
-    static NORWEGIAN: OnceLock<bool> = OnceLock::new();
-    *NORWEGIAN.get_or_init(|| {
-        // Lets one test run exercise either language: `TIDEGAUGE_TEST_LANG=nb`.
-        #[cfg(test)]
-        if let Ok(language) = std::env::var("TIDEGAUGE_TEST_LANG") {
-            return language == "nb";
+    match LANGUAGE.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            // Lets one test run exercise either language: `TIDEGAUGE_TEST_LANG=nb`.
+            #[cfg(test)]
+            let norwegian = match std::env::var("TIDEGAUGE_TEST_LANG") {
+                Ok(language) => language == "nb",
+                Err(_) => system_is_norwegian(),
+            };
+            #[cfg(not(test))]
+            let norwegian = decide(crate::settings::Settings::load().language.as_deref());
+            LANGUAGE.store(if norwegian { 2 } else { 1 }, Ordering::Relaxed);
+            norwegian
         }
-        objc2_foundation::NSLocale::preferredLanguages()
-            .firstObject()
-            .map(|language| {
-                matches!(
-                    language.to_string().split(['-', '_']).next(),
-                    Some("nb" | "nn" | "no")
-                )
-            })
-            .unwrap_or(false)
-    })
+    }
+}
+
+/// Switch the language while running: "en", "nb", or `None` for macOS's.
+/// Everything drawn afterwards uses it; nothing mixes the two.
+pub fn set_language(choice: Option<&str>) {
+    LANGUAGE.store(if decide(choice) { 2 } else { 1 }, Ordering::Relaxed);
 }
 
 pub fn text(english: &'static str, norwegian: &'static str) -> &'static str {
@@ -166,6 +194,14 @@ mod tests {
         assert_eq!(decimal_in(false, "6.74 GB".into()), "6.74 GB");
         assert_eq!(decimal_in(true, "6.74 GB".into()), "6,74 GB");
         assert_eq!(decimal_in(true, "1500".into()), "1500");
+    }
+
+    #[test]
+    fn a_saved_language_wins_over_the_system() {
+        assert!(decide(Some("nb")));
+        assert!(!decide(Some("en")));
+        assert_eq!(decide(None), system_is_norwegian());
+        assert_eq!(decide(Some("unknown")), system_is_norwegian());
     }
 
     #[test]

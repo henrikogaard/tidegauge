@@ -29,6 +29,11 @@ impl LoginStatus {
         )
     }
 
+    /// Registered but waiting for approval in System Settings.
+    pub fn needs_approval(self) -> bool {
+        matches!(self.state, State::RequiresApproval)
+    }
+
     pub fn control_label(self) -> &'static str {
         match self.state {
             State::Enabled => crate::locale::text("On", "På"),
