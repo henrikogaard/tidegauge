@@ -100,8 +100,9 @@ pub struct AlertEngine {
     memory: Episode,
     disk: Episode,
     network: Episode,
-    /// One episode per app, keyed by its group key.
+    /// One episode per app, keyed by its group key: CPU, then memory.
     apps: std::collections::HashMap<String, Episode>,
+    app_memory: std::collections::HashMap<String, Episode>,
     low_disk: Episode,
     thermal: Episode,
     pressure: Episode,
@@ -115,6 +116,7 @@ impl AlertEngine {
             disk: Episode::default(),
             network: Episode::default(),
             apps: std::collections::HashMap::new(),
+            app_memory: std::collections::HashMap::new(),
             low_disk: Episode::default(),
             thermal: Episode::default(),
             pressure: Episode::default(),
@@ -270,40 +272,39 @@ impl AlertEngine {
         }
 
         let app_threshold = crate::settings::valid_app_threshold(settings.alert_app_cpu_pct);
-        for app in &snapshot.apps {
-            let episode = self.apps.entry(app.key.clone()).or_default();
-            if let Some(alert) = episode.check(
-                at,
-                settings.alert_app_enabled,
-                app_threshold,
-                Some(app.cpu_pct),
-                APP_DURATION,
-                |value| Alert {
-                    metric: format!("app:{}", app.key),
-                    message: format!(
-                        "{} {} {} {}",
-                        app.name,
-                        crate::locale::text("has used", "har brukt"),
-                        crate::locale::percent(value, 0),
-                        crate::locale::text("CPU for over 5 minutes", "CPU i over 5 minutter")
-                    ),
-                    at,
-                },
-            ) {
-                alerts.push(alert);
-            }
-        }
-        // An app that has gone ends its episode; its cooldown is kept, so a
-        // quick relaunch does not alert again at once.
-        self.apps.retain(|key, episode| {
-            snapshot.apps.iter().any(|a| &a.key == key)
-                || episode.last_sent.is_some_and(|sent| at - sent < COOLDOWN)
-        });
-        for (key, episode) in self.apps.iter_mut() {
-            if !snapshot.apps.iter().any(|a| &a.key == key) {
-                episode.reset_episode();
-            }
-        }
+        alerts.extend(check_apps(
+            &mut self.apps,
+            snapshot,
+            settings.alert_app_enabled,
+            app_threshold,
+            |app| app.cpu_pct,
+            "app",
+            |name, value| {
+                format!(
+                    "{name} {} {} {}",
+                    crate::locale::text("has used", "har brukt"),
+                    crate::locale::percent(value, 0),
+                    crate::locale::text("CPU for over 5 minutes", "CPU i over 5 minutter")
+                )
+            },
+        ));
+        let memory_threshold = crate::settings::valid_app_memory_gb(settings.alert_app_mem_gb) * GIB;
+        alerts.extend(check_apps(
+            &mut self.app_memory,
+            snapshot,
+            settings.alert_app_mem_enabled,
+            memory_threshold,
+            |app| app.mem_bytes as f64,
+            "appmem",
+            |name, value| {
+                format!(
+                    "{name} {} {} {}",
+                    crate::locale::text("has used", "har brukt"),
+                    crate::engine::fmt_bytes(value),
+                    crate::locale::text("of memory for over 5 minutes", "minne i over 5 minutter")
+                )
+            },
+        ));
 
         let pressure = snapshot.mem.pressure.map(|p| match p {
             crate::metrics::Pressure::Normal => 1.,
@@ -338,6 +339,46 @@ impl AlertEngine {
 
         alerts
     }
+}
+
+/// The memory threshold is set in GB as Tidegauge shows them: 1024³ bytes.
+const GIB: f64 = 1024. * 1024. * 1024.;
+
+/// One episode per app for a per-app reading: an app alerts once it stays
+/// above `threshold` for five minutes, as `"{prefix}:{key}"`.
+fn check_apps(
+    episodes: &mut std::collections::HashMap<String, Episode>,
+    snapshot: &Snapshot,
+    enabled: bool,
+    threshold: f64,
+    value: impl Fn(&crate::processes::AppGroup) -> f64,
+    prefix: &str,
+    message: impl Fn(&str, f64) -> String,
+) -> Vec<Alert> {
+    let at = snapshot.at;
+    let mut alerts = Vec::new();
+    for app in &snapshot.apps {
+        let episode = episodes.entry(app.key.clone()).or_default();
+        if let Some(alert) = episode.check(at, enabled, threshold, Some(value(app)), APP_DURATION, |v| Alert {
+            metric: format!("{prefix}:{}", app.key),
+            message: message(&app.name, v),
+            at,
+        }) {
+            alerts.push(alert);
+        }
+    }
+    // An app that has gone ends its episode; its cooldown is kept, so a
+    // quick relaunch does not alert again at once.
+    episodes.retain(|key, episode| {
+        snapshot.apps.iter().any(|a| &a.key == key)
+            || episode.last_sent.is_some_and(|sent| at - sent < COOLDOWN)
+    });
+    for (key, episode) in episodes.iter_mut() {
+        if !snapshot.apps.iter().any(|a| &a.key == key) {
+            episode.reset_episode();
+        }
+    }
+    alerts
 }
 
 impl Default for AlertEngine {
@@ -424,7 +465,29 @@ mod tests {
     }
 
     #[test]
+    fn one_app_alerts_after_five_minutes_above_its_memory_limit() {
+        let settings = Settings { alert_app_mem_enabled: true, alert_app_mem_gb: 2., ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let big = |at: f64, gb: f64| {
+            let mut s = busy_app(at, 0.);
+            s.apps[0].mem_bytes = (gb * GIB) as u64;
+            s
+        };
+        assert!(engine.check(&big(0., 1.5), &settings).is_empty());
+        assert!(engine.check(&big(10., 3.), &settings).is_empty());
+        assert!(engine.check(&big(309., 3.), &settings).is_empty());
+        let alerts = engine.check(&big(310., 3.), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "appmem:com.example.busy");
+        assert!(engine.check(&big(400., 3.), &settings).is_empty(), "one alert per episode");
+        assert!(engine.check(&big(1000., 3.), &Settings::default()).is_empty(), "off by default");
+    }
+
+    #[test]
     fn app_thresholds_are_clamped() {
+        assert_eq!(crate::settings::valid_app_memory_gb(0.2), 1.);
+        assert_eq!(crate::settings::valid_app_memory_gb(500.), 64.);
+        assert_eq!(crate::settings::valid_app_memory_gb(f64::NAN), 4.);
         assert_eq!(crate::settings::valid_app_threshold(5.), 20.);
         assert_eq!(crate::settings::valid_app_threshold(900.), 400.);
         assert_eq!(crate::settings::valid_app_threshold(f64::NAN), 80.);
