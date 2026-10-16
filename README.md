@@ -92,7 +92,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Sound | Default media-output volume/mute controls where the device supports them, plus read-only process audio activity |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
 | Development servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
-| History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour |
+| History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour; Export CSV saves the samples to Downloads |
 | Alerts | Opt-in CPU, used-memory, disk, network, single-app CPU, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
 | Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |

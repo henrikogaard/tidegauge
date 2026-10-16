@@ -8,6 +8,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- Export CSV on the History page saves every recorded sample of what is shown
+  (range, source and metric) to a file in Downloads.
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired

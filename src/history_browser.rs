@@ -64,6 +64,23 @@ impl Metric {
         }
     }
 
+    /// A stable name for exported files, the same in every language.
+    pub fn id(self, app: bool) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::DiskRead if app => "disk_io",
+            Self::DiskRead => "disk_read",
+            Self::DiskWrite => "disk_write",
+            Self::Download if app => "network_io",
+            Self::Download => "download",
+            Self::Upload => "upload",
+            Self::Gpu => "gpu",
+            Self::Battery => "battery",
+            Self::Power => "power",
+        }
+    }
+
     fn keys(self) -> (&'static str, &'static str) {
         match self {
             Self::Cpu => ("cpu", ""),
@@ -215,7 +232,102 @@ pub fn query_connection(c: &Connection, request: &Request) -> rusqlite::Result<D
     Ok(data)
 }
 
+/// Every recorded sample in the request's range, oldest first, under the
+/// same rules as the chart: no legacy placeholders, no unvalidated power.
+pub fn samples_connection(c: &Connection, request: &Request) -> rusqlite::Result<Vec<(f64, f64)>> {
+    if !RANGES.iter().any(|(h, _)| *h == request.hours) || !request.end.is_finite() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let start = request.end - f64::from(request.hours) * 3600.;
+    let map = |r: &rusqlite::Row| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?));
+    if let Some(app) = &request.app {
+        let column = match request.metric {
+            Metric::Cpu => "cpu",
+            Metric::Memory => "mem",
+            Metric::DiskRead => "disk",
+            Metric::Download => "net",
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        };
+        let sql = format!("SELECT ts, {column} FROM app_metric WHERE ts >= ?1 AND ts < ?2 AND app = ?3 AND {column} >= 0 AND {column} < 1e300 ORDER BY ts");
+        let mut statement = c.prepare(&sql)?;
+        let rows = statement.query_map(params![start, request.end, app], map)?.collect();
+        rows
+    } else {
+        let (key, legacy) = request.metric.keys();
+        let mut statement = c.prepare(
+            "SELECT ts, value FROM metric m WHERE ts >= ?1 AND ts < ?2 AND value >= 0 AND value < 1e300
+             AND (metric = ?3 OR (metric = ?4 AND ?4 != '' AND value > 0
+                 AND NOT EXISTS (SELECT 1 FROM metric newer WHERE newer.ts = m.ts AND newer.metric = ?3)))
+             ORDER BY ts",
+        )?;
+        let rows = statement.query_map(params![start, request.end, key, legacy], map)?.collect();
+        rows
+    }
+}
+
+/// The samples as CSV: one row each, local time first, with the source,
+/// metric and unit spelled out so the file stands on its own.
+pub fn csv(request: &Request, samples: &[(f64, f64)]) -> String {
+    let app = request.app.is_some();
+    let quote = |text: &str| format!("\"{}\"", text.replace('"', "\"\""));
+    let source = quote(request.app.as_deref().unwrap_or("System"));
+    let (metric, unit) = (request.metric.id(app), request.metric.unit(app));
+    let mut out = String::from("local_time,unix_time,source,metric,unit,value\n");
+    for (ts, value) in samples {
+        out.push_str(&format!("{},{ts},{source},{metric},{unit},{value}\n", format_time(*ts, c"%Y-%m-%d %H:%M:%S")));
+    }
+    out
+}
+
+/// Writes the request's samples to a CSV file in Downloads and returns it.
+pub fn export(request: &Request) -> Result<std::path::PathBuf, String> {
+    let path = crate::history::database_path();
+    let samples = if path.exists() {
+        let read = || -> rusqlite::Result<Vec<(f64, f64)>> {
+            let mut c = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            c.busy_timeout(std::time::Duration::from_millis(500))?;
+            let transaction = c.transaction()?;
+            samples_connection(&transaction, request)
+        };
+        read().map_err(read_error)?
+    } else {
+        Vec::new()
+    };
+    let downloads = directories::UserDirs::new()
+        .and_then(|d| d.download_dir().map(std::path::Path::to_path_buf))
+        .ok_or_else(|| l("Downloads could not be found.", "Fant ikke Nedlastinger.").to_string())?;
+    let file = downloads.join(file_name(request));
+    std::fs::write(&file, csv(request, &samples))
+        .map_err(|_| l("The file could not be saved in Downloads.", "Filen kunne ikke lagres i Nedlastinger.").to_string())?;
+    Ok(file)
+}
+
+/// "Tidegauge Safari cpu 12h 2026-10-16 0815.csv"; no slashes or colons from
+/// an app's name reach the file system.
+fn file_name(request: &Request) -> String {
+    let app = request.app.is_some();
+    let source: String = request
+        .app
+        .as_deref()
+        .unwrap_or("System")
+        .chars()
+        .map(|c| if matches!(c, '/' | ':' | '\\') || c.is_control() { '-' } else { c })
+        .collect();
+    let parts = [
+        "Tidegauge".to_string(),
+        source.trim().to_string(),
+        request.metric.id(app).to_string(),
+        request.hours.to_string() + "h",
+        format_time(request.end, c"%Y-%m-%d %H%M"),
+    ];
+    parts.join(" ") + ".csv"
+}
+
 pub fn local_time(ts: f64) -> String {
+    format_time(ts, c"%Y-%m-%d %H:%M")
+}
+
+fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
     let time = ts as libc::time_t;
     let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
     let mut output = [0u8; 48];
@@ -226,7 +338,7 @@ pub fn local_time(ts: f64) -> String {
         let size = libc::strftime(
             output.as_mut_ptr().cast(),
             output.len(),
-            c"%Y-%m-%d %H:%M".as_ptr(),
+            format.as_ptr(),
             &date,
         );
         String::from_utf8_lossy(&output[..size]).into_owned()
@@ -327,6 +439,38 @@ mod tests {
         let d = query_connection(&c, &r).unwrap();
         assert_eq!(d.values.len(), BUCKETS);
         assert_eq!(&d.values[..3], &[Some(10.), Some(30.), None], "0–20 s averages two samples, 20–40 s holds one");
+    }
+
+    #[test]
+    fn exports_hold_every_sample_in_range_and_no_placeholders() {
+        let c = database();
+        c.execute_batch(
+            "INSERT INTO metric VALUES(-1,'cpu',9),(10,'cpu',5),(20,'cpu',0),(30,'gpu',0),(40,'gpu',20),(3600,'cpu',7);
+             INSERT INTO app_metric VALUES(15,'Editor',12.5,2048,0,0,0),(25,'Other',1,1,0,0,0);",
+        )
+        .unwrap();
+        let mut r = Request { metric: Metric::Cpu, hours: 1, app: None, end: 3600. };
+        assert_eq!(samples_connection(&c, &r).unwrap(), [(10., 5.), (20., 0.)], "start in, end out, zero kept");
+        r.metric = Metric::Gpu;
+        assert_eq!(samples_connection(&c, &r).unwrap(), [(40., 20.)], "a legacy zero is not a sample");
+        r.metric = Metric::Memory;
+        r.app = Some("Editor".into());
+        let samples = samples_connection(&c, &r).unwrap();
+        assert_eq!(samples, [(15., 2048.)]);
+        let text = csv(&r, &samples);
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("local_time,unix_time,source,metric,unit,value"));
+        assert!(lines.next().unwrap().ends_with(",15,\"Editor\",memory,B,2048"));
+        r.metric = Metric::Power;
+        assert!(samples_connection(&c, &r).is_err(), "per-app power is not exported");
+    }
+
+    #[test]
+    fn export_names_are_safe_and_quotes_are_escaped() {
+        let r = Request { metric: Metric::Cpu, hours: 12, app: Some("a/b:\"c\"".into()), end: 0. };
+        let name = file_name(&r);
+        assert!(name.starts_with("Tidegauge a-b-\"c\" cpu 12h ") && name.ends_with(".csv"), "{name}");
+        assert!(csv(&r, &[(1., 2.)]).contains(",\"a/b:\"\"c\"\"\","));
     }
 
     #[test]
