@@ -85,6 +85,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Menu-bar panel | Live CPU, memory, network and disk with recent curves, AI plans, the busiest apps, and quick actions |
 | Overview | Favorite metric cards, busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Metric pages | CPU, Memory, Disk, Network, GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
 | Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and processor power grouped by executable bundle or parent app |

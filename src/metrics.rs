@@ -144,6 +144,42 @@ pub struct MemStats {
     pub total: u64,
     pub swap_used: u64,
     pub swap_total: u64,
+    /// macOS's own memory-pressure level, the one Activity Monitor colours.
+    pub pressure: Option<Pressure>,
+    /// The share of memory macOS counts as available (`kern.memorystatus_level`).
+    pub available_pct: Option<u8>,
+}
+
+/// The kernel's memory-pressure level. macOS reports 1, 2 or 4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pressure {
+    Normal,
+    Warning,
+    Critical,
+}
+
+impl Pressure {
+    pub fn from_level(level: u64) -> Option<Self> {
+        match level {
+            1 => Some(Self::Normal),
+            2 => Some(Self::Warning),
+            4 => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        use crate::locale::text as l;
+        match self {
+            Self::Normal => l("Normal", "Normalt"),
+            Self::Warning => l("Warning", "Advarsel"),
+            Self::Critical => l("Critical", "Kritisk"),
+        }
+    }
+}
+
+fn available_pct(level: u64) -> Option<u8> {
+    (level <= 100).then_some(level as u8)
 }
 
 pub fn mem_stats() -> MemStats {
@@ -180,6 +216,8 @@ pub fn mem_stats() -> MemStats {
             out.swap_used = sw.xsu_used;
             out.swap_total = sw.xsu_total;
         }
+        out.pressure = sysctl_u64("kern.memorystatus_vm_pressure_level").and_then(Pressure::from_level);
+        out.available_pct = sysctl_u64("kern.memorystatus_level").and_then(available_pct);
         out
     }
 }
@@ -544,6 +582,27 @@ pub fn thermal_state() -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use super::Pressure;
+
+    #[test]
+    fn pressure_levels_follow_the_kernel_values() {
+        assert_eq!(Pressure::from_level(1), Some(Pressure::Normal));
+        assert_eq!(Pressure::from_level(2), Some(Pressure::Warning));
+        assert_eq!(Pressure::from_level(4), Some(Pressure::Critical));
+        assert_eq!(Pressure::from_level(0), None, "an unknown level is not shown as normal");
+        assert_eq!(Pressure::from_level(3), None);
+        assert_eq!(super::available_pct(47), Some(47));
+        assert_eq!(super::available_pct(101), None);
+    }
+
+    #[test]
+    #[ignore = "requires macOS"]
+    fn native_memory_pressure_reads() {
+        let m = super::mem_stats();
+        eprintln!("pressure {:?}, available {:?} %", m.pressure, m.available_pct);
+        assert!(m.pressure.is_some() && m.available_pct.is_some());
+    }
+
     #[test]
     fn cpu_time_conversion_uses_the_platform_timebase() {
         assert_eq!(super::ticks_to_ns(24_000_000, 125, 3), 1_000_000_000);
