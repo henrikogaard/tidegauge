@@ -77,21 +77,56 @@ fn trash(path: &Path) -> Result<(), String> {
         .map_err(|e| e.localizedDescription().to_string())
 }
 
-/// Copy the bundle in, retire the old copies to the Trash, and relaunch.
+/// Whether dotted version `a` is newer than `b` ("0.3.10" > "0.3.9").
+/// Anything unreadable counts as not newer.
+pub fn is_newer(a: &str, b: &str) -> bool {
+    let parse = |v: &str| v.split('.').map(|p| p.trim().parse::<u64>().ok()).collect::<Option<Vec<_>>>();
+    match (parse(a), parse(b)) {
+        (Some(mut a), Some(mut b)) => {
+            let n = a.len().max(b.len());
+            a.resize(n, 0);
+            b.resize(n, 0);
+            a > b
+        }
+        _ => false,
+    }
+}
+
+fn bundle_version(bundle: &Path) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/defaults")
+        .arg("read")
+        .arg(bundle.join("Contents/Info"))
+        .arg("CFBundleShortVersionString")
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Copy the bundle in beside the old one, and only once the copy is whole
+/// retire the old copies to the Trash, so a failed copy never leaves
+/// Applications without a working Tidegauge.
 fn move_bundle(source: &Path, folder: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let target = folder.join(source.file_name().unwrap_or_else(|| "Tidegauge.app".as_ref()));
-    if target.exists() {
-        trash(&target)?;
-    }
-    let status = std::process::Command::new("/usr/bin/ditto")
+    let staging = folder.join(String::from(".Tidegauge-moving-") + &std::process::id().to_string() + ".app");
+    let _ = std::fs::remove_dir_all(&staging);
+    let failed = || l("Copying into Applications failed.", "Kopieringen til Programmer mislyktes.").to_string();
+    let copied = std::process::Command::new("/usr/bin/ditto")
         .arg(source)
-        .arg(&target)
+        .arg(&staging)
         .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(l("Copying into Applications failed.", "Kopieringen til Programmer mislyktes.").into());
+        .is_ok_and(|s| s.success());
+    if !copied {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(failed());
     }
+    if target.exists() {
+        if let Err(error) = trash(&target) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    }
+    std::fs::rename(&staging, &target).map_err(|_| failed())?;
     if !on_read_only_volume(source) {
         // The copy is in place; an original that won't go to the Trash is
         // left alone rather than deleted.
@@ -164,7 +199,25 @@ pub fn offer() {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let writable = unsafe { libc::access(c"/Applications".as_ptr(), libc::W_OK) == 0 };
     let source = original_path(&running);
-    match move_bundle(&source, &destination_folder(writable, &home)) {
+    let folder = destination_folder(writable, &home);
+    let installed = folder.join(source.file_name().unwrap_or_else(|| "Tidegauge.app".as_ref()));
+    // Never replace a newer installed copy with this one; open that instead.
+    if let (Some(there), Some(here)) = (bundle_version(&installed), bundle_version(&source)) {
+        if is_newer(&there, &here) {
+            let (answer, _) = alert(
+                l("A newer Tidegauge is already in Applications", "En nyere Tidegauge ligger allerede i Programmer"),
+                &format!("{there} > {here}. {}", l("Open that one instead? This copy is left as it is.", "Åpne den i stedet? Denne kopien blir liggende som den er.")),
+                &[l("Open It", "Åpne den"), l("Not Now", "Ikke nå")],
+                false,
+            );
+            if answer == FIRST {
+                relaunch(&installed);
+                std::process::exit(0);
+            }
+            return;
+        }
+    }
+    match move_bundle(&source, &folder) {
         Ok(target) => {
             relaunch(&target);
             std::process::exit(0);
@@ -182,7 +235,31 @@ pub fn offer() {
 
 #[cfg(test)]
 mod tests {
-    use super::{destination_folder, should_offer};
+    use super::{destination_folder, is_newer, move_bundle, should_offer};
+
+    #[test]
+    fn versions_compare_by_number_not_text() {
+        assert!(is_newer("0.3.10", "0.3.9"));
+        assert!(is_newer("0.4", "0.3.9"));
+        assert!(!is_newer("0.3.5", "0.3.5"));
+        assert!(!is_newer("0.3.5", "0.3.5.0"));
+        assert!(!is_newer("0.3.4", "0.3.5"));
+        assert!(!is_newer("beta", "0.3.5"), "unreadable is not newer");
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_the_installed_copy_in_place() {
+        let root = std::env::temp_dir().join(String::from("tidegauge-move-") + &std::process::id().to_string());
+        let folder = root.join("Applications");
+        let installed = folder.join("Tidegauge.app");
+        std::fs::create_dir_all(installed.join("Contents")).unwrap();
+        std::fs::write(installed.join("Contents/marker"), "installed").unwrap();
+        let missing = root.join("Downloads/Tidegauge.app");
+        assert!(move_bundle(&missing, &folder).is_err());
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/marker")).unwrap(), "installed");
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "no staging copy is left behind");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     use std::path::Path;
 
     #[test]
