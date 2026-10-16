@@ -8,6 +8,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- A keyboard shortcut that opens the menu-bar panel from any app: ⌃⌥⌘T or
+  ⌃⌥⌘M in Settings → General → Open the panel. Off by default; it needs no
+  Accessibility permission, and a shortcut another app holds is reported.
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired
