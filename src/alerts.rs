@@ -8,6 +8,9 @@ const MEMORY_DEFAULT_THRESHOLD: f64 = 92.0;
 const CPU_MEMORY_DURATION: f64 = 20.0;
 const IO_DURATION: f64 = 30.0;
 const COOLDOWN: f64 = 600.0;
+/// One app has to stay busy this long: a build or an export that ends in a
+/// minute is not worth a notification.
+const APP_DURATION: f64 = 300.0;
 /// Free space on the startup disk below which it is worth a word.
 pub const LOW_DISK_BYTES: f64 = 10e9;
 /// A minute, so a big download that is cleaned up at once does not alert.
@@ -94,6 +97,8 @@ pub struct AlertEngine {
     memory: Episode,
     disk: Episode,
     network: Episode,
+    /// One episode per app, keyed by its group key.
+    apps: std::collections::HashMap<String, Episode>,
     low_disk: Episode,
     thermal: Episode,
 }
@@ -105,6 +110,7 @@ impl AlertEngine {
             memory: Episode::default(),
             disk: Episode::default(),
             network: Episode::default(),
+            apps: std::collections::HashMap::new(),
             low_disk: Episode::default(),
             thermal: Episode::default(),
         }
@@ -258,6 +264,42 @@ impl AlertEngine {
             alerts.push(alert);
         }
 
+        let app_threshold = crate::settings::valid_app_threshold(settings.alert_app_cpu_pct);
+        for app in &snapshot.apps {
+            let episode = self.apps.entry(app.key.clone()).or_default();
+            if let Some(alert) = episode.check(
+                at,
+                settings.alert_app_enabled,
+                app_threshold,
+                Some(app.cpu_pct),
+                APP_DURATION,
+                |value| Alert {
+                    metric: format!("app:{}", app.key),
+                    message: format!(
+                        "{} {} {} {}",
+                        app.name,
+                        crate::locale::text("has used", "har brukt"),
+                        crate::locale::percent(value, 0),
+                        crate::locale::text("CPU for over 5 minutes", "CPU i over 5 minutter")
+                    ),
+                    at,
+                },
+            ) {
+                alerts.push(alert);
+            }
+        }
+        // An app that has gone ends its episode; its cooldown is kept, so a
+        // quick relaunch does not alert again at once.
+        self.apps.retain(|key, episode| {
+            snapshot.apps.iter().any(|a| &a.key == key)
+                || episode.last_sent.is_some_and(|sent| at - sent < COOLDOWN)
+        });
+        for (key, episode) in self.apps.iter_mut() {
+            if !snapshot.apps.iter().any(|a| &a.key == key) {
+                episode.reset_episode();
+            }
+        }
+
         alerts
     }
 }
@@ -287,6 +329,69 @@ mod tests {
             at,
             ..Snapshot::default()
         }
+    }
+
+    fn busy_app(at: f64, cpu: f64) -> Snapshot {
+        let mut s = snapshot(at);
+        s.apps = vec![crate::processes::AppGroup {
+            key: "com.example.busy".into(),
+            name: "Busy".into(),
+            cpu_pct: cpu,
+            ..Default::default()
+        }];
+        s
+    }
+
+    fn app_settings() -> Settings {
+        Settings { alert_app_enabled: true, ..Settings::default() }
+    }
+
+    #[test]
+    fn one_app_alerts_after_five_busy_minutes() {
+        let settings = app_settings();
+        let mut engine = AlertEngine::new();
+        assert!(engine.check(&busy_app(0., 120.), &settings).is_empty());
+        assert!(engine.check(&busy_app(299., 120.), &settings).is_empty());
+        let alerts = engine.check(&busy_app(300., 120.), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "app:com.example.busy");
+        assert!(alerts[0].message.starts_with("Busy "), "{}", alerts[0].message);
+        assert!(engine.check(&busy_app(400., 120.), &settings).is_empty(), "one alert per episode");
+    }
+
+    #[test]
+    fn app_alerts_respect_threshold_and_switch() {
+        let mut engine = AlertEngine::new();
+        let mut settings = app_settings();
+        settings.alert_app_cpu_pct = 150.;
+        for at in [0., 300., 600.] {
+            assert!(engine.check(&busy_app(at, 120.), &settings).is_empty(), "below the threshold");
+        }
+        let off = Settings::default();
+        let mut engine = AlertEngine::new();
+        for at in [0., 300., 600.] {
+            assert!(engine.check(&busy_app(at, 300.), &off).is_empty(), "off by default");
+        }
+    }
+
+    #[test]
+    fn a_quiet_moment_or_a_quit_restarts_the_five_minutes() {
+        let settings = app_settings();
+        let mut engine = AlertEngine::new();
+        engine.check(&busy_app(0., 120.), &settings);
+        engine.check(&busy_app(200., 10.), &settings);
+        assert!(engine.check(&busy_app(400., 120.), &settings).is_empty());
+        engine.check(&snapshot(450.), &settings);
+        assert!(engine.check(&busy_app(500., 120.), &settings).is_empty());
+        assert!(engine.check(&busy_app(799., 120.), &settings).is_empty());
+        assert_eq!(engine.check(&busy_app(800., 120.), &settings).len(), 1);
+    }
+
+    #[test]
+    fn app_thresholds_are_clamped() {
+        assert_eq!(crate::settings::valid_app_threshold(5.), 20.);
+        assert_eq!(crate::settings::valid_app_threshold(900.), 400.);
+        assert_eq!(crate::settings::valid_app_threshold(f64::NAN), 80.);
     }
 
     #[test]

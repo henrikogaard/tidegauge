@@ -85,14 +85,15 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Menu-bar panel | Live CPU, memory, network and disk with recent curves, AI plans, the busiest apps, and quick actions |
 | Overview | Favorite metric cards, busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Metric pages | CPU, Memory, Disk, Network, GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
 | Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and processor power grouped by executable bundle or parent app |
 | Sound | Default media-output volume/mute controls where the device supports them, plus read-only process audio activity |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
 | Development servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
-| History | Local 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps |
-| Alerts | Opt-in CPU, used-memory, disk, network, low startup-disk space and overheating alerts; configurable CPU/memory thresholds and independent cooldowns |
+| History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour |
+| Alerts | Opt-in CPU, used-memory, disk, network, single-app CPU, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
 | Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
@@ -109,12 +110,12 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 - Process signing metadata is fetched only on request and is not signature validation or a safety verdict. It never changes Quit/Stop eligibility. See [process semantics](docs/PROCESSES.md).
 - Sound controls apply to the default **media output**, not individual apps or the microphone. Unsupported device controls are unavailable. Per-app volume, mute, and signal meters remain deferred; no audio is captured. See [audio capabilities](docs/AUDIO.md).
 - Neural Engine usage is not measured. GPU and battery detail depend on hardware and available system properties. Per-app watts are the processor energy macOS accounts to each process (Apple silicon), from its energy model rather than a meter. GPU, display, radio and work done by system processes on an app's behalf are not included, so graphics-heavy apps read low.
-- Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds; startup-disk space must stay under 10 GB free for a minute; overheating fires when macOS reports a serious or critical thermal state for 10 seconds. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
+- Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds; one app's CPU (100% is one core, up to 400%) for 5 minutes, each app with its own cooldown; startup-disk space must stay under 10 GB free for a minute; overheating fires when macOS reports a serious or critical thermal state for 10 seconds. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
 - Launch at login is
   available on macOS 13+ only for a bundle installed in `/Applications` or
   `~/Applications`; approval may be required in System Settings > General >
   Login Items. Closing the dashboard hides it while collection continues.
-- Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and top-60 app recording have important limitations; see [history semantics](docs/HISTORY.md).
+- Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and the selection of recorded apps have important limitations; see [history semantics](docs/HISTORY.md).
 - Keep awake prevents **idle system sleep only**. Displays may sleep, and closing the lid or explicitly sleeping still takes precedence. It releases on expiry, Stop, or app exit and does not resume automatically after restart.
 - Dashboard reset affects only tab order, favorites, and compact layout. It does not reset menu-bar readings, appearance, login, or alert preferences. Overview and Settings remain reachable.
 - Startup inventory is partial. Modern login/background items are managed through System Settings. Third-party disable, removal and restoration are deliberately unavailable until managed/protected registration eligibility can be established safely; a plist or an absent launchctl override does not establish effective state.
@@ -153,7 +154,7 @@ The app uses defaults when the settings file is absent or cannot be parsed. You 
 
 Available metric identifiers are `cpu`, `memory`, `network`, `disk`, `battery`, `gpu`, and `power`. The menu-bar pump reloads this file while the app runs. Appearance can be set to System, Light, or Dark for the dashboard.
 
-History includes app names and resource usage. The sampler records headline metrics and the first 60 app groups sorted by memory usage approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
+History includes app names and resource usage. The sampler records headline metrics and the app groups using the most memory, CPU, disk and network approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
 
 ## Architecture
 

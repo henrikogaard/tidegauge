@@ -23,6 +23,10 @@ pub struct Settings {
     pub alert_mem_enabled: bool,
     pub alert_disk_enabled: bool,
     pub alert_network_enabled: bool,
+    /// Alert when one app stays above `alert_app_cpu_pct` (of one core) for
+    /// five minutes.
+    pub alert_app_enabled: bool,
+    pub alert_app_cpu_pct: f64,
     /// Alert when the startup disk has less than 10 GB free.
     pub alert_low_disk_enabled: bool,
     /// Alert when macOS reports a serious or critical thermal state.
@@ -47,6 +51,8 @@ impl Default for Settings {
             alert_mem_enabled: false,
             alert_disk_enabled: false,
             alert_network_enabled: false,
+            alert_app_enabled: false,
+            alert_app_cpu_pct: APP_CPU_DEFAULT,
             alert_low_disk_enabled: false,
             alert_thermal_enabled: false,
             launch_at_login: false,
@@ -109,6 +115,7 @@ impl Settings {
     pub fn normalize(&mut self) {
         self.alert_cpu_pct = valid_threshold(self.alert_cpu_pct, 90.);
         self.alert_mem_pct = valid_threshold(self.alert_mem_pct, 92.);
+        self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
     }
@@ -164,6 +171,18 @@ pub fn valid_threshold(value: f64, fallback: f64) -> f64 {
         value.clamp(1., 100.)
     } else {
         fallback
+    }
+}
+
+pub const APP_CPU_DEFAULT: f64 = 80.;
+pub const APP_CPU_RANGE: (f64, f64) = (20., 400.);
+
+/// An app's CPU can pass 100 % across cores, so its threshold runs to 400 %.
+pub fn valid_app_threshold(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(APP_CPU_RANGE.0, APP_CPU_RANGE.1)
+    } else {
+        APP_CPU_DEFAULT
     }
 }
 

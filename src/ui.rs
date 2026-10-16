@@ -171,6 +171,8 @@ pub struct TideGaugeView {
     pub history_app_picker: bool,
     /// When History last loaded; it reloads every minute while it is open.
     pub(crate) history_loaded_at: Option<std::time::Instant>,
+    /// The expanded app's last hour, shown in its row in Apps & processes.
+    pub(crate) app_history: Option<crate::process_panel::AppHistory>,
     tab_scrolls: Vec<ScrollHandle>,
     settings_scroll: ScrollHandle,
 }
@@ -260,6 +262,7 @@ impl TideGaugeView {
             history_generation: 0,
             history_app_picker: false,
             history_loaded_at: None,
+            app_history: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: ScrollHandle::new(),
         };
@@ -268,8 +271,10 @@ impl TideGaugeView {
             async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| loop {
                 smol::Timer::after(std::time::Duration::from_millis(1000)).await;
                 let _ = cx.update(|cx: &mut App| {
+                    let mut app_history_due = None;
                     let history_due = this
                         .update(cx, |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
+                            app_history_due = crate::process_panel::app_history_due(v);
                             v.snap = latest();
                             if v.toast.as_ref().is_some_and(Toast::expired) {
                                 v.toast = None;
@@ -284,6 +289,9 @@ impl TideGaugeView {
                     // History keeps itself current while it is open.
                     if let (true, Some(this)) = (history_due, this.upgrade()) {
                         crate::controls::refresh_history(&this, cx);
+                    }
+                    if let (Some(app), Some(this)) = (app_history_due, this.upgrade()) {
+                        crate::process_panel::load_app_history(&this, app, cx);
                     }
                 });
             },
@@ -1343,7 +1351,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
         ],
         Tab::Memory => vec![
             shared_memory_note(),
-            l("Memory shows usage, not memory pressure.", "Minnetallet viser bruk, ikke minnepress."),
+            l("Memory pressure is macOS's own level: normal, warning or critical. Available is the share of memory macOS itself counts as available. Usage alone does not say whether the Mac is short of memory.", "Minnepress er nivået macOS selv melder: normalt, advarsel eller kritisk. Tilgjengelig er andelen minne macOS selv regner som tilgjengelig. Bruk alene sier ikke om Macen mangler minne."),
         ],
         Tab::Disk => vec![
             l(
@@ -1412,6 +1420,7 @@ fn settings_notes() -> Vec<&'static str> {
     vec![
         l("Settings are saved on this Mac right away.", "Innstillingene lagres på denne Macen med en gang."),
         l("Opt-in. CPU/memory: sustained for 20 seconds; disk/network: 30 seconds. One alert until recovery, with a 10-minute cooldown per metric.", "Valgfritt. CPU/minne: vedvarende i 20 sekunder; disk/nettverk: 30 sekunder. Ett varsel frem til normalisering, med 10 minutters pause per måling."),
+        l("One app: its CPU, where 100% is one full core, must stay above the level for 5 minutes. Each app alerts once until it calms down or quits, with its own 10-minute cooldown.", "Én app: CPU-en, der 100 % er én hel kjerne, må ligge over nivået i 5 minutter. Hver app varsler én gang til den roer seg eller avsluttes, med egen pause på 10 minutter."),
         l("Startup disk space counts the free space macOS reports for the startup volume; purgeable space Finder may also show as available is not included. Overheating follows macOS's own thermal state: serious or critical for 10 seconds.", "Plass på oppstartsdisken teller ledig plass macOS melder for oppstartsvolumet; plass som kan frigjøres og som Finder kan vise som tilgjengelig, er ikke med. Overoppheting følger macOS sin egen termiske tilstand: alvorlig eller kritisk i 10 sekunder."),
         l("Permission is requested with the first alert. macOS notification settings and Focus may suppress delivery. Memory measures usage, not memory pressure.", "Tillatelse forespørres ved første varsel. Varselinnstillinger og Fokus i macOS kan hindre levering. Minnetallet viser bruk, ikke minnepress."),
         l("Prevents idle system sleep only. The display may sleep; closing the lid still sleeps. Off after quitting or restarting Tidegauge.", "Hindrer kun automatisk systemdvale. Skjermen kan sove; lukket lokk gir fortsatt dvale. Av etter avslutning eller omstart av Tidegauge."),
@@ -1862,8 +1871,8 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             fmt_bytes(s.mem.used as f64),
             [
                 (l("App", "App"), fmt_bytes(s.mem.app as f64)),
-                (l("Wired", "Bundet"), fmt_bytes(s.mem.wired as f64)),
                 (l("Compressed", "Komprimert"), fmt_bytes(s.mem.compressed as f64)),
+                (l("Pressure", "Minnepress"), s.mem.pressure.map(|p| p.label().to_string()).unwrap_or("—".into())),
             ],
             &s.mem_hist,
             Some(100.),
@@ -2548,6 +2557,15 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
         .when(sample.inventory_limited, |d| d.child(sub(l("Sensor inventory is limited; some channels are not shown.", "Sensoroversikten er begrenset; enkelte kanaler vises ikke.")).text_color(t::ink_dim(dark))))
 }
 
+/// Green, amber, red: the colours Activity Monitor gives the same levels.
+fn pressure_color(pressure: crate::metrics::Pressure, dark: bool) -> Hsla {
+    match pressure {
+        crate::metrics::Pressure::Normal => t::ok(dark),
+        crate::metrics::Pressure::Warning => t::caution(dark),
+        crate::metrics::Pressure::Critical => t::warn(dark),
+    }
+}
+
 fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Memory;
     let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
@@ -2574,9 +2592,27 @@ fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ],
             Some(100.0),
         ))
+        .child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap_3()
+                .child(stat_card(
+                    l("Memory pressure · from macOS", "Minnepress · fra macOS"),
+                    s.mem.pressure.map(|p| p.label().to_string()).unwrap_or("—".into()),
+                    s.mem.pressure.map(|p| pressure_color(p, dark)),
+                    dark,
+                ))
+                .child(stat_card(
+                    l("Available · from macOS", "Tilgjengelig · fra macOS"),
+                    s.mem.available_pct.map(|p| fmt_pct(p as f64)).unwrap_or("—".into()),
+                    None,
+                    dark,
+                )),
+        )
         .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Memory", "Minne"), dark))
         .child(top_apps(rows.iter().copied(), |a| (fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64), max, m.accent(dark), false, dark, this))
-        .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Utilization is not memory pressure.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Utnyttelse er ikke minnepress.")).text_color(t::ink_dim(dark)))
+        .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Pressure comes from macOS, not from these totals.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Minnepresset kommer fra macOS, ikke fra disse summene.")).text_color(t::ink_dim(dark)))
 }
 
 fn disk_tab(

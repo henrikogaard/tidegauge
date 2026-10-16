@@ -4,7 +4,8 @@ use crate::locale::text as l;
 use rusqlite::{params, Connection, OpenFlags};
 
 pub const BUCKETS: usize = 180;
-pub const RANGES: [(u32, (&str, &str)); 4] = [
+pub const RANGES: [(u32, (&str, &str)); 5] = [
+    (1, ("1 h", "1 t")),
     (12, ("12 h", "12 t")),
     (24, ("24 h", "24 t")),
     (168, ("7 d", "7 d")),
@@ -121,6 +122,13 @@ pub fn load(request: &Request) -> Result<Data, String> {
         query_connection(&transaction, request)
     };
     query().map_err(read_error)
+}
+
+/// One app's CPU and memory over the last hour, for its row in Apps &
+/// processes. Same rules as History: gaps stay gaps.
+pub fn app_hour(app: &str) -> Result<(Data, Data), String> {
+    let request = |metric| Request { metric, hours: 1, app: Some(app.to_owned()), end: crate::metrics::now_unix() };
+    Ok((load(&request(Metric::Cpu))?, load(&request(Metric::Memory))?))
 }
 
 fn read_error(error: rusqlite::Error) -> String {
@@ -309,6 +317,16 @@ mod tests {
             .values
             .iter()
             .all(Option::is_none));
+    }
+
+    #[test]
+    fn the_hour_range_uses_twenty_second_intervals() {
+        let c = database();
+        c.execute_batch("INSERT INTO app_metric VALUES(10,'Editor',5,1,0,0,0),(15,'Editor',15,1,0,0,0),(25,'Editor',30,1,0,0,0);").unwrap();
+        let r = Request { metric: Metric::Cpu, hours: 1, app: Some("Editor".into()), end: 3600. };
+        let d = query_connection(&c, &r).unwrap();
+        assert_eq!(d.values.len(), BUCKETS);
+        assert_eq!(&d.values[..3], &[Some(10.), Some(30.), None], "0–20 s averages two samples, 20–40 s holds one");
     }
 
     #[test]
