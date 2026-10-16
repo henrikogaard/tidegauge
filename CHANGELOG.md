@@ -6,7 +6,64 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.0) — 2026-10-16
+
+A redesigned window with sidebar navigation, process control that can replace
+Activity Monitor for everyday use, coding agents and AI plan usage, a
+menu-bar panel, and an in-app language switch. Entries further down that a
+later change in this release replaced say so.
+
 ### Added
+
+- Sidebar navigation grouped as Live, Work, Over time and Maintenance, with
+  live readings beside each metric and Settings pinned at the bottom
+  ([#39](https://github.com/henrikogaard/tidegauge/pull/39)).
+- Process control in Apps & processes: confirmed Quit and Force Quit for an
+  app, a single process, or every process an app left running, with each
+  target re-identified by PID, start time, user and program before a signal is
+  sent; system-critical processes and Tidegauge itself are refused
+  ([#40](https://github.com/henrikogaard/tidegauge/pull/40), [#44](https://github.com/henrikogaard/tidegauge/pull/44)).
+- Agents: running coding-agent sessions (Claude Code, Codex, Gemini CLI,
+  Cursor Agent, Copilot CLI) with what each started, their memory and CPU, and
+  Quit; AI plan usage and pace read from OpenQuota's saved data on this Mac,
+  never from your accounts. Development servers show here as a section
+  ([#43](https://github.com/henrikogaard/tidegauge/pull/43), [#52](https://github.com/henrikogaard/tidegauge/pull/52)).
+- A menu-bar panel: a left click on the Tidegauge item opens live CPU,
+  memory, network and disk with their recent curves, AI plans and the busiest
+  apps; a right or Control click keeps the menu ([#52](https://github.com/henrikogaard/tidegauge/pull/52), [#53](https://github.com/henrikogaard/tidegauge/pull/53)).
+- Settings → General → Language picks System, English or Norsk and switches
+  everything at once, the menu-bar menu included ([#51](https://github.com/henrikogaard/tidegauge/pull/51)).
+- Every page has one header: a subtitle, its actions, and an ⓘ button whose
+  notes hold what the numbers mean and where they stop ([#50](https://github.com/henrikogaard/tidegauge/pull/50)).
+
+### Changed
+
+- Settings is a grouped list with switches for on/off choices and sliders for
+  alert thresholds and output volume; Keep awake is a switch with a duration
+  ([#51](https://github.com/henrikogaard/tidegauge/pull/51)).
+- Apps & packages, Startup and Recent activity share one list row with actions
+  on the selected row and "Show more" instead of pages. Startup groups entries
+  by app or maker and hides Apple's own behind a switch; packages with an
+  update come first. Apps without an icon and background programs show a quiet
+  glyph instead of a letter tile ([#51](https://github.com/henrikogaard/tidegauge/pull/51)).
+- Recent activity is the "Last minute" view of Apps & processes. Before & after
+  is three steps with a result table. Folder sizes opens with quick picks and
+  shows size bars. History reloads every minute while open and says when
+  recording began ([#52](https://github.com/henrikogaard/tidegauge/pull/52)).
+- CPU temperatures lead with the hottest and average reading; the native
+  channel list is folded behind a button. Hardware a Mac lacks (no battery) has
+  no page or card, readings that are unavailable say so instead of a dash, and
+  the Neural Engine section and its guessed core count are gone ([#49](https://github.com/henrikogaard/tidegauge/pull/49),
+  [#50](https://github.com/henrikogaard/tidegauge/pull/50)).
+
+### Fixed
+
+- Busy Claude Code sessions no longer show as idle: their session files record
+  the start time in UTC ([#49](https://github.com/henrikogaard/tidegauge/pull/49)).
+- Both Claude Code installs group as one app, and reverse-DNS programs get a
+  readable name ([#49](https://github.com/henrikogaard/tidegauge/pull/49)).
+- On newer macOS, which draws status items in another process, the menu-bar
+  panel opens under the click and stays open ([#53](https://github.com/henrikogaard/tidegauge/pull/53)).
 
 - Configurable, opt-in alerts with sustained thresholds and independent cooldowns;
   a persisted system/app History browser with visible gaps; safer development
@@ -16,8 +73,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Supported default-media-output volume/mute controls. These do **not** control
   arbitrary apps ([#24](https://github.com/henrikogaard/tidegauge/pull/24), merged).
 - App/helper inspection with observed ancestry, remaining-helper explanations,
-  normal app Quit, and confirmed selected-helper SIGTERM. No force kill,
-  automatic cleanup, or bundle-only ownership assumptions
+  normal app Quit, and confirmed selected-helper SIGTERM, with no automatic
+  cleanup or bundle-only ownership assumptions. Force Quit came later in this
+  release (see Added)
   ([#25](https://github.com/henrikogaard/tidegauge/pull/25), merged).
 - Tools: startup registration inspection and System Settings handoff; current
   parent/UID/start-time explanations and possible startup associations; saved
@@ -73,9 +131,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   The Neural Engine tab is folded into the GPU page as a section; saved tab
   settings simply skip it. Captions render at 10 px uppercase with correct
   light-mode contrast, and unavailable measurements use a compact empty-state
-  card instead of paragraphs. The footer gives Settings, Processes, and Tools
-  one bordered control style: Settings left, live counts centred, the two
-  panels grouped right
+  card instead of paragraphs. (The footer and the Neural Engine section were
+  replaced later in this release by the sidebar and the page header.)
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Homebrew formula actions now verify the keg's `INSTALL_RECEIPT.json` through
   the same trusted, bounded read used for cask metadata. A missing, malformed,
@@ -122,17 +179,16 @@ hardware acceptance checks. A merge and a published release are separate events.
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Controls now share one anatomy across the app: bordered 28 px buttons with
   transparent rest state, segmented radio groups for mutually exclusive
-  choices (appearance, launcher visibility, menu readout styles, History
-  range and metric, the Tools page row, baseline windows, package source and
-  sort filters, and process filters), and grouped steppers for alert
-  thresholds and output volume. Arrow-only reorder buttons carry
+  choices (appearance, menu readout styles, History range and metric,
+  baseline windows, package source, and process filters). Steppers for alert
+  thresholds and output volume were later replaced by sliders. Arrow-only reorder buttons carry
   context-rich localized labels. The Disk hero reports system-wide disk
   activity instead of free capacity, physical capacity moves into the device
   identity card, and APFS volumes share one container header only when the
   reported metadata is consistent — shared space is never summed per volume.
   Projects gains a count summary and a sectioned list with a shared empty
-  state; History uses section headers, shared empty states, and a labeled
-  Recording details card that keeps every truthfulness note
+  state; History uses section headers and shared empty states, and every
+  truthfulness note now sits behind the page's ⓘ
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Development-server state is now a typed value (working / idle / barely
   used) instead of a parsed localized string, and project and summary counts
@@ -143,9 +199,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Keyboard activation now prevents the framework-generated second click, so
   Enter/Space invokes actions once and modified activation keys are ignored
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
-- The Tools Startup page bounds the rendered list to 20 registrations per
-  page with Previous/Next navigation so every entry stays reachable; the
-  collected inventory itself is never truncated
+- The Startup list renders in steps so every entry stays reachable and the
+  collected inventory is never truncated (grouped with "Show more" since
+  {PR(51)})
   ([#35](https://github.com/henrikogaard/tidegauge/pull/35), merged).
 - Storage scans stop promptly when cancelled mid-walk, verified after real
   metadata traversal rather than only from a pre-set flag. When a scan's
@@ -178,6 +234,10 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Physical sensor, battery and disk observations were checked on one Mac;
   independent absolute fan RPM readings and idle/load/sleep-wake coverage are
   still pending. Audio control and actual sign-in launch checks remain open.
+- The menu-bar panel was checked on one display; panel placement on a second
+  display is covered by tests only. A completed Before & after comparison and
+  Agents' development-server section with a live server were not exercised.
+  Neural Engine usage is not measured.
 - Native invalid-signature rejection was verified on hardware using ad-hoc
   signed QA bundles: a valid update installed first, then a size-preservingly
   tampered archive was rejected at signature verification with no update
