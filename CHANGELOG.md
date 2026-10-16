@@ -6,6 +6,13 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Per-app volume and mute on the Sound page (macOS 14.2 or later), with a
+  level meter for each app Tidegauge carries. macOS asks once for permission
+  to capture audio; nothing is recorded or saved, and at 100% or when
+  Tidegauge quits the app plays on its own again.
+
 ## [0.3.5](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.5) — 2026-10-16
 
 ### Added

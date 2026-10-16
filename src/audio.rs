@@ -709,6 +709,11 @@ pub fn audio_processes() -> Vec<AudioApp> {
             ) {
                 continue;
             }
+            // Tidegauge's own audio is the per-app volume passing through:
+            // not an app to list or tap.
+            if pid as u32 == std::process::id() {
+                continue;
+            }
             let mut run_out: u32 = 0;
             let mut run_in: u32 = 0;
             get(

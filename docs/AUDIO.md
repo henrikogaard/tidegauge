@@ -1,6 +1,6 @@
 # Audio capabilities
 
-Tidegauge uses public CoreAudio properties. It neither installs an audio driver nor creates a process tap, records audio, or requests microphone/screen-recording access. Per-app volume is therefore not offered: macOS has no public per-app volume, and doing it needs audio routing (a driver or process taps with recording permission).
+Tidegauge uses public CoreAudio properties and, for per-app volume only, Core Audio process taps (macOS 14.2+). It installs no audio driver and records nothing.
 
 ## Output controls
 
@@ -15,6 +15,10 @@ Some outputs do not expose a master-volume or mute property. Tidegauge does not 
 The Sound page lists every device with output or input streams (`kAudioDevicePropertyStreams` in that scope) that also reports it can be the default there (`kAudioDevicePropertyDeviceCanBeDefaultDevice`), so virtual devices such as a meeting app's audio driver are left out. A switch counts only once the default reads back as the chosen device. Choosing one sets `kAudioHardwarePropertyDefaultOutputDevice` (`dOut`) or `kAudioHardwarePropertyDefaultInputDevice` (`dIn `), the same defaults macOS Sound settings change. A device that has left the list is refused rather than written.
 
 The default **input** gets the same volume and mute handling as the output, in the input scope: read, capability-checked, and identity-checked on every write. Changing an input's volume or mute does not capture audio and needs no microphone permission.
+
+## Per-app volume
+
+Changing an app's volume creates a private process tap on that app's audio process with "muted when tapped", joins it to the default output in a private aggregate device, and plays the tapped stereo mix to that output at the chosen volume (0–100 %, steps of 10 %). Nothing is written to disk. At 100 % the tap and aggregate device are removed and the app plays on its own again; when Tidegauge quits, every tap ends with it. The taps follow the default output and end when their process does. The first tap makes macOS ask for audio-capture permission, with the reason from `NSAudioCaptureUsageDescription`. The row's meter shows the app's own level while Tidegauge carries it. Tidegauge never lists or taps its own audio.
 
 ## Per-process limits
 
