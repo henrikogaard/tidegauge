@@ -269,14 +269,35 @@ pub fn samples_connection(c: &Connection, request: &Request) -> rusqlite::Result
 /// metric and unit spelled out so the file stands on its own.
 pub fn csv(request: &Request, samples: &[(f64, f64)]) -> String {
     let app = request.app.is_some();
-    let quote = |text: &str| format!("\"{}\"", text.replace('"', "\"\""));
-    let source = quote(request.app.as_deref().unwrap_or("System"));
+    let source = cell(request.app.as_deref().unwrap_or("System"));
     let (metric, unit) = (request.metric.id(app), request.metric.unit(app));
     let mut out = String::from("local_time,unix_time,source,metric,unit,value\n");
     for (ts, value) in samples {
         out.push_str(&format!("{},{ts},{source},{metric},{unit},{value}\n", format_time(*ts, c"%Y-%m-%d %H:%M:%S")));
     }
     out
+}
+
+/// A quoted text cell. A name starting like a formula gets a leading
+/// apostrophe, so a spreadsheet shows it as text instead of running it.
+fn cell(text: &str) -> String {
+    let text = if text.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{text}") } else { text.to_string() };
+    format!("\"{}\"", text.replace('"', "\"\""))
+}
+
+/// A new file in `dir` named `name`, or "name 2.csv", "name 3.csv"… when
+/// that is taken, so an earlier export is never overwritten.
+fn create_new(dir: &std::path::Path, name: &str) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    let stem = name.strip_suffix(".csv").unwrap_or(name);
+    for n in 1..100 {
+        let path = if n == 1 { dir.join(name) } else { dir.join(format!("{stem} {n}") + ".csv") };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
 /// Writes the request's samples to a CSV file in Downloads and returns it.
@@ -296,10 +317,10 @@ pub fn export(request: &Request) -> Result<std::path::PathBuf, String> {
     let downloads = directories::UserDirs::new()
         .and_then(|d| d.download_dir().map(std::path::Path::to_path_buf))
         .ok_or_else(|| l("Downloads could not be found.", "Fant ikke Nedlastinger.").to_string())?;
-    let file = downloads.join(file_name(request));
-    std::fs::write(&file, csv(request, &samples))
-        .map_err(|_| l("The file could not be saved in Downloads.", "Filen kunne ikke lagres i Nedlastinger.").to_string())?;
-    Ok(file)
+    let failed = |_| l("The file could not be saved in Downloads.", "Filen kunne ikke lagres i Nedlastinger.").to_string();
+    let (path, mut file) = create_new(&downloads, &file_name(request)).map_err(failed)?;
+    std::io::Write::write_all(&mut file, csv(request, &samples).as_bytes()).map_err(failed)?;
+    Ok(path)
 }
 
 /// "Tidegauge Safari cpu 12h 2026-10-16 0815.csv"; no slashes or colons from
@@ -463,6 +484,26 @@ mod tests {
         assert!(lines.next().unwrap().ends_with(",15,\"Editor\",memory,B,2048"));
         r.metric = Metric::Power;
         assert!(samples_connection(&c, &r).is_err(), "per-app power is not exported");
+    }
+
+    #[test]
+    fn formula_like_names_are_kept_as_text() {
+        for name in ["=HYPERLINK(\"x\")", "+1", "-2", "@SUM(A1)"] {
+            assert!(cell(name).starts_with("\"'"), "{name} → {}", cell(name));
+        }
+        assert_eq!(cell("Safari"), "\"Safari\"");
+    }
+
+    #[test]
+    fn a_second_export_gets_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("tidegauge-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (first, _) = create_new(&dir, "Tidegauge x.csv").unwrap();
+        std::fs::write(&first, "kept").unwrap();
+        let (second, _) = create_new(&dir, "Tidegauge x.csv").unwrap();
+        assert_eq!(second.file_name().unwrap(), "Tidegauge x 2.csv");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "kept", "the first export is untouched");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

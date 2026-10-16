@@ -34,7 +34,7 @@ Each sample stores the 60 app groups using the most memory, plus the 20 busiest 
 
 ## Export
 
-Export CSV under the chart saves what History shows (the chosen range, source and metric) to a file in Downloads and shows it in Finder. The file holds every recorded sample, not the chart's interval averages, under the same rules: legacy placeholders and per-app power are left out, and gaps are simply missing rows. Columns: `local_time` (`YYYY-MM-DD HH:MM:SS`), `unix_time`, `source` (System or the app's recorded name), `metric` (a stable English id such as `cpu` or `disk_read`), `unit` and `value`.
+Export CSV under the chart saves what History shows (the chosen range, source and metric) to a file in Downloads and shows it in Finder. The file holds every recorded sample, not the chart's interval averages, under the same rules: legacy placeholders and per-app power are left out, and gaps are simply missing rows. Columns: `local_time` (`YYYY-MM-DD HH:MM:SS`), `unix_time`, `source` (System or the app's recorded name), `metric` (a stable English id such as `cpu` or `disk_read`), `unit` and `value`. A source name that starts like a spreadsheet formula (`=`, `+`, `-`, `@`) is written with a leading apostrophe so it stays text, and a second export never overwrites the first: it is saved as "… 2.csv".
 
 ## In Apps & processes
 
