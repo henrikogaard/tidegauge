@@ -6,6 +6,12 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Two more opt-in alerts in Settings → Alerts: the startup disk has less than
+  10 GB free for a minute, and macOS reports a serious or critical thermal
+  state, when it slows the Mac down to cool it.
+
 ## [0.3.3](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.3) — 2026-10-16
 
 ### Fixed

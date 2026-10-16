@@ -8,6 +8,13 @@ const MEMORY_DEFAULT_THRESHOLD: f64 = 92.0;
 const CPU_MEMORY_DURATION: f64 = 20.0;
 const IO_DURATION: f64 = 30.0;
 const COOLDOWN: f64 = 600.0;
+/// Free space on the startup disk below which it is worth a word.
+pub const LOW_DISK_BYTES: f64 = 10e9;
+/// A minute, so a big download that is cleaned up at once does not alert.
+const LOW_DISK_DURATION: f64 = 60.0;
+/// Serious (2) or critical (3): macOS is slowing the Mac down to cool it.
+const THERMAL_LEVEL: f64 = 1.5;
+const THERMAL_DURATION: f64 = 10.0;
 
 #[derive(Default)]
 struct Episode {
@@ -87,6 +94,8 @@ pub struct AlertEngine {
     memory: Episode,
     disk: Episode,
     network: Episode,
+    low_disk: Episode,
+    thermal: Episode,
 }
 
 impl AlertEngine {
@@ -96,6 +105,8 @@ impl AlertEngine {
             memory: Episode::default(),
             disk: Episode::default(),
             network: Episode::default(),
+            low_disk: Episode::default(),
+            thermal: Episode::default(),
         }
     }
 
@@ -196,6 +207,57 @@ impl AlertEngine {
             alerts.push(alert);
         }
 
+        // Episodes alert above a threshold, so low free space goes in as the
+        // amount it falls short of 10 GB. A disk that reports no size is no
+        // reading at all.
+        let free = snapshot.disk.free as f64;
+        let shortfall = (snapshot.disk.total > 0).then(|| LOW_DISK_BYTES - free);
+        if let Some(alert) = self.low_disk.check(
+            at,
+            settings.alert_low_disk_enabled,
+            0.,
+            shortfall,
+            LOW_DISK_DURATION,
+            |_| Alert {
+                metric: "low_disk".into(),
+                message: format!(
+                    "{}: {} {}",
+                    crate::locale::text("Startup disk almost full", "Oppstartsdisken er nesten full"),
+                    crate::engine::fmt_bytes(free),
+                    crate::locale::text("free", "ledig")
+                ),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
+        if let Some(alert) = self.thermal.check(
+            at,
+            settings.alert_thermal_enabled,
+            THERMAL_LEVEL,
+            snapshot.thermal_level.map(f64::from),
+            THERMAL_DURATION,
+            |level| Alert {
+                metric: "thermal".into(),
+                message: if level >= 3. {
+                    crate::locale::text(
+                        "macOS reports a critical thermal state and is slowing the Mac down hard to cool it",
+                        "macOS melder kritisk termisk tilstand og senker farten på Macen kraftig for å kjøle den",
+                    )
+                } else {
+                    crate::locale::text(
+                        "macOS reports a serious thermal state and is slowing the Mac down to cool it",
+                        "macOS melder alvorlig termisk tilstand og senker farten på Macen for å kjøle den",
+                    )
+                }
+                .into(),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
+
         alerts
     }
 }
@@ -224,6 +286,48 @@ mod tests {
         Snapshot {
             at,
             ..Snapshot::default()
+        }
+    }
+
+    #[test]
+    fn low_disk_alerts_after_a_minute_under_ten_gigabytes() {
+        let settings = Settings { alert_low_disk_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.);
+        s.disk.total = 500e9 as u64;
+        s.disk.free = 12e9 as u64;
+        assert!(engine.check(&s, &settings).is_empty(), "12 GB free is fine");
+        s.disk.free = 8e9 as u64;
+        s.at = 10.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 70.;
+        let alerts = engine.check(&s, &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "low_disk");
+        s.disk.total = 0;
+        s.at = 2000.;
+        assert!(engine.check(&s, &settings).is_empty(), "no disk reading is not low space");
+    }
+
+    #[test]
+    fn thermal_alerts_on_serious_or_critical_only() {
+        let settings = Settings { alert_thermal_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.);
+        s.thermal_level = Some(1);
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 60.;
+        assert!(engine.check(&s, &settings).is_empty(), "fair is not worth an alert");
+        s.thermal_level = Some(2);
+        s.at = 61.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 71.;
+        assert_eq!(engine.check(&s, &settings)[0].metric, "thermal");
+        let mut engine = AlertEngine::new();
+        s.thermal_level = None;
+        for at in [100., 200.] {
+            s.at = at;
+            assert!(engine.check(&s, &settings).is_empty(), "an unknown state never alerts");
         }
     }
 

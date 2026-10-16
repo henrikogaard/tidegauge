@@ -24,6 +24,8 @@ pub fn drain_alerts(settings: &Settings) -> Vec<Alert> {
         "memory" => settings.alert_mem_enabled,
         "disk" => settings.alert_disk_enabled,
         "network" => settings.alert_network_enabled,
+        "low_disk" => settings.alert_low_disk_enabled,
+        "thermal" => settings.alert_thermal_enabled,
         _ => false,
     });
     alerts

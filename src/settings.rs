@@ -23,6 +23,10 @@ pub struct Settings {
     pub alert_mem_enabled: bool,
     pub alert_disk_enabled: bool,
     pub alert_network_enabled: bool,
+    /// Alert when the startup disk has less than 10 GB free.
+    pub alert_low_disk_enabled: bool,
+    /// Alert when macOS reports a serious or critical thermal state.
+    pub alert_thermal_enabled: bool,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
@@ -43,6 +47,8 @@ impl Default for Settings {
             alert_mem_enabled: false,
             alert_disk_enabled: false,
             alert_network_enabled: false,
+            alert_low_disk_enabled: false,
+            alert_thermal_enabled: false,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
