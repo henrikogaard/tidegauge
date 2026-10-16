@@ -6,21 +6,24 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.5](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.5) — 2026-10-16
+
 ### Added
 
 - Started from outside Applications (Downloads, a disk image), Tidegauge
   offers once to move itself there and relaunch, so launch at login and
-  updates work. The old copy goes to the Trash; Don't ask again is kept.
+  updates work. The old copy goes to the Trash; Don't ask again is kept
+  ([#75](https://github.com/henrikogaard/tidegauge/pull/75)).
 - Measured system power: the whole Mac's draw as its power controller reports
   it, on battery or on the adapter. It shows on the Battery page, in the
   menu bar's power reading and in History. Macs without a battery do not
-  report it.
+  report it ([#73](https://github.com/henrikogaard/tidegauge/pull/73)).
 - Measured GPU power from macOS's GPU energy counter, on the GPU page and
   Overview's GPU card. Neural Engine power shows too on Macs where its
-  energy counter moves.
+  energy counter moves ([#73](https://github.com/henrikogaard/tidegauge/pull/73)).
 - The Sound page can switch the output and input device, as macOS Sound
   settings do, and controls the input's (microphone's) volume and mute where
-  the device allows it.
+  the device allows it ([#74](https://github.com/henrikogaard/tidegauge/pull/74)).
 
 ## [0.3.4](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.4) — 2026-10-16
 
