@@ -6,8 +6,30 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.4](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.4) — 2026-10-16
+
 ### Added
 
+- The CPU page leads with the temperatures macOS names itself: chip hottest
+  and average, SSD and battery. The SMC channel list stays behind Show
+  channels, since some of its codes are not temperatures
+  ([#62](https://github.com/henrikogaard/tidegauge/pull/62)).
+- The Memory page shows macOS's own memory pressure, normal, warning or
+  critical in Activity Monitor's colours, and the share of memory macOS counts
+  as available. Overview's memory card shows the pressure in place of wired
+  memory ([#63](https://github.com/henrikogaard/tidegauge/pull/63)).
+- Expanding an app in Apps & processes shows its CPU and memory over the last
+  hour, with Open in History for longer ranges. History gains a 1-hour range
+  ([#64](https://github.com/henrikogaard/tidegauge/pull/64)).
+- An alert for one busy app: when any single app stays above a CPU level
+  (80% of one core by default, up to 400%) for five minutes. Off by default;
+  turn it on in Settings → Alerts. Each app alerts once until it calms down or
+  quits, with its own ten-minute cooldown
+  ([#65](https://github.com/henrikogaard/tidegauge/pull/65)).
+- Two more opt-in alerts in Settings → Alerts: the startup disk has less than
+  10 GB free for a minute, and macOS reports a serious or critical thermal
+  state, when it slows the Mac down to cool it
+  ([#66](https://github.com/henrikogaard/tidegauge/pull/66)).
 - An opt-in memory-pressure alert, when macOS reports warning or critical
   pressure for 20 seconds. While it does, the menu-bar memory reading turns
   orange or red ([#67](https://github.com/henrikogaard/tidegauge/pull/67)).
@@ -24,26 +46,6 @@ hardware acceptance checks. A merge and a published release are separate events.
 - The Battery page charts capacity health per day, kept once a day beyond
   History's 30 days so wear shows over months, with the cycle count's change
   ([#71](https://github.com/henrikogaard/tidegauge/pull/71)).
-- The Memory page shows macOS's own memory pressure, normal, warning or
-  critical in Activity Monitor's colours, and the share of memory macOS counts
-  as available. Overview's memory card shows the pressure in place of wired
-  memory ([#63](https://github.com/henrikogaard/tidegauge/pull/63)).
-- The CPU page leads with the temperatures macOS names itself: chip hottest
-  and average, SSD and battery. The SMC channel list stays behind Show
-  channels, since some of its codes are not temperatures
-  ([#62](https://github.com/henrikogaard/tidegauge/pull/62)).
-- Expanding an app in Apps & processes shows its CPU and memory over the last
-  hour, with Open in History for longer ranges. History gains a 1-hour range
-  ([#64](https://github.com/henrikogaard/tidegauge/pull/64)).
-- An alert for one busy app: when any single app stays above a CPU level
-  (80% of one core by default, up to 400%) for five minutes. Off by default;
-  turn it on in Settings → Alerts. Each app alerts once until it calms down or
-  quits, with its own ten-minute cooldown
-  ([#65](https://github.com/henrikogaard/tidegauge/pull/65)).
-- Two more opt-in alerts in Settings → Alerts: the startup disk has less than
-  10 GB free for a minute, and macOS reports a serious or critical thermal
-  state, when it slows the Mac down to cool it
-  ([#66](https://github.com/henrikogaard/tidegauge/pull/66)).
 
 ### Fixed
 
