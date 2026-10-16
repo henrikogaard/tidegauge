@@ -20,6 +20,9 @@ pub struct BatteryStats {
     pub temperature_c: Option<f64>,
     /// Signed terminal power: positive into the battery, negative out of it.
     pub power_w: Option<f64>,
+    /// The whole Mac's power draw as the power controller measures it
+    /// (`PowerTelemetryData.SystemLoad`), on battery or on the adapter.
+    pub system_power_w: Option<f64>,
     pub voltage_v: Option<f64>,
     pub current_ma: Option<i64>,
     pub full_capacity_mah: Option<i64>,
@@ -154,6 +157,12 @@ fn signed_current(value: i64) -> Option<i64> {
     (-100_000..=100_000).contains(&value).then_some(value)
 }
 
+/// `SystemLoad` is in milliwatts. Zero is no reading (telemetry not ready),
+/// and anything past a kilowatt is not a Mac.
+fn system_power(milliwatts: Option<i64>) -> Option<f64> {
+    milliwatts.filter(|mw| (1..1_000_000).contains(mw)).map(|mw| mw as f64 / 1000.)
+}
+
 fn terminal_power(current_ma: Option<i64>, voltage_mv: Option<i64>) -> Option<f64> {
     let amps = signed_current(current_ma?)?;
     let volts = voltage_mv.filter(|v| (1..=60_000).contains(v))?;
@@ -231,6 +240,7 @@ pub fn battery_stats() -> BatteryStats {
             let volts = e.number("Voltage").filter(|v| (1..=60_000).contains(v));
             b.voltage_v = volts.map(|v| v as f64 / 1000.0);
             b.power_w = terminal_power(b.current_ma, volts);
+            b.system_power_w = system_power(e.scoped_number(Some("PowerTelemetryData"), "SystemLoad"));
             b.is_charging = e.boolean("IsCharging").unwrap_or(b.is_charging);
             b.is_charged = e.boolean("FullyCharged").unwrap_or(b.is_charged);
             if let Some(external) = e.boolean("ExternalConnected") {
@@ -265,6 +275,7 @@ pub fn preview() -> Option<BatteryStats> {
             available: true,
             present: true,
             percent: Some(72.0),
+            system_power_w: Some(if charging { 21.6 } else { 14.2 }),
             on_battery: !charging,
             ac_power: charging,
             is_charging: charging,
@@ -297,6 +308,14 @@ mod tests {
         assert!(stats(true, false).confirmed_absent());
         assert!(!stats(false, false).confirmed_absent(), "a failed reading is not absence");
         assert!(!stats(true, true).confirmed_absent());
+    }
+
+    #[test]
+    fn system_power_is_milliwatts_and_zero_is_no_reading() {
+        assert_eq!(system_power(Some(35_447)), Some(35.447));
+        assert_eq!(system_power(Some(0)), None);
+        assert_eq!(system_power(Some(-3)), None);
+        assert_eq!(system_power(None), None);
     }
 
     #[test]
