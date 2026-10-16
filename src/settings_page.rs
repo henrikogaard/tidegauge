@@ -21,6 +21,8 @@ pub struct Sliders {
     pub app: Entity<SliderState>,
     /// One app's memory, in GB.
     pub app_memory: Entity<SliderState>,
+    /// The chip temperature alert's level, in °C.
+    pub chip_temp: Entity<SliderState>,
     pub volume: Entity<SliderState>,
     /// When the volume was last dragged; the device's reading lags, so the
     /// slider isn't pulled back to it for a moment.
@@ -42,11 +44,14 @@ impl Sliders {
         let app_memory = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_app_mem_gb as f32));
         let volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
         let input_volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
-        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 4] = [
+        let (low, high) = crate::settings::CHIP_TEMP_RANGE;
+        let chip_temp = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_temp_c as f32));
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 5] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
             (&app, |s, v| s.alert_app_cpu_pct = v),
             (&app_memory, |s, v| s.alert_app_mem_gb = v),
+            (&chip_temp, |s, v| s.alert_temp_c = v),
         ];
         for (state, set) in setters {
             cx.subscribe(state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
@@ -83,7 +88,7 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, app_memory, volume, volume_touched: None, input_volume, input_touched: None }
+        Self { cpu, mem, app, app_memory, chip_temp, volume, volume_touched: None, input_volume, input_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
@@ -95,6 +100,7 @@ impl Sliders {
             (&self.mem, settings.alert_mem_pct as f32),
             (&self.app, settings.alert_app_cpu_pct as f32),
             (&self.app_memory, settings.alert_app_mem_gb as f32),
+            (&self.chip_temp, settings.alert_temp_c as f32),
         ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -489,6 +495,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             settings.alert_low_disk_enabled,
         ),
         (
+            "chip-temp",
+            l("Chip temperature", "Brikketemperatur"),
+            format!("{} {} {}", l("Hottest sensor above", "Varmeste sensor over"), crate::engine::fmt_celsius(settings.alert_temp_c), l("for 30 seconds", "i 30 sekunder")),
+            Some(&view.sliders.chip_temp),
+            settings.alert_temp_enabled,
+        ),
+        (
             "thermal",
             l("Overheating", "Overoppheting"),
             l("macOS slows the Mac down to cool it", "macOS senker farten for å kjøle Macen").to_string(),
@@ -524,6 +537,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "low-disk" => s.alert_low_disk_enabled = value,
                             "thermal" => s.alert_thermal_enabled = value,
                             "pressure" => s.alert_pressure_enabled = value,
+                            "chip-temp" => s.alert_temp_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));

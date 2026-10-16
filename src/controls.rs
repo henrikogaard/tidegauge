@@ -373,6 +373,7 @@ pub fn history_panel(
         Metric::Gpu => t::Metric::Gpu,
         Metric::Battery => t::Metric::Battery,
         Metric::DiskRead | Metric::DiskWrite => t::Metric::Disk,
+        Metric::ChipTemp | Metric::SsdTemp | Metric::BatteryTemp => t::Metric::Cpu,
         _ => t::Metric::Network,
     }
     .accent(dark);
@@ -396,14 +397,19 @@ pub fn history_panel(
             move |_, cx| change_history(&target, cx, |r| r.hours = hours),
         ));
     }
+    // Temperatures get their own row, so neither row is wider than the
+    // narrowest window allows.
+    let temperature = |m: &Metric| matches!(m, Metric::ChipTemp | Metric::SsdTemp | Metric::BatteryTemp);
     let mut metrics = segment_group("history-metrics", l("Metric", "Måling"), dark);
+    let mut temperatures = segment_group("history-temperatures", l("Temperature", "Temperatur"), dark);
     for &metric in if app {
         &Metric::APP[..]
     } else {
         &Metric::ALL[..]
     } {
         let target = this.clone();
-        metrics = metrics.child(segment(
+        let group = if temperature(&metric) { &mut temperatures } else { &mut metrics };
+        *group = std::mem::replace(group, segment_group("", "", dark)).child(segment(
             format!("history-{metric:?}"),
             metric.label(app),
             view.history_request.metric == metric,
@@ -460,7 +466,17 @@ pub fn history_panel(
                         .gap_3()
                         .child(row_label(l("Metric", "Måling")))
                         .child(metrics),
-                ),
+                )
+                .when(!app, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(row_label(l("Temperature", "Temperatur")))
+                            .child(temperatures),
+                    )
+                }),
         );
     if view.history_app_picker {
         let mut choices = vec![None];
