@@ -18,6 +18,71 @@ pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
 pub static SHOW_SETTINGS: AtomicBool = AtomicBool::new(false);
 pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);
+/// A left click on the item: open or close the menu-bar panel.
+pub static TOGGLE_POPOVER: AtomicBool = AtomicBool::new(false);
+/// A right or Control click on the item: show the native menu.
+pub static SHOW_ITEM_MENU: AtomicBool = AtomicBool::new(false);
+/// A click somewhere else on screen: close the panel.
+pub static CLICKED_OUTSIDE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static ITEM: std::cell::RefCell<Option<(Retained<NSStatusItem>, Retained<TideGaugeTarget>)>> =
+        const { std::cell::RefCell::new(None) };
+    static OUTSIDE_MONITOR: std::cell::RefCell<Option<Retained<objc2::runtime::AnyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Where the panel goes: the display the item is on, and the item's place
+/// on it in points from the display's top-left corner.
+#[derive(Clone, Copy, Debug)]
+pub struct Anchor {
+    pub display: u64,
+    pub left: f64,
+    pub width: f64,
+    pub bottom: f64,
+    pub display_width: f64,
+}
+
+/// The status item's position, for placing the panel under it.
+pub fn anchor() -> Option<Anchor> {
+    ITEM.with(|item| {
+        let item = item.borrow();
+        let (item, _) = item.as_ref()?;
+        let button = item.button(mtm())?;
+        let window = button.window()?;
+        let screen = window.screen()?;
+        let frame = window.frame();
+        let screen_frame = screen.frame();
+        let number = screen
+            .deviceDescription()
+            .objectForKey(&NSString::from_str("NSScreenNumber"))?
+            .downcast::<objc2_foundation::NSNumber>()
+            .ok()?
+            .unsignedLongLongValue();
+        Some(Anchor {
+            display: number,
+            left: frame.origin.x - screen_frame.origin.x,
+            width: frame.size.width,
+            // Cocoa counts up from the bottom; the panel wants the distance
+            // from the top of the display down to the item's lower edge.
+            bottom: screen_frame.origin.y + screen_frame.size.height - frame.origin.y,
+            display_width: screen_frame.size.width,
+        })
+    })
+}
+
+/// Show the native menu from the item, as a right click would.
+pub fn show_item_menu() {
+    let item = ITEM.with(|item| item.borrow().clone());
+    let Some((item, target)) = item else {
+        return;
+    };
+    item.setMenu(Some(&context_menu(&target)));
+    if let Some(button) = item.button(mtm()) {
+        unsafe { button.performClick(None) };
+    }
+    item.setMenu(None);
+}
 
 thread_local! {
     static LOGO: Option<Retained<NSImage>> = {
@@ -42,6 +107,19 @@ define_class!(
         #[unsafe(method(quit:))]
         fn _quit(&self, _sender: Option<&NSObject>) {
             QUIT_APP.store(true, Ordering::SeqCst);
+        }
+        #[unsafe(method(clicked:))]
+        fn _clicked(&self, _sender: Option<&NSObject>) {
+            let event = NSApplication::sharedApplication(mtm()).currentEvent();
+            let secondary = event.is_some_and(|event| {
+                event.r#type() == NSEventType::RightMouseUp
+                    || event.modifierFlags().contains(NSEventModifierFlags::Control)
+            });
+            if secondary {
+                SHOW_ITEM_MENU.store(true, Ordering::SeqCst);
+            } else {
+                TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+            }
         }
     }
 );
@@ -123,7 +201,21 @@ impl StatusBar {
     pub fn new() -> Self {
         let target: Retained<TideGaugeTarget> = unsafe { msg_send![TideGaugeTarget::class(), new] };
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
-        item.setMenu(Some(&context_menu(&target)));
+        // A left click opens the panel; a right or Control click the menu.
+        if let Some(button) = item.button(mtm()) {
+            unsafe {
+                button.setTarget(Some(&target));
+                button.setAction(Some(sel!(clicked:)));
+            }
+            button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
+        }
+        ITEM.with(|slot| *slot.borrow_mut() = Some((item.clone(), target.clone())));
+        // Clicks in other apps close the panel, like any menu-bar popover.
+        let monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+            &block2::RcBlock::new(|_| CLICKED_OUTSIDE.store(true, Ordering::SeqCst)),
+        );
+        OUTSIDE_MONITOR.with(|slot| *slot.borrow_mut() = monitor);
         Self {
             item,
             target,
@@ -132,15 +224,13 @@ impl StatusBar {
     }
 
     pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
-        if self.norwegian != crate::locale::is_norwegian() {
-            self.norwegian = crate::locale::is_norwegian();
-            self.item.setMenu(Some(&context_menu(&self.target)));
-        }
+        // The menu is built when shown, so it always uses the current language.
+        self.norwegian = crate::locale::is_norwegian();
         let readouts = menu_readouts(settings, snap, measure_label_width);
         let show_icon = settings.show_app_icon || readouts.is_empty();
         let menu_hint = l(
-            "Click for Open Dashboard, Settings, and Quit.",
-            "Klikk for å åpne oversikten, innstillinger eller avslutte.",
+            "Click for the panel; right-click for the menu.",
+            "Klikk for panelet; høyreklikk for menyen.",
         );
         let description = if readouts.is_empty() {
             format!("Tidegauge. {menu_hint}")

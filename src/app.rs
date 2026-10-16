@@ -77,7 +77,14 @@ pub fn pump_status_bar(
 ) {
     use crate::statusbar::*;
     use std::sync::atomic::Ordering;
+    if TOGGLE_POPOVER.swap(false, Ordering::SeqCst) {
+        toggle_popover(view.clone(), cx);
+    }
+    if CLICKED_OUTSIDE.swap(false, Ordering::SeqCst) {
+        close_popover(cx);
+    }
     if TOGGLE_PANEL.swap(false, Ordering::SeqCst) {
+        close_popover(cx);
         view.update(cx, |view, cx| {
             view.show_settings = false;
             cx.notify();
@@ -105,6 +112,54 @@ pub fn pump_status_bar(
 }
 
 static PANEL: OnceLock<Mutex<Option<gpui_kit::AnyWindowHandle>>> = OnceLock::new();
+static POPOVER: Mutex<Option<gpui_kit::AnyWindowHandle>> = Mutex::new(None);
+
+/// Open the menu-bar panel under the item, or close it if it is open.
+pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut gpui_kit::App) {
+    use gpui_kit::*;
+    if POPOVER.lock().unwrap().is_some() {
+        close_popover(cx);
+        return;
+    }
+    let Some(anchor) = crate::statusbar::anchor() else {
+        // Without a known position, open the full window instead.
+        toggle_panel(cx);
+        return;
+    };
+    let (width, height) = (crate::menu_panel::WIDTH as f64, crate::menu_panel::HEIGHT as f64);
+    let left = (anchor.left + anchor.width / 2. - width / 2.).clamp(8., (anchor.display_width - width - 8.).max(8.));
+    let bounds = Bounds::new(
+        point(px(left as f32), px((anchor.bottom + 6.) as f32)),
+        size(px(width as f32), px(height as f32)),
+    );
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            kind: WindowKind::PopUp,
+            focus: true,
+            show: true,
+            is_movable: false,
+            titlebar: None,
+            display_id: Some(DisplayId::from(anchor.display)),
+            window_background: WindowBackgroundAppearance::Transparent,
+            ..Default::default()
+        },
+        |window, cx| cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main)),
+    );
+    if let Ok(handle) = opened {
+        *POPOVER.lock().unwrap() = Some(handle.into());
+    }
+}
+
+pub fn close_popover(cx: &mut gpui_kit::App) {
+    if let Some(handle) = POPOVER.lock().unwrap().take() {
+        // Deferred: the panel may be the one asking (its own button or
+        // Escape), and a window can't be updated while it handles an event.
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
+    }
+}
 
 pub fn set_panel_handle(h: gpui_kit::AnyWindowHandle) {
     *PANEL.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(h);

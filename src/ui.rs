@@ -97,7 +97,7 @@ impl Tab {
             Tab::History => "icons/clock.svg",
         }
     }
-    fn metric(self) -> Option<Metric> {
+    pub(crate) fn metric(self) -> Option<Metric> {
         match self {
             Tab::Cpu => Some(Metric::Cpu),
             Tab::Memory => Some(Metric::Memory),
@@ -139,6 +139,8 @@ pub struct TideGaugeView {
     tools_scroll: ScrollHandle,
     process_scroll: ScrollHandle,
     pub only_remaining: bool,
+    /// Apps & processes shows the last minute's activity per process.
+    pub(crate) process_recent: bool,
     pub expanded_process_group: Option<String>,
     pub process_sort_cpu: bool,
     pub process_show_all: bool,
@@ -167,6 +169,8 @@ pub struct TideGaugeView {
     pub history_loading: bool,
     pub history_generation: u64,
     pub history_app_picker: bool,
+    /// When History last loaded; it reloads every minute while it is open.
+    pub(crate) history_loaded_at: Option<std::time::Instant>,
     tab_scrolls: Vec<ScrollHandle>,
     settings_scroll: ScrollHandle,
 }
@@ -226,6 +230,7 @@ impl TideGaugeView {
             tools_scroll: ScrollHandle::new(),
             process_scroll: ScrollHandle::new(),
             only_remaining: false,
+            process_recent: false,
             expanded_process_group: None,
             process_sort_cpu: true,
             process_show_all: false,
@@ -254,6 +259,7 @@ impl TideGaugeView {
             history_loading: false,
             history_generation: 0,
             history_app_picker: false,
+            history_loaded_at: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: ScrollHandle::new(),
         };
@@ -262,17 +268,23 @@ impl TideGaugeView {
             async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| loop {
                 smol::Timer::after(std::time::Duration::from_millis(1000)).await;
                 let _ = cx.update(|cx: &mut App| {
-                    let _ = this.update(
-                        cx,
-                        |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
+                    let history_due = this
+                        .update(cx, |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
                             v.snap = latest();
                             if v.toast.as_ref().is_some_and(Toast::expired) {
                                 v.toast = None;
                             }
                             crate::process_panel::refresh_order(v);
                             cx.notify();
-                        },
-                    );
+                            v.destination() == Destination::Tab(Tab::History)
+                                && !v.history_loading
+                                && v.history_loaded_at.is_none_or(|at| at.elapsed().as_secs() >= 60)
+                        })
+                        .unwrap_or(false);
+                    // History keeps itself current while it is open.
+                    if let (true, Some(this)) = (history_due, this.upgrade()) {
+                        crate::controls::refresh_history(&this, cx);
+                    }
                 });
             },
         )
@@ -463,7 +475,7 @@ impl ChartScale {
 /// full-opacity stroke on top, so a full or flat series stays legible. Empty
 /// series draw nothing; a single point draws a short tick; non-finite samples
 /// become gaps rather than fabricated values.
-fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
+pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
     let pts = pts.to_vec();
     canvas(
         move |_, _, _| (),
@@ -564,6 +576,17 @@ fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> C
     )
     .w_full()
     .h(px(height))
+}
+
+/// How far back a chart of `samples` reaches, as its axis's left label.
+/// Samples are about two seconds apart; the chart shows at most 240.
+fn chart_span(samples: usize) -> String {
+    let seconds = samples.min(240) * 2;
+    if seconds < 120 {
+        format!("−{seconds} s")
+    } else {
+        format!("−{} min", seconds / 60)
+    }
 }
 
 /// Horizontal usage bar used in ranked rows.
@@ -752,27 +775,17 @@ fn hero(
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_between()
-                                    .text_xs()
-                                    .text_color(t::ink_dim(dark))
-                                    .child(l("Recent samples", "Siste målinger"))
-                                    .child(max_hint.map(|v| format!("0–{}", fmt_pct(v))).unwrap_or_else(
-                                        || l("Auto scale", "Automatisk skala").into(),
-                                    )),
-                            )
                             .child(area_chart(&hist.pts, 130.0, color, max_hint))
+                            // A time axis and one legend, nothing more.
                             .child(
                                 div()
                                     .flex()
                                     .justify_between()
                                     .text_xs()
                                     .text_color(t::ink_dim(dark))
-                                    .child(l("Older", "Eldre"))
+                                    .child(chart_span(hist.pts.len()))
                                     .child(l("- - high water in view", "- - høyvann i visningen"))
-                                    .child(l("Now", "Nå")),
+                                    .child(l("now", "nå")),
                             ),
                     )
                 }),
@@ -917,6 +930,14 @@ pub(crate) fn navigate(this: &Entity<TideGaugeView>, to: Destination, cx: &mut A
         Destination::Tab(tab) => select_tab(this, tab, cx),
         Destination::Apps => crate::process_panel::open(this, cx),
         Destination::Agents => crate::agents_panel::open(this, cx),
+        // Recent activity lives in Apps & processes as "Last minute".
+        Destination::Tool(crate::tools_panel::Page::Activity) => {
+            this.update(cx, |v, _| {
+                v.process_recent = true;
+                v.only_remaining = false;
+            });
+            crate::process_panel::open(this, cx);
+        }
         Destination::Tool(page) => crate::tools_panel::open_page(this, page, cx),
         Destination::Settings => open_settings(this, cx),
     }
@@ -1062,16 +1083,14 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
 
     items.push(sidebar_group(l("Work", "Arbeid"), dark).into_any_element());
     add(&mut items, Destination::Apps, Some(s.app_count.to_string()), true);
+    // Development servers are part of Agents: what your agents and you
+    // started while working.
     add(&mut items, Destination::Agents, Some(s.agents.len().to_string()), true);
-    if visible.contains(&Tab::Projects) {
-        add(&mut items, Destination::Tab(Tab::Projects), sidebar_reading(Tab::Projects, s), true);
-    }
 
     items.push(sidebar_group(l("Over time", "Over tid"), dark).into_any_element());
     if visible.contains(&Tab::History) {
         add(&mut items, Destination::Tab(Tab::History), None, true);
     }
-    add(&mut items, Destination::Tool(Page::Activity), None, true);
     add(&mut items, Destination::Tool(Page::Baselines), None, true);
 
     items.push(sidebar_group(l("Maintenance", "Vedlikehold"), dark).into_any_element());
@@ -1575,7 +1594,21 @@ impl TideGaugeView {
             return crate::tools_panel::panel(self, dark, this).into_any_element();
         }
         if self.show_agents {
-            return crate::agents_panel::panel(self, dark, this).into_any_element();
+            // Agents and the development servers running beside them.
+            let servers = !self.snap.projects.is_empty() || self.project_error.is_some();
+            return div()
+                .flex()
+                .flex_col()
+                .gap(t::SECTION_GAP)
+                .child(crate::agents_panel::panel(self, dark, this.clone()))
+                .when(servers, |d| {
+                    d.child(section_header(l("Development servers", "Utviklingsservere"), "", dark))
+                        .when_some(self.project_error.as_ref(), |d, error| {
+                            d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed { t::warn(dark) } else { t::ink_dim(dark) })))
+                        })
+                        .when(!self.snap.projects.is_empty(), |d| d.child(projects_tab(&self.snap, dark, this.clone())))
+                })
+                .into_any_element();
         }
         let s = &self.snap;
         match self.tab {
@@ -2727,6 +2760,17 @@ fn disk_detail(
                                         ),
                                 ),
                         )
+                        // How full the shared space is, at a glance.
+                        .when_some(group.total.zip(group.free).filter(|(total, _)| *total > 0), |d, (total, free)| {
+                            let used = total.saturating_sub(free) as f32 / total as f32;
+                            d.child(
+                                div()
+                                    .h(px(8.))
+                                    .rounded_full()
+                                    .bg(t::card_hi(dark))
+                                    .child(div().h_full().rounded_full().w(relative(used.clamp(0.01, 1.))).bg(Metric::Disk.accent(dark))),
+                            )
+                        })
                         .child(
                             div()
                                 .flex()
@@ -3267,8 +3311,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
             .child(list_card(
                 s.bt.devices
                     .iter()
-                    .enumerate()
-                    .map(|(i, d)| {
+                    .map(|d| {
                         let mut kind_line = d.kind.clone();
                         if d.second_battery.is_some() || d.case_battery.is_some() {
                             for (part, value) in [
@@ -3289,20 +3332,14 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
                             .px_4()
                             .child(
                                 div()
-                                    .w(px(16.))
-                                    .text_xs()
-                                    .text_color(t::ink_dim(dark))
-                                    .child(format!("{}", i + 1)),
-                            )
-                            .child(
-                                div()
-                                    .size(px(20.))
-                                    .rounded_sm()
+                                    .size(px(24.))
+                                    .flex_shrink_0()
+                                    .rounded(t::RADIUS_CHIP)
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .bg(m.accent(dark).opacity(0.16))
-                                    .child(icon_img("icons/bluetooth.svg", 13., m.accent(dark))),
+                                    .child(icon_img(crate::bluetooth::device_icon(&d.name), 14., m.accent(dark))),
                             )
                             .child(
                                 div()
@@ -3443,7 +3480,7 @@ fn stop_button(
     )
 }
 
-fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
+pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Projects;
     let accent = m.accent(dark);
     let total = s

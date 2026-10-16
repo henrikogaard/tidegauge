@@ -104,6 +104,9 @@ pub struct Data {
     pub apps: Vec<String>,
     pub start: f64,
     pub end: f64,
+    /// The first sample this source ever recorded, when that falls inside
+    /// the range: recording began then, so the plot is empty before it.
+    pub recording_began: Option<f64>,
 }
 
 pub fn load(request: &Request) -> Result<Data, String> {
@@ -126,8 +129,8 @@ fn read_error(error: rusqlite::Error) -> String {
         l("The history database is damaged. Back it up before recovery; refreshing will not repair it.", "Historikkdatabasen er skadet. Ta en sikkerhetskopi før gjenoppretting; oppdatering reparerer ikke databasen.").into()
     } else {
         l(
-            "History could not be read. Try Refresh.",
-            "Historikken kunne ikke leses. Prøv Oppdater.",
+            "History could not be read. Tidegauge tries again in a minute.",
+            "Historikken kunne ikke leses. Tidegauge prøver igjen om et minutt.",
         )
         .into()
     }
@@ -194,6 +197,13 @@ pub fn query_connection(c: &Connection, request: &Request) -> rusqlite::Result<D
             data.counts[index] = count;
         }
     }
+    // The real first sample of this source, not a bucket boundary: any
+    // system metric for System, the app's own rows for an app.
+    let first: Option<f64> = match &request.app {
+        Some(app) => c.query_row("SELECT MIN(ts) FROM app_metric WHERE app = ?1", params![app], |r| r.get(0))?,
+        None => c.query_row("SELECT MIN(ts) FROM metric", [], |r| r.get(0))?,
+    };
+    data.recording_began = first.filter(|ts| *ts > data.start && *ts < data.end);
     Ok(data)
 }
 
@@ -228,8 +238,8 @@ mod tests {
         assert_eq!(
             read_error(rusqlite::Error::InvalidQuery),
             l(
-                "History could not be read. Try Refresh.",
-                "Historikken kunne ikke leses. Prøv Oppdater."
+                "History could not be read. Tidegauge tries again in a minute.",
+                "Historikken kunne ikke leses. Tidegauge prøver igjen om et minutt."
             )
         );
     }
@@ -269,6 +279,16 @@ mod tests {
             assert_eq!(d.values[2], Some(0.));
             assert_eq!(d.counts.iter().sum::<u64>(), 3);
         }
+    }
+
+    #[test]
+    fn recording_start_is_the_first_real_sample() {
+        let c = database();
+        let r = Request { metric: Metric::Cpu, hours: 12, app: None, end: 43200. };
+        c.execute_batch("INSERT INTO metric VALUES(5000.5,'memory',1),(9000,'cpu',2);").unwrap();
+        assert_eq!(query_connection(&c, &r).unwrap().recording_began, Some(5000.5), "any metric marks the start, not the bucket");
+        c.execute("INSERT INTO metric VALUES(-10,'memory',1)", []).unwrap();
+        assert_eq!(query_connection(&c, &r).unwrap().recording_began, None, "recording began before the range");
     }
 
     #[test]

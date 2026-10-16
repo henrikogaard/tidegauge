@@ -174,8 +174,8 @@ pub(crate) fn chrome(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeVie
             Vec::new(),
         ),
         Page::Baselines => (
-            l("Save a fixed system baseline, make your change, then compare an equal-length later window.", "Lagre et fast systemutgangspunkt, gjør endringen, og sammenlign med et like langt senere tidsvindu."),
-            baseline_actions(view, dark, this),
+            l("See whether a change made your Mac calmer: measure before, change, measure after.", "Se om en endring gjorde Macen roligere: mål før, endre, mål etter."),
+            Vec::new(),
         ),
         Page::Storage => (
             l("Find the largest folders and files inside a folder you choose.", "Finn de største mappene og filene i en mappe du velger."),
@@ -191,7 +191,7 @@ pub(crate) fn chrome(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeVie
 
 /// The caveats for a page, behind the header's ⓘ so the page leads with
 /// what it is for.
-fn about_notes(page: Page) -> Vec<&'static str> {
+pub(crate) fn about_notes(page: Page) -> Vec<&'static str> {
     match page {
         Page::Startup => vec![
             l("Partial inventory of legacy launch registrations. A file is not proof of approval or a running process. Modern app background items and managed items belong in System Settings.", "Delvis oversikt over eldre oppstartsregistreringer. En fil beviser ikke godkjenning eller at prosessen kjører. Moderne bakgrunnselementer og administrerte elementer håndteres i Systeminnstillinger."),
@@ -216,12 +216,6 @@ fn about_notes(page: Page) -> Vec<&'static str> {
     }
 }
 
-fn title(text: &str) -> Div {
-    div()
-        .text_lg()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(text.to_owned())
-}
 
 /// The name to show for a registration: its program's file name, unless the
 /// program is a shell or interpreter, which says nothing; then the last part
@@ -560,7 +554,7 @@ fn startup_change(
     .detach();
 }
 
-fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
+pub(crate) fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut actions = segment_group("activity-sort", l("Sort by", "Sorter etter"), dark);
     for (i, (sort, label)) in [
         (ActivitySort::Cpu, "CPU"),
@@ -747,8 +741,8 @@ fn capture_baseline(this: &Entity<TideGaugeView>, save: bool, cx: &mut App) {
     }).detach();
 }
 
-fn baseline_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
-    let mut actions: Vec<AnyElement> = Vec::new();
+/// The baseline window picker and save button: step one of Before & after.
+fn save_controls(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut windows = segment_group("baseline-windows", l("Window", "Tidsvindu"), dark);
     for minutes in crate::baselines::WINDOWS {
         let target = this.clone();
@@ -768,12 +762,13 @@ fn baseline_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView
             },
         ));
     }
-    actions.push(windows.into_any_element());
+    let mut controls = div().flex().items_center().gap(t::SPACE_2).child(windows);
     if !view.tools.baseline_busy && !view.tools.baseline_read_failed {
         let target = this.clone();
-        actions.push(button(
+        let replacing = view.tools.baseline.is_some();
+        controls = controls.child(button(
             "baseline-save",
-            l("Save recent window", "Lagre nylig tidsvindu"),
+            if replacing { l("Save again…", "Lagre på nytt…") } else { l("Save the last minutes", "Lagre de siste minuttene") },
             false,
             dark,
             move |window, cx| {
@@ -799,86 +794,145 @@ fn baseline_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView
                 })
                 .detach();
             },
-        ).into_any_element());
-        if view.tools.baseline.is_some() {
-            let target = this.clone();
-            actions.push(button(
-                "baseline-compare",
-                l("Compare with now", "Sammenlign med nå"),
-                false,
-                dark,
-                move |_, cx| capture_baseline(&target, false, cx),
-            ).into_any_element());
-        }
+        ));
     }
-    actions
+    controls
 }
 
-fn baselines(view: &TideGaugeView, dark: bool, _this: Entity<TideGaugeView>) -> Div {
-    let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
-    if view.tools.baseline_busy {
-        body = body.child(sub(l("Reading history…", "Leser historikk…")));
-    }
-    let Some(before) = &view.tools.baseline else {
-        return body.child(empty_state(
-            Page::Baselines.icon(),
-            t::accent(dark),
-            l("No saved baseline yet", "Ikke noe lagret utgangspunkt ennå").into(),
-            l(
-                "Save the recent window to have something to compare against later.",
-                "Lagre det siste tidsvinduet for å ha noe å sammenligne med senere.",
-            )
-            .into(),
-            dark,
-        ));
+/// One numbered step: a number badge, a title, one quiet line, and what
+/// to do on the right. Done steps show a check instead of the number.
+fn step(number: u8, title: &'static str, detail: String, done: bool, control: Option<AnyElement>, dark: bool) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(t::SPACE_3)
+        .px(t::SPACE_4)
+        .py(t::SPACE_3)
+        .when(number > 1, |d| d.border_t_1().border_color(t::line(dark)))
+        .child(
+            div()
+                .size(px(24.))
+                .flex_shrink_0()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if done { t::ok(dark).opacity(0.16) } else { t::card_hi(dark) })
+                .text_size(t::TEXT_BODY)
+                .font_weight(FontWeight::SEMIBOLD)
+                .when(done, |d| d.child(svg().path("icons/check.svg").size(px(13.)).text_color(t::ok(dark))))
+                .when(!done, |d| d.child(number.to_string())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).child(detail)),
+        )
+        .children(control)
+}
+
+fn baselines(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let now = crate::metrics::now_unix();
+    let before = view.tools.baseline.as_ref();
+    let minutes = before.map(|b| b.minutes).unwrap_or(view.tools.minutes);
+    let waited = before.map(|b| (now - b.end).max(0.)).unwrap_or(0.);
+    let ready = before.is_some() && waited >= minutes as f64 * 60.;
+    let saved_detail = match before {
+        Some(b) => format!(
+            "{} {} – {} · {} min",
+            l("Saved", "Lagret"),
+            crate::history_browser::local_time(b.start),
+            crate::history_browser::local_time(b.end),
+            b.minutes
+        ),
+        None => l("Saves the average of the last few minutes as your “before”.", "Lagrer gjennomsnittet av de siste minuttene som «før».").into(),
     };
-    body = body.child(sub(format!(
-        "{}: {} – {} · {} min",
-        l("Saved baseline", "Lagret utgangspunkt"),
-        crate::history_browser::local_time(before.start),
-        crate::history_browser::local_time(before.end),
-        before.minutes
-    )));
-    if let Some(after) = &view.tools.comparison {
-        body = body.child(sub(format!(
-            "{}: {} – {}",
-            l("Comparison", "Sammenligning"),
-            crate::history_browser::local_time(after.start),
-            crate::history_browser::local_time(after.end)
-        )));
+    let change_detail = match before {
+        None => l("Then quit an app, change a setting, or whatever you want to test.", "Deretter avslutter du en app, endrer en innstilling eller det du vil teste.").to_string(),
+        Some(_) if ready => l("Enough time has passed to compare.", "Det har gått nok tid til å sammenligne.").to_string(),
+        Some(_) => format!(
+            "{} {} {}",
+            l("Use the Mac as usual for", "Bruk Macen som vanlig i"),
+            ((minutes as f64 * 60. - waited) / 60.).ceil().max(1.),
+            l("more minutes.", "minutter til."),
+        ),
+    };
+    let compare = (before.is_some() && !view.tools.baseline_busy).then(|| {
+        let target = this.clone();
+        button("baseline-compare", l("Compare with now", "Sammenlign med nå"), ready, dark, move |_, cx| {
+            capture_baseline(&target, false, cx)
+        })
+        .into_any_element()
+    });
+    let mut body = div().flex().flex_col().gap(t::SECTION_GAP).child(
+        card(dark)
+            .p_0()
+            .gap_0()
+            .child(step(1, l("Measure before", "Mål før"), saved_detail, before.is_some(), Some(save_controls(view, dark, this.clone()).into_any_element()), dark))
+            .child(step(2, l("Make your change", "Gjør endringen"), change_detail, ready, None, dark))
+            .child(step(
+                3,
+                l("Compare", "Sammenlign"),
+                l("Measures an equally long window now and compares the two.", "Måler et like langt vindu nå og sammenligner de to.").into(),
+                view.tools.comparison.is_some(),
+                compare,
+                dark,
+            )),
+    );
+    if view.tools.baseline_busy {
+        body = body.child(sub(l("Reading history…", "Leser historikk…")).text_color(t::ink_dim(dark)));
     }
-    let mut list = card(dark);
-    for (i, m) in before.metrics.iter().enumerate() {
-        let mut text = format!(
-            "{} · {} · {} {}",
-            crate::baselines::label(&m.key),
-            m.mean
-                .map(|v| crate::baselines::format(&m.key, v))
-                .unwrap_or_else(|| "—".into()),
-            crate::locale::percent(m.covered / (before.minutes as f64 * 60.) * 100., 0),
-            l("coverage", "dekning")
+    let (Some(before), Some(after)) = (before, view.tools.comparison.as_ref()) else {
+        return body;
+    };
+    // Before, after and the change per measure, lined up as a table.
+    let cell = |width: f32, text: String, color: Hsla| {
+        div().w(px(width)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).text_color(color).child(text)
+    };
+    let mut table = card(dark).p_0().py_1().gap_0().child(
+        div()
+            .flex()
+            .px(t::SPACE_4)
+            .py(t::SPACE_2)
+            .text_size(t::TEXT_CAPTION)
+            .text_color(t::ink_dim(dark))
+            .child(div().flex_1().child(l("Measure", "Måling").to_uppercase()))
+            .child(cell(110., l("Before", "Før").to_uppercase(), t::ink_dim(dark)))
+            .child(cell(110., l("After", "Etter").to_uppercase(), t::ink_dim(dark)))
+            .child(cell(110., l("Change", "Endring").to_uppercase(), t::ink_dim(dark))),
+    );
+    let seconds = before.minutes as f64 * 60.;
+    for (m, a) in before.metrics.iter().zip(after.metrics.iter()) {
+        let fmt = |v: Option<f64>, key: &str| v.map(|v| crate::baselines::format(key, v)).unwrap_or_else(|| "—".into());
+        let change = crate::baselines::difference(m, a, seconds);
+        // Less use is the calmer direction for every measure here.
+        let color = match change {
+            Some(c) if c <= -5. => t::ok(dark),
+            Some(c) if c >= 5. => t::caution(dark),
+            _ => t::ink_dim(dark),
+        };
+        table = table.child(
+            div()
+                .flex()
+                .items_center()
+                .px(t::SPACE_4)
+                .h(t::ROW_H)
+                .child(div().flex_1().text_size(t::TEXT_ROW).child(crate::baselines::label(&m.key)))
+                .child(cell(110., fmt(m.mean, &m.key), t::ink(dark)))
+                .child(cell(110., fmt(a.mean, &a.key), t::ink(dark)))
+                .child(cell(110., change.map(|c| crate::locale::signed_percent(c, 1)).unwrap_or_else(|| "—".into()), color)),
         );
-        if let Some(after) = &view.tools.comparison {
-            let a = &after.metrics[i];
-            text.push_str(&format!(
-                " → {} · {} {} · {}",
-                a.mean
-                    .map(|v| crate::baselines::format(&a.key, v))
-                    .unwrap_or_else(|| "—".into()),
-                crate::locale::percent(a.covered / (after.minutes as f64 * 60.) * 100., 0),
-                l("coverage", "dekning"),
-                crate::baselines::difference(m, a, before.minutes as f64 * 60.)
-                    .map(|v| crate::locale::signed_percent(v, 1))
-                    .unwrap_or_else(|| l(
-                        "Change unavailable (gaps or zero baseline)",
-                        "Endring utilgjengelig (hull eller nullverdi)"
-                    )
-                    .into())
-            ));
-        }
-        list = list.child(sub(text).py_2().border_b_1().border_color(t::line(dark)));
     }
-    body.child(list)
+    body.child(crate::ui::section_header(
+        l("Result", "Resultat"),
+        &format!("{} {}", l("Compared", "Sammenlignet"), crate::history_browser::local_time(after.end)),
+        dark,
+    ))
+    .child(table)
 }
 
 fn storage_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Vec<AnyElement> {
@@ -944,117 +998,190 @@ fn storage_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>
     actions
 }
 
-fn storage(view: &TideGaugeView, dark: bool, _this: Entity<TideGaugeView>) -> Div {
+fn scan_folder(this: &Entity<TideGaugeView>, path: std::path::PathBuf, cx: &mut App) {
+    this.update(cx, |v, cx| {
+        v.tools.scan = Some(crate::storage::start(path));
+        cx.notify();
+    });
+}
+
+/// Folders most people want to look at first, so the page never opens empty.
+fn quick_folders() -> Vec<(&'static str, &'static str, std::path::PathBuf)> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    vec![
+        ("icons/folder-open.svg", l("Home", "Hjem"), home.clone()),
+        ("icons/download.svg", l("Downloads", "Nedlastinger"), home.join("Downloads")),
+        ("icons/file-text.svg", l("Documents", "Dokumenter"), home.join("Documents")),
+        ("icons/app-window.svg", l("Applications", "Programmer"), std::path::PathBuf::from("/Applications")),
+        ("icons/layers.svg", l("Caches", "Bufre"), home.join("Library/Caches")),
+    ]
+}
+
+/// One found folder or file: its name, where it is, a bar against the
+/// largest in the list, and its size.
+fn size_row(i: usize, kind: &'static str, item: &crate::storage::Item, largest: u64, dark: bool) -> Div {
+    let name = item
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| item.path.display().to_string());
+    let parent = item.path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+    let share = item.allocated as f32 / largest.max(1) as f32;
+    let path = item.path.clone();
+    div()
+        .flex()
+        .items_center()
+        .gap(t::SPACE_3)
+        .px(t::SPACE_4)
+        .min_h(t::ROW_H)
+        .py(t::SPACE_1)
+        .child(crate::ui::glyph_tile(if kind == "folder" { "icons/folder-open.svg" } else { "icons/file-text.svg" }, dark))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_size(t::TEXT_ROW).truncate().child(name))
+                .child(div().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).truncate().child(parent)),
+        )
+        .child(
+            div()
+                .w(px(120.))
+                .h(px(6.))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(t::card_hi(dark))
+                .child(div().h_full().rounded_full().w(relative(share.clamp(0.02, 1.))).bg(t::Metric::Disk.accent(dark))),
+        )
+        .child(
+            div()
+                .w(px(80.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_size(t::TEXT_ROW)
+                .font_weight(FontWeight::MEDIUM)
+                .child(crate::engine::fmt_bytes(item.allocated as f64)),
+        )
+        .child(button(format!("storage-reveal-{kind}-{i}"), l("Reveal", "Vis i Finder"), false, dark, move |_, _| {
+            crate::storage::reveal(&path)
+        }))
+}
+
+fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let data = view
         .tools
         .scan
         .as_ref()
         .map(|s| s.progress.lock().unwrap().clone());
     let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
-    if let Some(d) = data {
-        let status = if d.error.is_some() {
-            l("Scan unavailable", "Skanning utilgjengelig")
-        } else if d.cancelled {
-            l("Cancelled — partial", "Avbrutt — delvis")
-        } else if d.limited || d.errors > 0 || d.skipped > 0 {
-            l("Partial inventory", "Delvis oversikt")
-        } else if d.finished {
-            l("Scan complete", "Skanning fullført")
-        } else {
-            l("Scanning…", "Skanner…")
-        };
-        let totals = match crate::storage::observed_totals(&d) {
-            Some((files, allocated, logical)) => format!(
-                "{} · {}: {} · {} {} · {} {}",
-                status,
-                l("Observed totals", "Observerte summer"),
-                crate::locale::count(files, "file", "files", "fil", "filer"),
-                crate::engine::fmt_bytes(allocated as f64),
-                l("allocated", "tildelt"),
-                crate::engine::fmt_bytes(logical as f64),
-                l("logical", "logisk")
-            ),
-            None => format!(
-                "{} · {}",
-                status,
-                l(
-                    "No size totals are available.",
-                    "Ingen størrelsessummer er tilgjengelige."
-                )
-            ),
-        };
+    let scanning = data.as_ref().is_some_and(|d| !d.finished);
+    if !scanning {
+        let mut picks = div().flex().flex_wrap().gap(t::SPACE_2);
+        for (i, (icon, label, path)) in quick_folders().into_iter().enumerate() {
+            let target = this.clone();
+            let selected = data.as_ref().is_some_and(|d| d.root == path);
+            picks = picks.child(
+                div()
+                    .id(SharedString::from(format!("storage-pick-{i}")))
+                    .role(Role::Button)
+                    .aria_label(label)
+                    .tab_index(0)
+                    .h(t::CONTROL_H)
+                    .px(t::SPACE_3)
+                    .flex()
+                    .items_center()
+                    .gap(t::SPACE_2)
+                    .rounded(t::RADIUS_CONTROL)
+                    .border_1()
+                    .border_color(if selected { t::accent(dark) } else { t::line(dark) })
+                    .when(selected, |d| d.bg(t::accent(dark).opacity(0.12)))
+                    .hover(|d| d.bg(t::card_hi(dark)))
+                    .cursor_pointer()
+                    .text_size(t::TEXT_BODY)
+                    .child(svg().path(icon).size(px(13.)).text_color(t::ink_dim(dark)))
+                    .child(label)
+                    .on_click({
+                        let (target, path) = (target.clone(), path.clone());
+                        move |_, _, cx| scan_folder(&target, path.clone(), cx)
+                    })
+                    .capture_key_down(move |event, window, cx| {
+                        if crate::controls::is_activation_key(&event.keystroke) {
+                            window.prevent_default();
+                            scan_folder(&target, path.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    }),
+            );
+        }
+        body = body.child(picks);
+    }
+    let Some(d) = data else {
+        return body.child(empty_state(
+            Page::Storage.icon(),
+            t::accent(dark),
+            l("Pick a folder to look inside", "Velg en mappe å se inn i").into(),
+            l("Start with one above, or choose any folder in the header.", "Start med en over, eller velg en hvilken som helst mappe øverst.").into(),
+            dark,
+        ));
+    };
+    let status = if d.error.is_some() {
+        l("Scan unavailable", "Skanning utilgjengelig")
+    } else if d.cancelled {
+        l("Cancelled — partial", "Avbrutt — delvis")
+    } else if d.limited || d.errors > 0 || d.skipped > 0 {
+        l("Partial inventory", "Delvis oversikt")
+    } else if d.finished {
+        l("Scan complete", "Skanning fullført")
+    } else {
+        l("Scanning…", "Skanner…")
+    };
+    let totals = match crate::storage::observed_totals(&d) {
+        Some((files, allocated, _)) => format!(
+            "{} · {} · {}",
+            status,
+            crate::locale::count(files, "file", "files", "fil", "filer"),
+            crate::engine::fmt_bytes(allocated as f64),
+        ),
+        None => status.to_string(),
+    };
+    body = body.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(t::SPACE_3)
+            .child(div().text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).truncate().child(crate::processes::path_summary(&d.root.display().to_string())))
+            .child(div().flex_shrink_0().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).child(totals)),
+    );
+    if d.errors > 0 || d.skipped > 0 {
         body = body.child(
-            card(dark)
-                .child(sub(d.root.display().to_string()))
-                .child(sub(totals))
-                .child(sub(format!(
-                    "{} · {}",
-                    crate::locale::count(d.errors, "read error", "read errors", "lesefeil", "lesefeil"),
-                    crate::locale::count(
-                        d.skipped,
-                        "skipped entry",
-                        "skipped entries",
-                        "oppføring hoppet over",
-                        "oppføringer hoppet over"
-                    )
-                ))),
+            sub(format!(
+                "{} · {}",
+                crate::locale::count(d.errors, "read error", "read errors", "lesefeil", "lesefeil"),
+                crate::locale::count(d.skipped, "skipped entry", "skipped entries", "oppføring hoppet over", "oppføringer hoppet over")
+            ))
+            .text_color(t::ink_dim(dark)),
         );
-        if let Some(error) = d.error {
-            body = body.child(sub(error).text_color(t::warn(dark)));
+    }
+    if let Some(error) = &d.error {
+        body = body.child(sub(error.clone()).text_color(t::warn(dark)));
+    }
+    for (kind, heading, items) in [
+        ("folder", l("Folders", "Mapper"), &d.folders),
+        ("file", l("Largest files", "Største filer"), &d.largest),
+    ] {
+        if items.is_empty() {
+            continue;
         }
-        for (kind, heading, items) in [
-            (
-                "folder",
-                l(
-                    "Top-level folders (root includes direct files)",
-                    "Mapper på øverste nivå (roten inkluderer direkte filer)",
-                ),
-                d.folders,
-            ),
-            (
-                "file",
-                l(
-                    "Largest files by allocated size",
-                    "Største filer etter tildelt størrelse",
-                ),
-                d.largest,
-            ),
-        ] {
-            let mut list = card(dark).child(title(heading));
-            for (i, item) in items.into_iter().take(50).enumerate() {
-                let path = item.path.clone();
-                list = list.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .py_2()
-                        .border_b_1()
-                        .border_color(t::line(dark))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(sub(item.path.display().to_string()))
-                                .child(sub(format!(
-                                    "{} {} · {} {}",
-                                    crate::engine::fmt_bytes(item.allocated as f64),
-                                    l("allocated", "tildelt"),
-                                    crate::engine::fmt_bytes(item.logical as f64),
-                                    l("logical", "logisk")
-                                ))),
-                        )
-                        .child(button(
-                            format!("storage-reveal-{kind}-{i}"),
-                            l("Reveal", "Vis i Finder"),
-                            false,
-                            dark,
-                            move |_, _| crate::storage::reveal(&path),
-                        )),
-                );
-            }
-            body = body.child(list);
+        let largest = items.iter().map(|i| i.allocated).max().unwrap_or(1);
+        body = body.child(crate::ui::section_header(heading, &items.len().min(50).to_string(), dark));
+        let mut list = card(dark).p_0().py_1().gap_0();
+        for (i, item) in items.iter().take(50).enumerate() {
+            list = list.child(size_row(i, kind, item, largest, dark));
         }
+        body = body.child(list);
     }
     body
 }

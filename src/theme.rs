@@ -196,6 +196,7 @@ mod design_tokens_tests {
         "tools_panel.rs",
         "history_browser.rs",
         "settings_page.rs",
+        "menu_panel.rs",
     ];
 
     /// Builder calls whose literal argument must come from a token.

@@ -22,6 +22,7 @@ mod locale;
 #[cfg(test)]
 mod locale_guard;
 mod login;
+mod menu_panel;
 mod metrics;
 mod notifications;
 mod packages;
@@ -141,6 +142,10 @@ fn main() {
                     if statusbar::SHOW_CONTEXT_MENU.swap(false, std::sync::atomic::Ordering::SeqCst)
                     {
                         statusbar::show_context_menu();
+                    }
+                    if statusbar::SHOW_ITEM_MENU.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = cx.update(app::close_popover);
+                        statusbar::show_item_menu();
                     }
                 }
             })
