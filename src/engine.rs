@@ -368,7 +368,9 @@ impl Engine {
 
         // GPU
         s.gpu = gpu_stats();
-        s.gpu.power_w = crate::gpu_power::sample();
+        let power = crate::gpu_power::sample();
+        s.gpu.power_w = power.gpu;
+        s.gpu.neural_engine_w = power.neural_engine;
         if let Some(utilization) = s.gpu.utilization {
             s.gpu_hist.push(utilization);
         }

@@ -2,9 +2,10 @@
 //! "GPU Energy" channel), read without special permissions. The counter is
 //! cumulative energy; power is its change over the time between samples.
 //!
-//! Checked on a Mac17,7 (M5 Max, macOS 27.0.1): GPU Energy counts while the
-//! group's CPU and Neural Engine channels stay at zero, so only the GPU is
-//! read from here.
+//! The Neural Engine's channels ("ANE0", "ANE1"…) are read the same way, but
+//! a Neural Engine power is only given once one of them has counted: on a
+//! Mac17,7 (M5 Max, macOS 27.0.1) they stay at zero even under load, and a
+//! counter that never moves is no reading, not an idle Neural Engine.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -58,6 +59,21 @@ struct Reader {
     subscription: Subscription,
     channels: MutableDict,
     last: Option<(Dict, Instant)>,
+    /// Whether a Neural Engine channel has ever counted on this Mac.
+    ane_counts: bool,
+}
+
+/// Power since the previous sample, in watts.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Power {
+    pub gpu: Option<f64>,
+    /// `None` until the Neural Engine counter has been seen to move.
+    pub neural_engine: Option<f64>,
+}
+
+/// Whether a channel name is one of the Neural Engine's energy channels.
+pub fn is_neural_engine(name: &str) -> bool {
+    name.strip_prefix("ANE").is_some_and(|rest| rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) || rest == " Energy")
 }
 
 thread_local! {
@@ -77,16 +93,24 @@ fn open() -> Option<Reader> {
         let mut subscribed: MutableDict = std::ptr::null_mut();
         let subscription = IOReportCreateSubscription(std::ptr::null(), mutable, &mut subscribed, 0, std::ptr::null());
         CFRelease(mutable);
-        (!subscription.is_null() && !subscribed.is_null()).then_some(Reader { subscription, channels: subscribed, last: None })
+        (!subscription.is_null() && !subscribed.is_null()).then_some(Reader { subscription, channels: subscribed, last: None, ane_counts: false })
     }
 }
 
-/// GPU power since the previous call on this thread, in watts. The first call
-/// only takes a baseline; a Mac without the counter always gives `None`.
-pub fn sample() -> Option<f64> {
+/// GPU and Neural Engine power since the previous call on this thread. The
+/// first call only takes a baseline; a Mac without the counters gives none.
+pub fn sample() -> Power {
     READER.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let reader = slot.get_or_insert_with(open).as_mut()?;
+        let Some(reader) = slot.get_or_insert_with(open).as_mut() else {
+            return Power::default();
+        };
+        read(reader).unwrap_or_default()
+    })
+}
+
+fn read(reader: &mut Reader) -> Option<Power> {
+    {
         unsafe {
             let now = IOReportCreateSamples(reader.subscription, reader.channels, std::ptr::null());
             if now.is_null() {
@@ -103,27 +127,47 @@ pub fn sample() -> Option<f64> {
             let key = crate::metrics::cf_str("IOReportChannels");
             let items = CFDictionaryGetValue(delta, key) as CFArrayRef;
             CFRelease(key);
-            let mut result = None;
+            let seconds = at.duration_since(then).as_secs_f64();
+            let mut power = Power::default();
+            let mut ane: Option<f64> = None;
             if !items.is_null() {
                 for i in 0..CFArrayGetCount(items) {
                     let channel = CFArrayGetValueAtIndex(items, i);
-                    if crate::metrics::cf_to_string(IOReportChannelGetChannelName(channel)).as_deref() != Some("GPU Energy") {
+                    let Some(name) = crate::metrics::cf_to_string(IOReportChannelGetChannelName(channel)) else { continue };
+                    let gpu = name == "GPU Energy";
+                    if !gpu && !is_neural_engine(&name) {
                         continue;
                     }
                     let unit = crate::metrics::cf_to_string(IOReportChannelGetUnitLabel(channel)).as_deref().and_then(joules_per_unit);
-                    result = unit.and_then(|u| watts(IOReportSimpleGetIntegerValue(channel, 0), u, at.duration_since(then).as_secs_f64()));
-                    break;
+                    let w = unit.and_then(|u| watts(IOReportSimpleGetIntegerValue(channel, 0), u, seconds));
+                    if gpu {
+                        power.gpu = w;
+                    } else if let Some(w) = w {
+                        ane = Some(ane.unwrap_or(0.) + w);
+                    }
                 }
             }
             CFRelease(delta);
-            result
+            reader.ane_counts |= ane.is_some_and(|w| w > 0.);
+            power.neural_engine = ane.filter(|_| reader.ane_counts);
+            Some(power)
         }
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{joules_per_unit, watts};
+    use super::{is_neural_engine, joules_per_unit, watts};
+
+    #[test]
+    fn neural_engine_channels_are_recognised() {
+        assert!(is_neural_engine("ANE0"));
+        assert!(is_neural_engine("ANE12"));
+        assert!(is_neural_engine("ANE"));
+        assert!(is_neural_engine("ANE Energy"));
+        assert!(!is_neural_engine("ANE_THROTTLE_SW_TRIG"));
+        assert!(!is_neural_engine("GPU Energy"));
+    }
 
     #[test]
     fn energy_changes_become_watts() {
@@ -139,10 +183,10 @@ mod tests {
     #[test]
     #[ignore = "needs an Apple silicon Mac"]
     fn native_gpu_power_reads() {
-        assert_eq!(super::sample(), None, "the first call is a baseline");
+        assert_eq!(super::sample(), super::Power::default(), "the first call is a baseline");
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let w = super::sample();
-        eprintln!("GPU power {w:?} W");
-        assert!(w.is_some_and(|w| w >= 0.));
+        let p = super::sample();
+        eprintln!("{p:?}");
+        assert!(p.gpu.is_some_and(|w| w >= 0.));
     }
 }

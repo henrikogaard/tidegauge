@@ -13,7 +13,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   menu bar's power reading and in History. Macs without a battery do not
   report it.
 - Measured GPU power from macOS's GPU energy counter, on the GPU page and
-  Overview's GPU card.
+  Overview's GPU card. Neural Engine power shows too on Macs where its
+  energy counter moves.
 
 ## [0.3.4](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.4) — 2026-10-16
 
