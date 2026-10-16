@@ -6,7 +6,7 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
-## [0.3.7](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.7) — 2026-10-16
+## [0.3.7](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.7) — 2026-10-17
 
 ### Removed
 
