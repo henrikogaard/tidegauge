@@ -1383,7 +1383,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
             l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor."),
         ],
         Tab::Sound => vec![
-            l("Controls the default media output device, not individual apps.", "Styrer standard lydutgang, ikke enkeltapper."),
+            l("Controls the default output and input devices, not individual apps. Choosing a device here is the same as choosing it in macOS Sound settings.", "Styrer standard lydutgang og -inngang, ikke enkeltapper. Å velge en enhet her er det samme som å velge den i lydinnstillingene i macOS."),
             l("Per-app volume and mute are unavailable without additional audio routing. Activity is not a measured level. Tidegauge does not record audio.", "Volum og demping per app er utilgjengelig uten ekstra lydruting. Aktivitet er ikke et målt lydnivå. Tidegauge tar ikke opp lyd."),
         ],
         Tab::Bluetooth => vec![l(
@@ -1466,7 +1466,7 @@ impl Render for TideGaugeView {
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
         let dark = self.dark;
-        self.sliders.sync(self.snap.audio.device_volume, window, cx);
+        self.sliders.sync(self.snap.audio.device_volume, self.snap.audio.input.volume, window, cx);
         let s = &self.snap;
         let tab = self.tab;
         let this = cx.entity();
@@ -1633,7 +1633,7 @@ impl TideGaugeView {
             Tab::Battery => battery_tab(s, dark).into_any_element(),
             Tab::Sound => div().flex().flex_col().gap(t::SECTION_GAP)
                 .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
-                .child(sound_tab(s, &self.sliders.volume, dark, this, self.audio_pending)).into_any_element(),
+                .child(sound_tab(s, &self.sliders.volume, &self.sliders.input_volume, dark, this, self.audio_pending)).into_any_element(),
             Tab::Bluetooth => bt_tab(s, dark).into_any_element(),
             Tab::Projects => div()
                 .flex()
@@ -3249,6 +3249,7 @@ fn level_meter(frac: f32, color: Hsla, dark: bool, bars: usize) -> Div {
 fn sound_tab(
     s: &Snapshot,
     volume_slider: &Entity<gpui_kit::component::slider::SliderState>,
+    input_slider: &Entity<gpui_kit::component::slider::SliderState>,
     dark: bool,
     this: Entity<TideGaugeView>,
     pending: bool,
@@ -3343,8 +3344,9 @@ fn sound_tab(
                             d.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(text))
                         }),
                 )
-                .child(crate::controls::audio_output(&s.audio, volume_slider, dark, this, pending)),
+                .child(crate::controls::audio_output(&s.audio, volume_slider, dark, this.clone(), pending)),
         )
+        .child(crate::controls::audio_input(&s.audio, input_slider, dark, this, pending))
         .child(section_header(
             l("Apps using audio", "Apper som bruker lyd"),
             l(

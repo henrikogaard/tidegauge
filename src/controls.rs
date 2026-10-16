@@ -673,6 +673,7 @@ pub fn audio_output(
     }
     if audio.can_mute {
         if let Some(muted) = audio.device_muted {
+            let this = this.clone();
             buttons = buttons.child(button_accent(
                 "output-mute",
                 if muted {
@@ -690,10 +691,89 @@ pub fn audio_output(
         }
     }
     controls = controls.child(buttons);
+    if audio.outputs.len() > 1 {
+        controls = controls.child(device_choice("output", &audio.outputs, id, crate::audio::Direction::Output, dark, accent, this.clone()));
+    }
     if !audio.can_volume || !audio.can_mute {
         controls = controls.child(sub(l("This output does not expose all volume/mute controls. Use macOS Sound settings for unsupported controls.", "Denne utgangen støtter ikke alle volum-/dempefunksjoner. Bruk lydinnstillingene i macOS for funksjoner som ikke støttes.")));
     }
     controls
+}
+
+/// One button per device; choosing one makes it the default on its side.
+fn device_choice(
+    key: &'static str,
+    devices: &[(u32, String)],
+    current: u32,
+    direction: crate::audio::Direction,
+    dark: bool,
+    accent: Hsla,
+    this: Entity<TideGaugeView>,
+) -> Div {
+    div().flex().flex_wrap().gap_2().children(devices.iter().map(|(id, name)| {
+        let (id, target) = (*id, this.clone());
+        button_accent(format!("{key}-device-{id}"), name.clone(), id == current, dark, accent, move |_, cx| {
+            if id != current {
+                audio_action(&target, cx, move || crate::audio::set_default_device(direction, id));
+            }
+        })
+    }))
+}
+
+/// The input device (microphone): its name, volume, mute and the choice of
+/// device. Controls a device lacks are left out and said so.
+pub fn audio_input(
+    audio: &crate::engine::AudioInfo,
+    input_slider: &Entity<gpui_kit::component::slider::SliderState>,
+    dark: bool,
+    this: Entity<TideGaugeView>,
+    pending: bool,
+) -> Div {
+    use crate::audio::Direction;
+    let input = &audio.input;
+    let accent = t::Metric::Sound.accent(dark);
+    let id = input.id;
+    let mut card = crate::ui::card(dark).child(
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(svg().path("icons/mic.svg").size(px(20.)).text_color(accent))
+            .child(
+                div()
+                    .flex_1()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Input device", "Lydinngang")))
+                    .child(sub(input.name.clone()).text_color(t::ink_dim(dark))),
+            )
+            .when(input.muted == Some(true), |d| d.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Muted", "Dempet")))),
+    );
+    if id == 0 {
+        return card;
+    }
+    if pending {
+        return card.child(sub(l("Updating input…", "Oppdaterer lydinngang…")));
+    }
+    let mut row = div().flex().items_center().gap(t::SPACE_4);
+    if let (true, Some(volume)) = (input.can_volume, input.volume) {
+        row = row
+            .child(svg().path("icons/mic.svg").size(px(14.)).text_color(t::ink_dim(dark)))
+            .child(crate::settings_page::slider(input_slider, 220., accent))
+            .child(div().w(px(44.)).text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(crate::engine::fmt_pct(volume as f64 * 100.)));
+    }
+    if let (true, Some(muted)) = (input.can_mute, input.muted) {
+        let target = this.clone();
+        row = row.child(button_accent("input-mute", if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") }, muted, dark, accent, move |_, cx| {
+            audio_action(&target, cx, move || crate::audio::toggle_mute(Direction::Input, id));
+        }));
+    }
+    card = card.child(row);
+    if audio.inputs.len() > 1 {
+        card = card.child(device_choice("input", &audio.inputs, id, Direction::Input, dark, accent, this));
+    }
+    if !input.can_volume || !input.can_mute {
+        card = card.child(sub(l("This input does not expose all volume/mute controls. Use macOS Sound settings for unsupported controls.", "Denne inngangen støtter ikke alle volum-/dempefunksjoner. Bruk lydinnstillingene i macOS for funksjoner som ikke støttes.")).text_color(t::ink_dim(dark)));
+    }
+    card
 }
 
 fn audio_action(
@@ -709,8 +789,11 @@ fn audio_action(
         view.audio_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let (result, output) =
-                smol::unblock(move || (action(), crate::audio::output_state())).await;
+            let (result, output, input, outputs, inputs) = smol::unblock(move || {
+                use crate::audio::Direction;
+                (action(), crate::audio::output_state(), crate::audio::device_state(Direction::Input), crate::audio::devices(Direction::Output), crate::audio::devices(Direction::Input))
+            })
+            .await;
             let _ = this.update(cx, |view, cx| {
                 view.audio_pending = false;
                 view.audio_error = result.err();
@@ -720,6 +803,9 @@ fn audio_action(
                 view.snap.audio.device_muted = output.muted;
                 view.snap.audio.can_volume = output.can_volume;
                 view.snap.audio.can_mute = output.can_mute;
+                view.snap.audio.input = input;
+                view.snap.audio.outputs = outputs;
+                view.snap.audio.inputs = inputs;
                 cx.notify();
             });
         })
