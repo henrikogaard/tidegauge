@@ -6,6 +6,20 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.3](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.3) — 2026-10-16
+
+### Fixed
+
+- On a Mac with a battery, Overview's four bottom cards now make two rows of
+  two, so their legends are no longer cut off. The battery card leaves out time
+  left and battery flow when there is nothing to show, and shows time to full
+  while charging ([#58](https://github.com/henrikogaard/tidegauge/pull/58)).
+- Settings are read once and reused until they change, instead of being read
+  many times each time the window is drawn
+  ([#58](https://github.com/henrikogaard/tidegauge/pull/58)).
+- Releases retry stapling when Apple's service drops the connection
+  ([#57](https://github.com/henrikogaard/tidegauge/pull/57)).
+
 ## [0.3.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.2) — 2026-10-16
 
 ### Fixed
