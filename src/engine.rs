@@ -393,7 +393,7 @@ impl Engine {
                         (cpu_ns.saturating_sub(pv.cpu_ns)) as f64 / dt / 1e9 * 100.0,
                         (r.ri_diskio_bytesread.saturating_sub(pv.disk_read)) as f64 / dt,
                         (r.ri_diskio_byteswritten.saturating_sub(pv.disk_write)) as f64 / dt,
-                        (r.ri_billed_energy.saturating_sub(pv.energy_nj)) as f64 / dt / 1e9,
+                        (r.ri_energy_nj.saturating_sub(pv.energy_nj)) as f64 / dt / 1e9,
                     )
                 } else {
                     (0.0, 0.0, 0.0, 0.0)
@@ -405,7 +405,7 @@ impl Engine {
                     cpu_ns as f64 / life / 1e9 * 100.0,
                     r.ri_diskio_bytesread as f64 / life,
                     r.ri_diskio_byteswritten as f64 / life,
-                    r.ri_billed_energy as f64 / life / 1e9,
+                    r.ri_energy_nj as f64 / life / 1e9,
                 )
             };
             let exe = proc_path(pid);
@@ -424,7 +424,7 @@ impl Engine {
                 mem_bytes: r.ri_phys_footprint,
                 disk_read: r.ri_diskio_bytesread,
                 disk_write: r.ri_diskio_byteswritten,
-                energy_nj: r.ri_billed_energy,
+                energy_nj: r.ri_energy_nj,
                 interrupt_wakeups: Some(r.ri_interrupt_wkups),
                 cpu_pct: cpu_pct.clamp(0.0, 3200.0),
                 read_rate: rr.max(0.0),
@@ -437,7 +437,7 @@ impl Engine {
                     cpu_ns,
                     disk_read: r.ri_diskio_bytesread,
                     disk_write: r.ri_diskio_byteswritten,
-                    energy_nj: r.ri_billed_energy,
+                    energy_nj: r.ri_energy_nj,
                     start_unix: start,
                 },
             );
