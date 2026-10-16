@@ -215,7 +215,90 @@ pub fn query_connection(c: &Connection, request: &Request) -> rusqlite::Result<D
     Ok(data)
 }
 
+/// The local calendar day of `ts`, "YYYY-MM-DD".
+pub fn local_day(ts: f64) -> String {
+    format_time(ts, c"%Y-%m-%d")
+}
+
+/// One recorded day of battery health.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatteryDay {
+    pub day: String,
+    pub health: f64,
+    pub cycles: Option<i64>,
+}
+
+/// The last year of daily battery health, oldest first.
+pub fn battery_days_connection(c: &Connection) -> rusqlite::Result<Vec<BatteryDay>> {
+    let mut statement = c.prepare(
+        "SELECT day, health, cycles FROM (SELECT * FROM battery_daily WHERE health > 0 AND health < 1e300 ORDER BY day DESC LIMIT 366) ORDER BY day",
+    )?;
+    let rows = statement
+        .query_map([], |r| Ok(BatteryDay { day: r.get(0)?, health: r.get(1)?, cycles: r.get(2)? }))?
+        .collect();
+    rows
+}
+
+/// The battery days for the Battery page, read off the UI thread: the page
+/// gets the last result at once, and a read older than ten minutes starts
+/// a new one in the background.
+pub fn battery_days() -> Vec<BatteryDay> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static CACHE: OnceLock<Mutex<(Option<Instant>, Vec<BatteryDay>)>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new((None, Vec::new())));
+    let mut guard = cache.lock().unwrap();
+    if guard.0.is_none_or(|at| at.elapsed() > Duration::from_secs(600)) {
+        guard.0 = Some(Instant::now());
+        std::thread::spawn(move || {
+            let path = crate::history::database_path();
+            let read = || -> rusqlite::Result<Vec<BatteryDay>> {
+                let c = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                c.busy_timeout(Duration::from_millis(500))?;
+                battery_days_connection(&c)
+            };
+            // An older database has no such table yet: no days, not an error.
+            if let Ok(days) = read() {
+                cache.lock().unwrap().1 = days;
+            }
+        });
+    }
+    guard.1.clone()
+}
+
+/// The days from the first recorded one to the last, with `None` for a day
+/// Tidegauge did not run, so the chart shows gaps as gaps.
+pub fn battery_series(days: &[BatteryDay]) -> Vec<Option<f64>> {
+    let parse = |d: &str| {
+        let mut parts = d.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+        let (y, m, day) = (parts.next()??, parts.next()??, parts.next()??);
+        // Days since 1970-01-01 for a proleptic Gregorian date.
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let doy = (153 * ((m + 9) % 12) + 2) / 5 + day - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        Some(era * 146_097 + doe - 719_468)
+    };
+    let (Some(first), Some(last)) = (days.first().and_then(|d| parse(&d.day)), days.last().and_then(|d| parse(&d.day))) else {
+        return Vec::new();
+    };
+    let mut series = vec![None; (last - first + 1).clamp(0, 366) as usize];
+    for d in days {
+        if let Some(n) = parse(&d.day) {
+            if let Some(slot) = series.get_mut((n - first) as usize) {
+                *slot = Some(d.health);
+            }
+        }
+    }
+    series
+}
+
 pub fn local_time(ts: f64) -> String {
+    format_time(ts, c"%Y-%m-%d %H:%M")
+}
+
+fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
     let time = ts as libc::time_t;
     let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
     let mut output = [0u8; 48];
@@ -226,7 +309,7 @@ pub fn local_time(ts: f64) -> String {
         let size = libc::strftime(
             output.as_mut_ptr().cast(),
             output.len(),
-            c"%Y-%m-%d %H:%M".as_ptr(),
+            format.as_ptr(),
             &date,
         );
         String::from_utf8_lossy(&output[..size]).into_owned()
@@ -327,6 +410,20 @@ mod tests {
         let d = query_connection(&c, &r).unwrap();
         assert_eq!(d.values.len(), BUCKETS);
         assert_eq!(&d.values[..3], &[Some(10.), Some(30.), None], "0–20 s averages two samples, 20–40 s holds one");
+    }
+
+    #[test]
+    fn battery_days_keep_gaps_between_recorded_days() {
+        let day = |d: &str, h: f64| BatteryDay { day: d.into(), health: h, cycles: None };
+        let series = battery_series(&[day("2026-02-27", 99.), day("2026-03-01", 98.), day("2026-03-02", 97.5)]);
+        assert_eq!(series, [Some(99.), None, Some(98.), Some(97.5)], "Feb 28 is a gap, and the year has no Feb 29");
+        assert!(battery_series(&[]).is_empty());
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE battery_daily(day TEXT PRIMARY KEY, ts REAL, health REAL, cycles INTEGER, full_mah INTEGER, design_mah INTEGER);
+            INSERT INTO battery_daily VALUES('2026-03-02',0,97.5,12,0,0),('2026-03-01',0,98,11,0,0),('2026-03-03',0,0,13,0,0);").unwrap();
+        let days = battery_days_connection(&c).unwrap();
+        assert_eq!(days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(), ["2026-03-01", "2026-03-02"], "oldest first, no zero health");
+        assert_eq!(days[1].cycles, Some(12));
     }
 
     #[test]
