@@ -8,6 +8,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- An opt-in alert when one app holds more memory than a set amount (4 GB by
+  default, 1–64 GB) for five minutes, alongside the one-app CPU alert.
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired
