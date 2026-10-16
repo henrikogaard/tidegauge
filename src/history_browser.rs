@@ -228,10 +228,14 @@ pub struct BatteryDay {
     pub cycles: Option<i64>,
 }
 
-/// The last year of daily battery health, oldest first.
+/// The year up to the latest recorded day, oldest first: by calendar date,
+/// so days Tidegauge did not run never push recent days out.
 pub fn battery_days_connection(c: &Connection) -> rusqlite::Result<Vec<BatteryDay>> {
     let mut statement = c.prepare(
-        "SELECT day, health, cycles FROM (SELECT * FROM battery_daily WHERE health > 0 AND health < 1e300 ORDER BY day DESC LIMIT 366) ORDER BY day",
+        "SELECT day, health, cycles FROM battery_daily
+         WHERE health > 0 AND health < 1e300
+           AND day >= date((SELECT MAX(day) FROM battery_daily WHERE health > 0 AND health < 1e300), '-365 days')
+         ORDER BY day",
     )?;
     let rows = statement
         .query_map([], |r| Ok(BatteryDay { day: r.get(0)?, health: r.get(1)?, cycles: r.get(2)? }))?
@@ -283,9 +287,11 @@ pub fn battery_series(days: &[BatteryDay]) -> Vec<Option<f64>> {
     let (Some(first), Some(last)) = (days.first().and_then(|d| parse(&d.day)), days.last().and_then(|d| parse(&d.day))) else {
         return Vec::new();
     };
-    let mut series = vec![None; (last - first + 1).clamp(0, 366) as usize];
+    // Anchored at the latest day: at most a year, and the newest always in.
+    let first = first.max(last - 365);
+    let mut series = vec![None; (last - first + 1).max(0) as usize];
     for d in days {
-        if let Some(n) = parse(&d.day) {
+        if let Some(n) = parse(&d.day).filter(|n| *n >= first) {
             if let Some(slot) = series.get_mut((n - first) as usize) {
                 *slot = Some(d.health);
             }
@@ -424,6 +430,20 @@ mod tests {
         let days = battery_days_connection(&c).unwrap();
         assert_eq!(days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(), ["2026-03-01", "2026-03-02"], "oldest first, no zero health");
         assert_eq!(days[1].cycles, Some(12));
+    }
+
+    #[test]
+    fn a_year_and_more_with_gaps_keeps_the_newest_days() {
+        let day = |d: &str, h: f64| BatteryDay { day: d.into(), health: h, cycles: None };
+        let series = battery_series(&[day("2025-01-01", 100.), day("2026-03-01", 95.), day("2026-03-02", 94.)]);
+        assert_eq!(series.len(), 366);
+        assert_eq!(series.last(), Some(&Some(94.)), "the newest day is on the chart");
+        assert_eq!(series.iter().flatten().count(), 2, "the day older than a year is left out");
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE battery_daily(day TEXT PRIMARY KEY, ts REAL, health REAL, cycles INTEGER, full_mah INTEGER, design_mah INTEGER);
+            INSERT INTO battery_daily VALUES('2025-01-01',0,100,1,0,0),('2026-03-01',0,95,2,0,0),('2026-03-02',0,94,3,0,0);").unwrap();
+        let days = battery_days_connection(&c).unwrap();
+        assert_eq!(days.first().map(|d| d.day.as_str()), Some("2026-03-01"), "labels start inside the year shown");
     }
 
     #[test]
