@@ -6,6 +6,13 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- An alert for one busy app: when any single app stays above a CPU level
+  (80% of one core by default, up to 400%) for five minutes. Off by default;
+  turn it on in Settings → Alerts. Each app alerts once until it calms down or
+  quits, with its own ten-minute cooldown.
+
 ## [0.3.3](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.3) — 2026-10-16
 
 ### Fixed
