@@ -6,11 +6,13 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.7](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.7) — 2026-10-17
+
 ### Removed
 
 - The Neural Engine reading. On an M5 Max with macOS 27 neither macOS's
   energy counters nor `powermetrics` report it, so it never showed anything
-  there.
+  there ([#80](https://github.com/henrikogaard/tidegauge/pull/80)).
 
 ## [0.3.6](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.6) — 2026-10-16
 
