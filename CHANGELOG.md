@@ -6,6 +6,14 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.2) — 2026-10-16
+
+### Fixed
+
+- The menu-bar panel's footer fits again: Quit was cut off once the update
+  button was added. Open Tidegauge keeps its label; updates, Settings and
+  Quit are icons ([#56](https://github.com/henrikogaard/tidegauge/pull/56)).
+
 ## [0.3.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.1) — 2026-10-16
 
 ### Added

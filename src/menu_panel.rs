@@ -323,11 +323,13 @@ impl Render for MenuPanel {
                     })
                     .child({
                         let main = main.clone();
-                        footer_button("panel-settings", "icons/settings.svg", l("Settings", "Innstillinger"), dark, move |cx| {
+                        // Icons only beside the labelled Open button: the
+                        // footer has no room for four labels.
+                        footer_control("panel-settings", "icons/settings.svg", l("Settings", "Innstillinger"), false, dark, move |cx| {
                             open(&main, Destination::Settings, cx)
                         })
                     })
-                    .child(footer_button("panel-quit", "icons/power.svg", l("Quit", "Avslutt"), dark, |cx| cx.quit())),
+                    .child(footer_control("panel-quit", "icons/power.svg", l("Quit Tidegauge", "Avslutt Tidegauge"), false, dark, |cx| cx.quit())),
             )
     }
 }
