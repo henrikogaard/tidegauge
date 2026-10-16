@@ -438,6 +438,10 @@ pub struct GpuStats {
     pub utilization: Option<f64>,
     pub mem_in_use: Option<u64>,
     pub supported: bool,
+    /// Measured GPU power from macOS's energy counters, in watts.
+    pub power_w: Option<f64>,
+    /// Neural Engine power, only on Macs where its counter is seen to move.
+    pub neural_engine_w: Option<f64>,
 }
 
 pub fn gpu_stats() -> GpuStats {

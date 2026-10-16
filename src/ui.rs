@@ -1372,15 +1372,17 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
         )],
         Tab::Gpu => vec![
             l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
+            l("GPU power is measured: the change in macOS's GPU energy counter between samples.", "GPU-effekten er målt: endringen i GPU-energitelleren i macOS mellom målingene."),
             l(
-                "Tidegauge can't read Neural Engine usage on this Mac yet.",
-                "Tidegauge kan ikke lese bruken av Neural Engine på denne Macen ennå.",
+                "Neural Engine power shows only once macOS's Neural Engine energy counter has moved on this Mac. On some Macs it stays at zero even under load (an M5 Max on macOS 27, for one), and then nothing is shown rather than a false zero.",
+                "Effekt for Neural Engine vises først når energitelleren for Neural Engine i macOS har beveget seg på denne Macen. På noen Macer står den på null også under last (blant annet en M5 Max på macOS 27), og da vises ingenting i stedet for en falsk null.",
             ),
         ],
         Tab::Battery => vec![
             l("Power per app is the processor energy macOS accounts to each process, averaged over the last two seconds. It leaves out GPU, display, radio and work done for the app by system processes, so graphics-heavy apps read low. It comes from macOS's own energy model, not a meter.", "Effekt per app er prosessorenergien macOS fører på hver prosess, i snitt over de siste to sekundene. GPU, skjerm, radio og arbeid systemprosesser gjør for appen er ikke med, så grafikktunge apper viser for lavt. Den kommer fra macOS sin egen energimodell, ikke en måler."),
             l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS."),
-            l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor."),
+            l("Battery flow: + charging, − discharging. Adapter rating is not live consumption.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk."),
+            l("System power is the whole Mac's draw as its power controller measures it, on battery or on the adapter. Macs without a battery do not report it.", "Systemeffekt er hele Macens forbruk slik strømkontrolleren måler det, på batteri eller adapter. Macer uten batteri melder det ikke."),
         ],
         Tab::Sound => vec![
             l("Controls the default output and input devices, not individual apps. Choosing a device here is the same as choosing it in macOS Sound settings.", "Styrer standard lydutgang og -inngang, ikke enkeltapper. Å velge en enhet her er det samme som å velge den i lydinnstillingene i macOS."),
@@ -1902,12 +1904,8 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     },
                 ),
                 (
-                    l("Peak", "Topp"),
-                    if s.gpu.utilization.is_some() {
-                        fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))
-                    } else {
-                        "—".into()
-                    },
+                    l("Power", "Effekt"),
+                    s.gpu.power_w.map(crate::engine::fmt_watts).unwrap_or("—".into()),
                 ),
             ],
             &s.gpu_hist,
@@ -3065,6 +3063,12 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
             ))
             .when_some(s.gpu.mem_in_use, |d, bytes| {
                 d.child(stat_card(l("GPU memory", "GPU-minne"), fmt_bytes(bytes as f64), None, dark))
+            })
+            .when_some(s.gpu.power_w, |d, w| {
+                d.child(stat_card(l("GPU power · measured", "GPU-effekt · målt"), crate::engine::fmt_watts(w), None, dark))
+            })
+            .when_some(s.gpu.neural_engine_w, |d, w| {
+                d.child(stat_card(l("Neural Engine power · measured", "Neural Engine-effekt · målt"), crate::engine::fmt_watts(w), None, dark))
             });
     } else {
         page = page
@@ -3076,12 +3080,16 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
                 m.accent(dark),
                 dark,
                 vec![
+                    (l("Power · measured", "Effekt · målt").into(), s.gpu.power_w.map(crate::engine::fmt_watts).unwrap_or("—".into())),
                     (l("GPU memory", "GPU-minne").into(), s.gpu.mem_in_use.map(|b| fmt_bytes(b as f64)).unwrap_or("—".into())),
                     (l("Average", "Gjennomsnitt").into(), history_average(&s.gpu_hist)),
                     (l("Peak", "Topp").into(), fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))),
                 ],
                 Some(100.0),
             ))
+            .when_some(s.gpu.neural_engine_w, |d, w| {
+                d.child(stat_card(l("Neural Engine power · measured", "Neural Engine-effekt · målt"), crate::engine::fmt_watts(w), None, dark))
+            })
             .when(!supported, |d| {
                 d.child(empty_state(
                     "icons/gpu.svg",
@@ -3169,7 +3177,8 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
                 .child(stat_card(l("macOS condition", "Tilstand fra macOS"), b.condition_label().into(), None, dark)))
             .when(preview.is_none(), |d| d.child(battery_trend(dark)))
             .child(section_header(l("Electrical details", "Elektriske detaljer"), "", dark))
-            .child(div().grid().grid_cols(4).gap_3()
+            .child(div().grid().grid_cols(5).gap_3()
+                .child(stat_card(l("System power", "Systemeffekt"), b.system_power_w.map(crate::engine::fmt_watts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Battery flow", "Batteristrøm"), b.power_w.map(fmt_signed_watts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Voltage", "Spenning"), b.voltage_v.map(fmt_volts).unwrap_or("—".into()), None, dark))
                 .child(stat_card(l("Current", "Strømstyrke"), b.current_ma.map(|a| format!("{:+} mA", a)).unwrap_or("—".into()), None, dark))

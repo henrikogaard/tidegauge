@@ -8,6 +8,13 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- Measured system power: the whole Mac's draw as its power controller reports
+  it, on battery or on the adapter. It shows on the Battery page, in the
+  menu bar's power reading and in History. Macs without a battery do not
+  report it.
+- Measured GPU power from macOS's GPU energy counter, on the GPU page and
+  Overview's GPU card. Neural Engine power shows too on Macs where its
+  energy counter moves.
 - The Sound page can switch the output and input device, as macOS Sound
   settings do, and controls the input's (microphone's) volume and mute where
   the device allows it.
