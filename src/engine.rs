@@ -194,6 +194,8 @@ pub struct Snapshot {
     pub power_w: Option<f64>,
     pub power_hist: Hist,
     pub thermal: String,
+    /// The same state as a level, 0 nominal to 3 critical, for alerts.
+    pub thermal_level: Option<u8>,
     pub uptime: Duration,
     pub alerts: Vec<Alert>,
 }
@@ -237,6 +239,7 @@ impl Default for Snapshot {
             power_w: None,
             power_hist: h(),
             thermal: "—".into(),
+            thermal_level: None,
             uptime: Duration::ZERO,
             alerts: Vec::new(),
         }
@@ -320,6 +323,7 @@ impl Engine {
         s.cpu_hist.push(s.cpu_pct);
         s.load_avg = load_avg();
         s.thermal = thermal_state().unwrap_or("—").into();
+        s.thermal_level = crate::metrics::thermal_level();
 
         // Memory
         s.mem = mem_stats();

@@ -24,6 +24,10 @@ hardware acceptance checks. A merge and a published release are separate events.
   turn it on in Settings → Alerts. Each app alerts once until it calms down or
   quits, with its own ten-minute cooldown
   ([#65](https://github.com/henrikogaard/tidegauge/pull/65)).
+- Two more opt-in alerts in Settings → Alerts: the startup disk has less than
+  10 GB free for a minute, and macOS reports a serious or critical thermal
+  state, when it slows the Mac down to cool it
+  ([#66](https://github.com/henrikogaard/tidegauge/pull/66)).
 
 ### Fixed
 

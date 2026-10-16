@@ -393,6 +393,20 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             Some(&view.sliders.app),
             settings.alert_app_enabled,
         ),
+        (
+            "low-disk",
+            l("Startup disk space", "Plass på oppstartsdisken"),
+            l("Under 10 GB free for a minute", "Under 10 GB ledig i ett minutt").to_string(),
+            None,
+            settings.alert_low_disk_enabled,
+        ),
+        (
+            "thermal",
+            l("Overheating", "Overoppheting"),
+            l("macOS slows the Mac down to cool it", "macOS senker farten for å kjøle Macen").to_string(),
+            None,
+            settings.alert_thermal_enabled,
+        ),
     ];
     group(
         l("Alerts", "Varsler"),
@@ -418,6 +432,8 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "mem" => s.alert_mem_enabled = value,
                             "disk" => s.alert_disk_enabled = value,
                             "app" => s.alert_app_enabled = value,
+                            "low-disk" => s.alert_low_disk_enabled = value,
+                            "thermal" => s.alert_thermal_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));

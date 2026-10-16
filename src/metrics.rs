@@ -568,6 +568,12 @@ pub fn chip_info() -> ChipInfo {
 }
 
 // ---- Thermal ----
+/// macOS's thermal state: 0 nominal, 1 fair, 2 serious, 3 critical.
+pub fn thermal_level() -> Option<u8> {
+    let level = objc2_foundation::NSProcessInfo::processInfo().thermalState().0;
+    (0..=3).contains(&level).then_some(level as u8)
+}
+
 pub fn thermal_state() -> Option<&'static str> {
     use crate::locale::text as l;
     match objc2_foundation::NSProcessInfo::processInfo().thermalState().0 {
