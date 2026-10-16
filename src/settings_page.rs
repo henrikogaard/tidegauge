@@ -186,6 +186,25 @@ fn set_language(this: &Entity<TideGaugeView>, value: Option<&'static str>, windo
     });
 }
 
+/// Register the shortcut first and save it only once macOS has taken it, so
+/// a shortcut another app holds is never shown as on.
+fn set_panel_shortcut(this: &Entity<TideGaugeView>, value: Option<&'static str>, cx: &mut App) {
+    let error = match crate::shortcut::apply(value) {
+        Ok(()) => crate::settings::mutate(|s| s.panel_shortcut = value.map(str::to_string)).err().map(|_| {
+            l("Settings could not be saved. Try again.", "Innstillingene kunne ikke lagres. Prøv igjen.").to_string()
+        }),
+        Err(error) => {
+            // Put back the one that was working.
+            let _ = crate::shortcut::apply(Settings::load().panel_shortcut.as_deref());
+            Some(error)
+        }
+    };
+    this.update(cx, |view, cx| {
+        view.settings_error = error;
+        cx.notify();
+    });
+}
+
 fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
     let error = match crate::login::set_enabled(enabled) {
         Ok(status) => crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
@@ -237,6 +256,19 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             move |window, cx| set_language(&target, value, window, cx),
         ));
     }
+    let mut shortcut = segment_group("shortcut-options", l("Open the panel", "Åpne panelet"), dark);
+    let choices = std::iter::once((None, l("Off", "Av"))).chain(crate::shortcut::CHOICES.iter().map(|c| (Some(c.0), c.1)));
+    for (i, (value, label)) in choices.enumerate() {
+        let target = this.clone();
+        shortcut = shortcut.child(segment(
+            format!("shortcut-{i}"),
+            label,
+            settings.panel_shortcut.as_deref() == value,
+            dark,
+            t::accent(dark),
+            move |_, cx| set_panel_shortcut(&target, value, cx),
+        ));
+    }
     let login = crate::login::status();
     let login_control: AnyElement = if login.can_change() {
         let on = login.is_registered();
@@ -258,6 +290,13 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
             row(l("Language", "Språk"), None, language, false, dark),
+            row(
+                l("Open the panel", "Åpne panelet"),
+                Some(l("A shortcut that opens the menu-bar panel from any app.", "En snarvei som åpner menylinjepanelet fra hvilken som helst app.").into()),
+                shortcut,
+                false,
+                dark,
+            ),
             row(
                 l("Launch at login", "Start ved pålogging"),
                 (!login.can_change() || login.needs_approval()).then(|| login.message().to_string()),
