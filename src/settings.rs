@@ -53,24 +53,51 @@ impl Default for Settings {
 }
 
 fn path() -> PathBuf {
-    let d = directories::ProjectDirs::from("no", "ogard", "tidegauge")
-        .map(|p| p.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("/tmp/tidegauge"));
-    let _ = std::fs::create_dir_all(&d);
-    d.join("settings.json")
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let d = directories::ProjectDirs::from("no", "ogard", "tidegauge")
+            .map(|p| p.config_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/tmp/tidegauge"));
+        let _ = std::fs::create_dir_all(&d);
+        d.join("settings.json")
+    })
+    .clone()
+}
+
+/// The file's identity when it was last read: unchanged identity means the
+/// parsed settings can be reused. Drawing the window asks for settings many
+/// times a frame, so this saves a read and a parse each time.
+type Stamp = (Option<std::time::SystemTime>, u64);
+static CACHE: std::sync::Mutex<Option<(Stamp, Settings)>> = std::sync::Mutex::new(None);
+
+fn stamp(path: &std::path::Path) -> Option<Stamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok(), metadata.len()))
 }
 
 impl Settings {
     pub fn load() -> Self {
-        let mut settings: Self = std::fs::read(path())
+        let path = path();
+        let current = stamp(&path);
+        let mut cache = CACHE.lock().unwrap();
+        if let (Some(current), Some((cached, settings))) = (current, cache.as_ref()) {
+            if *cached == current {
+                return settings.clone();
+            }
+        }
+        let mut settings: Self = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         settings.normalize();
+        *cache = current.map(|current| (current, settings.clone()));
         settings
     }
     pub fn save(&self) -> std::io::Result<()> {
-        self.write_to(&path())
+        let result = self.write_to(&path());
+        // Read the saved file afresh next time, whatever its timestamp says.
+        *CACHE.lock().unwrap() = None;
+        result
     }
 
     pub fn normalize(&mut self) {

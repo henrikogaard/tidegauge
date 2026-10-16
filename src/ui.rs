@@ -1684,7 +1684,11 @@ fn overview_card(
     // No reading: say so quietly instead of a big dash, and keep only the
     // supporting values that exist.
     let unavailable = value == "—";
-    let stats: Vec<(&str, String)> = stats.into_iter().filter(|(_, v)| !unavailable || v != "—").collect();
+    // An empty value means "nothing to say here", so the reading is left out.
+    let stats: Vec<(&str, String)> = stats
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty() && (!unavailable || v != "—"))
+        .collect();
     let (number, unit) = value.rsplit_once(' ').unwrap_or((&value, ""));
     let keyboard_target = this.clone();
     div()
@@ -1821,12 +1825,15 @@ fn history_average(hist: &Hist) -> String {
 
 fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let battery_context = s.battery.status();
-    let remaining = s
-        .battery
-        .minutes_remaining
-        .filter(|m| s.battery.on_battery && *m >= 0)
-        .map(fmt_hours_minutes)
-        .unwrap_or("—".into());
+    // Time left on battery, or time to full while charging; on power and
+    // full there is nothing to count, so the reading is left out.
+    let (remaining_label, remaining) = if s.battery.on_battery {
+        (l("Remaining", "Gjenstår"), s.battery.minutes_remaining.filter(|m| *m >= 0).map(fmt_hours_minutes).unwrap_or("—".into()))
+    } else if s.battery.is_charging {
+        (l("Until full", "Til fulladet"), s.battery.minutes_to_full.filter(|m| *m > 0).map(fmt_hours_minutes).unwrap_or_default())
+    } else {
+        (l("Remaining", "Gjenstår"), String::new())
+    };
     let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
     let settings = crate::settings::Settings::load();
     let favorites = &settings.favorite_metrics;
@@ -1930,13 +1937,15 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .map(fmt_pct)
                 .unwrap_or("—".into()),
             [
-                (l("Remaining", "Gjenstår"), remaining),
+                (remaining_label, remaining),
                 (
                     crate::locale::text("Battery flow", "Batteristrøm"),
-                    s.battery
-                        .power_w
-                        .map(fmt_signed_watts)
-                        .unwrap_or("—".into()),
+                    // No flow worth showing when nothing goes in or out.
+                    match s.battery.power_w {
+                        Some(w) if w.abs() >= 0.05 => fmt_signed_watts(w),
+                        Some(_) => String::new(),
+                        None => "—".into(),
+                    },
                 ),
                 (
                     crate::locale::text("Capacity health", "Kapasitetshelse"),
@@ -2003,7 +2012,9 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             d.child(
                 div()
                     .grid()
-                    .grid_cols(bottom_count.max(2) as u16)
+                    // Four cards in one row cut the legends off, so four
+                    // make two rows of two.
+                    .grid_cols(bottom_cols(bottom_count))
                     .gap(t::SPACE_4)
                     .when(show_memory, |row| row.child(donut_card(
                         l("Memory by Type", "Minne etter type"),
@@ -2245,6 +2256,15 @@ fn busiest_apps(s: &Snapshot, height: f32, rows: usize, dark: bool, this: Entity
                 cx.stop_propagation();
             }
         })
+}
+
+/// Columns for the Overview's bottom row: never more than three cards side by
+/// side, and four as two rows of two.
+fn bottom_cols(cards: usize) -> u16 {
+    match cards {
+        4 => 2,
+        n => n.clamp(2, 3) as u16,
+    }
 }
 
 fn breakdown_watts(watts: f64) -> String {
@@ -3767,6 +3787,14 @@ mod tests {
             temperature_display_caption(&display, norwegian).as_deref(),
             Some("Viser 24 av 342 kanaler · 22 utilgjengelige")
         );
+    }
+
+    #[test]
+    fn the_bottom_row_never_squeezes_four_cards_side_by_side() {
+        assert_eq!(super::bottom_cols(2), 2);
+        assert_eq!(super::bottom_cols(3), 3);
+        assert_eq!(super::bottom_cols(4), 2);
+        assert_eq!(super::bottom_cols(1), 2);
     }
 
     #[test]
