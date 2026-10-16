@@ -6,6 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.1) — 2026-10-16
+
+### Added
+
+- Settings → General → Updates shows the installed version and a Check for
+  Updates button, and the menu-bar panel has an update button in its footer.
+  Since 0.3.0 a left click on the menu-bar item opens the panel, so the update
+  check was only in the right-click menu
+  ([#55](https://github.com/henrikogaard/tidegauge/pull/55)).
+
 ## [0.3.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.0) — 2026-10-16
 
 A redesigned window with sidebar navigation, process control that can replace

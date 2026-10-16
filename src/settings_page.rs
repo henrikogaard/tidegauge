@@ -259,9 +259,36 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
                 dark,
             ),
             keep_awake_row(view, dark, this),
+            updates_row(dark),
         ],
         dark,
     )
+}
+
+/// The installed version and a way to look for a newer one. Sparkle also
+/// checks on its own; the reason shows when updates are off for this copy.
+fn updates_row(dark: bool) -> Div {
+    let version = crate::updater::app_version()
+        .map(|v| format!("{} {v}", l("Version", "Versjon")))
+        .unwrap_or_else(|| l("Version unknown", "Ukjent versjon").into());
+    let (detail, available) = match crate::updater::availability() {
+        crate::updater::Availability::Available => (
+            format!("{version} · {}", l("checks for updates automatically", "ser etter oppdateringer automatisk")),
+            true,
+        ),
+        crate::updater::Availability::Disabled { reason } | crate::updater::Availability::Unavailable { reason } => {
+            (format!("{version} · {reason}"), false)
+        }
+    };
+    let control: AnyElement = if available {
+        button_indexed("check-updates", crate::updater::check_for_updates_title(), false, dark, 0, |_, _| {
+            crate::updater::ask_for_check()
+        })
+        .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+    row(l("Updates", "Oppdateringer"), Some(detail), control, false, dark)
 }
 
 /// Keep awake: a switch, and how long it lasts once on.
