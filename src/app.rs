@@ -77,10 +77,15 @@ pub fn pump_status_bar(
 ) {
     use crate::statusbar::*;
     use std::sync::atomic::Ordering;
-    if TOGGLE_POPOVER.swap(false, Ordering::SeqCst) {
+    let toggled = TOGGLE_POPOVER.swap(false, Ordering::SeqCst);
+    let outside = CLICKED_OUTSIDE.swap(false, Ordering::SeqCst);
+    if toggled {
         toggle_popover(view.clone(), cx);
     }
-    if CLICKED_OUTSIDE.swap(false, Ordering::SeqCst) {
+    // A press on the item itself also counts as outside on newer macOS; the
+    // toggle above already handled that click, so only a real outside click
+    // closes the panel.
+    if outside && !toggled && !outside_click_was_on_item() {
         close_popover(cx);
     }
     if TOGGLE_PANEL.swap(false, Ordering::SeqCst) {

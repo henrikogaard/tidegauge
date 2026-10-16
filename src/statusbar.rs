@@ -20,6 +20,7 @@ pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);
 /// A left click on the item: open or close the menu-bar panel.
 pub static TOGGLE_POPOVER: AtomicBool = AtomicBool::new(false);
+
 /// A right or Control click on the item: show the native menu.
 pub static SHOW_ITEM_MENU: AtomicBool = AtomicBool::new(false);
 /// A click somewhere else on screen: close the panel.
@@ -45,6 +46,22 @@ pub struct Anchor {
 
 /// Where the last click on the item landed, in Cocoa screen points.
 static CLICK_AT: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+/// Where the last click outside the app landed.
+static OUTSIDE_AT: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+/// Whether two clicks hit the same place: the item, give or take its width.
+fn same_spot(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).abs() <= 60. && (a.1 - b.1).abs() <= 30.
+}
+
+/// Newer macOS hosts status items in another process, so pressing the item
+/// also reaches the "click in another app" monitor. Such a press is the
+/// item's own click, not a reason to close the panel.
+pub fn outside_click_was_on_item() -> bool {
+    let outside = *OUTSIDE_AT.lock().unwrap();
+    let item = *CLICK_AT.lock().unwrap();
+    matches!((outside, item), (Some(o), Some(i)) if same_spot(o, i))
+}
 
 /// A display as placement needs it: its number, its frame (x, y, width,
 /// height, Cocoa points) and the top of its area below the menu bar.
@@ -143,7 +160,7 @@ define_class!(
         #[unsafe(method(clicked:))]
         fn _clicked(&self, _sender: Option<&NSObject>) {
             let event = NSApplication::sharedApplication(mtm()).currentEvent();
-            let secondary = event.is_some_and(|event| {
+            let secondary = event.as_ref().is_some_and(|event| {
                 event.r#type() == NSEventType::RightMouseUp
                     || event.modifierFlags().contains(NSEventModifierFlags::Control)
             });
@@ -247,7 +264,11 @@ impl StatusBar {
         // Clicks in other apps close the panel, like any menu-bar popover.
         let monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
-            &block2::RcBlock::new(|_| CLICKED_OUTSIDE.store(true, Ordering::SeqCst)),
+            &block2::RcBlock::new(|_| {
+                let at = NSEvent::mouseLocation();
+                *OUTSIDE_AT.lock().unwrap() = Some((at.x, at.y));
+                CLICKED_OUTSIDE.store(true, Ordering::SeqCst);
+            }),
         );
         OUTSIDE_MONITOR.with(|slot| *slot.borrow_mut() = monitor);
         Self {
@@ -617,6 +638,14 @@ fn menu_image(readouts: &[Readout], show_icon: bool) -> Retained<NSImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_press_on_the_item_is_not_an_outside_click() {
+        assert!(same_spot((3025., 2160.), (3025.3, 2160.)));
+        assert!(same_spot((3000., 2150.), (3040., 2160.)), "anywhere on the item");
+        assert!(!same_spot((1200., 900.), (3025., 2160.)), "a click in another app");
+        assert!(!same_spot((2800., 2160.), (3025., 2160.)), "another menu-bar item");
+    }
 
     #[test]
     fn the_panel_sits_under_the_click_on_the_display_clicked() {
