@@ -6,21 +6,26 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.6](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.6) — 2026-10-16
+
 ### Added
 
 - Chip, SSD and battery temperatures are kept in History (Chip °C, SSD °C,
   Battery °C), and an opt-in alert fires when the chip stays above a chosen
-  temperature (95 °C by default) for 30 seconds.
-- Each fan shows where its speed sits between its own lowest and highest.
+  temperature (95 °C by default) for 30 seconds
+  ([#77](https://github.com/henrikogaard/tidegauge/pull/77)).
+- Each fan shows where its speed sits between its own lowest and highest
+  ([#77](https://github.com/henrikogaard/tidegauge/pull/77)).
 - Per-app volume and mute on the Sound page (macOS 14.2 or later), with a
   level meter for each app Tidegauge carries. macOS asks once for permission
   to capture audio; nothing is recorded or saved, and at 100% or when
-  Tidegauge quits the app plays on its own again.
+  Tidegauge quits the app plays on its own again
+  ([#78](https://github.com/henrikogaard/tidegauge/pull/78)).
 
 ### Fixed
 
 - After sleep, the sensors reconnect instead of relying on connections opened
-  before it.
+  before it ([#77](https://github.com/henrikogaard/tidegauge/pull/77)).
 
 ## [0.3.5](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.5) — 2026-10-16
 
