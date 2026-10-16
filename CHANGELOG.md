@@ -17,6 +17,10 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Export CSV on the History page saves every recorded sample of what is shown
   (range, source and metric) to a file in Downloads
   ([#69](https://github.com/henrikogaard/tidegauge/pull/69)).
+- A keyboard shortcut that opens the menu-bar panel from any app: ⌃⌥⌘T or
+  ⌃⌥⌘M in Settings → General → Open the panel. Off by default; it needs no
+  Accessibility permission, and a shortcut another app holds is reported
+  ([#70](https://github.com/henrikogaard/tidegauge/pull/70)).
 - The Memory page shows macOS's own memory pressure, normal, warning or
   critical in Activity Monitor's colours, and the share of memory macOS counts
   as available. Overview's memory card shows the pressure in place of wired

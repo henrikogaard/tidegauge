@@ -42,6 +42,9 @@ pub struct Settings {
     pub compact_dashboard: bool,
     /// The app's language: "en", "nb", or `None` to follow macOS.
     pub language: Option<String>,
+    /// The keyboard shortcut that opens the menu-bar panel, one of
+    /// `shortcut::CHOICES`, or `None` for none.
+    pub panel_shortcut: Option<String>,
 }
 
 impl Default for Settings {
@@ -68,6 +71,7 @@ impl Default for Settings {
             favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
             compact_dashboard: false,
             language: None,
+            panel_shortcut: None,
         }
     }
 }

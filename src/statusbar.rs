@@ -118,6 +118,32 @@ pub fn anchor() -> Option<Anchor> {
     place(click, &displays)
 }
 
+/// The shortcut acts like a click on the item. The panel opens where the
+/// item was last clicked; before any click, under the item's own window if
+/// macOS reports one on a screen, or else at the right of the main menu bar.
+pub fn toggle_from_keyboard() {
+    let mut click = CLICK_AT.lock().unwrap();
+    if click.is_none() {
+        let item = ITEM.with(|item| item.borrow().as_ref().map(|(item, _)| item.clone()));
+        let frame = item
+            .and_then(|item| item.button(mtm()))
+            .and_then(|button| button.window())
+            .map(|window| window.frame())
+            .filter(|f| f.size.width > 0. && NSScreen::screens(mtm()).iter().any(|s| {
+                let r = s.frame();
+                f.origin.x >= r.origin.x && f.origin.x <= r.origin.x + r.size.width
+            }));
+        *click = match frame {
+            Some(f) => Some((f.origin.x + f.size.width / 2., f.origin.y + f.size.height / 2.)),
+            None => NSScreen::mainScreen(mtm()).map(|s| {
+                let r = s.frame();
+                (r.origin.x + r.size.width - 200., r.origin.y + r.size.height - 10.)
+            }),
+        };
+    }
+    TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+}
+
 /// Show the native menu from the item, as a right click would.
 pub fn show_item_menu() {
     let target = ITEM.with(|item| item.borrow().as_ref().map(|(_, target)| target.clone()));
