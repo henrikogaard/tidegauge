@@ -140,14 +140,18 @@ pub fn default_device(direction: Direction) -> AudioObjectID {
     }
 }
 
-/// Every device with streams on this side, by id and name.
+/// Every device on this side that macOS allows as the default: it has
+/// streams in that direction and says it can be the default device there.
 pub fn devices(direction: Direction) -> Vec<(AudioObjectID, String)> {
     let mut out = Vec::new();
     for id in object_list(K_AUDIO_HARDWARE_PROPERTY_DEVICES) {
         unsafe {
             let a = addr(K_AUDIO_DEVICE_PROPERTY_STREAMS, direction.scope());
             let mut size = 0u32;
-            if AudioObjectGetPropertyDataSize(id, &a, 0, std::ptr::null(), &mut size) == 0 && size > 0 {
+            let has_streams = AudioObjectGetPropertyDataSize(id, &a, 0, std::ptr::null(), &mut size) == 0 && size > 0;
+            let mut can_be_default = 0u32;
+            let eligible = get(id, &property(K_AUDIO_DEVICE_PROPERTY_DEVICE_CAN_BE_DEFAULT_DEVICE, direction), &mut can_be_default);
+            if has_streams && eligible && can_be_default != 0 {
                 out.push((id, device_name(id)));
             }
         }
@@ -168,7 +172,8 @@ pub fn set_default_device(direction: Direction, id: AudioObjectID) -> Result<(),
             &id,
         )
     };
-    if ok {
+    // A write macOS accepts but does not apply is not a switch.
+    if ok && default_device(direction) == id {
         Ok(())
     } else {
         Err(crate::locale::text("macOS did not switch the audio device.", "macOS byttet ikke lydenhet.").into())

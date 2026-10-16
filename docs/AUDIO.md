@@ -12,7 +12,7 @@ Some outputs do not expose a master-volume or mute property. Tidegauge does not 
 
 ## Choosing devices and the input
 
-The Sound page lists every device with output streams and every device with input streams (`kAudioDevicePropertyStreams` in that scope). Choosing one sets `kAudioHardwarePropertyDefaultOutputDevice` (`dOut`) or `kAudioHardwarePropertyDefaultInputDevice` (`dIn `), the same defaults macOS Sound settings change. A device that has left the list is refused rather than written.
+The Sound page lists every device with output or input streams (`kAudioDevicePropertyStreams` in that scope) that also reports it can be the default there (`kAudioDevicePropertyDeviceCanBeDefaultDevice`), so virtual devices such as a meeting app's audio driver are left out. A switch counts only once the default reads back as the chosen device. Choosing one sets `kAudioHardwarePropertyDefaultOutputDevice` (`dOut`) or `kAudioHardwarePropertyDefaultInputDevice` (`dIn `), the same defaults macOS Sound settings change. A device that has left the list is refused rather than written.
 
 The default **input** gets the same volume and mute handling as the output, in the input scope: read, capability-checked, and identity-checked on every write. Changing an input's volume or mute does not capture audio and needs no microphone permission.
 
