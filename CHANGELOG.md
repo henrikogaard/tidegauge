@@ -6,6 +6,15 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Measured system power: the whole Mac's draw as its power controller reports
+  it, on battery or on the adapter. It shows on the Battery page, in the
+  menu bar's power reading and in History. Macs without a battery do not
+  report it.
+- Measured GPU power from macOS's GPU energy counter, on the GPU page and
+  Overview's GPU card.
+
 ## [0.3.4](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.4) — 2026-10-16
 
 ### Added

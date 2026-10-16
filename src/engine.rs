@@ -368,6 +368,7 @@ impl Engine {
 
         // GPU
         s.gpu = gpu_stats();
+        s.gpu.power_w = crate::gpu_power::sample();
         if let Some(utilization) = s.gpu.utilization {
             s.gpu_hist.push(utilization);
         }
@@ -462,9 +463,13 @@ impl Engine {
             crate::projects::apply_nettop(&mut s.apps);
         }
 
-        // Battery terminal power and per-process estimates are not system power.
-        s.power_w = None;
-        s.power_hist.pts.clear();
+        // System power is the power controller's own measurement; battery
+        // terminal power and per-app energy are not the whole Mac.
+        s.power_w = s.battery.system_power_w;
+        match s.power_w {
+            Some(w) => s.power_hist.push(w),
+            None => s.power_hist.pts.clear(),
+        }
 
         s.audio = AudioInfo {
             apps: audio_apps,
