@@ -81,11 +81,32 @@ pub fn summarise(readings: &[(Kind, f64)]) -> Vec<Summary> {
         .collect()
 }
 
-/// The service client is made once per process and kept: creating one per
-/// sample is slow and macOS keeps it alive anyway.
+static CLIENT: std::sync::Mutex<Option<Option<usize>>> = std::sync::Mutex::new(None);
+
+/// Drop the service client so the next read makes a new one, as after sleep.
+/// The old client is left to macOS: another thread may still be reading it.
+pub fn reset() {
+    *CLIENT.lock().unwrap() = None;
+}
+
+/// The headline temperatures for History and alerts, in °C.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Temps {
+    pub chip: Option<f64>,
+    pub ssd: Option<f64>,
+    pub battery: Option<f64>,
+}
+
+/// The hottest reading of each part; missing parts stay `None`.
+pub fn temps(readings: &[(Kind, f64)]) -> Temps {
+    let hottest = |kind| summarise(readings).into_iter().find(|s| s.kind == kind).map(|s| s.hottest);
+    Temps { chip: hottest(Kind::Chip), ssd: hottest(Kind::Ssd), battery: hottest(Kind::Battery) }
+}
+
+/// The service client is made once and kept: creating one per sample is
+/// slow. It is made again after `reset`.
 fn client() -> Option<usize> {
-    static CLIENT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    *CLIENT.get_or_init(|| unsafe {
+    *CLIENT.lock().unwrap().get_or_insert_with(|| unsafe {
         let client = IOHIDEventSystemClientCreate(std::ptr::null());
         if client.is_null() {
             return None;
@@ -158,6 +179,12 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!((s[0].kind, s[0].hottest, s[0].average, s[0].sensors), (Kind::Chip, 60., 59., 2));
         assert_eq!((s[1].kind, s[1].hottest), (Kind::Battery, 36.));
+    }
+
+    #[test]
+    fn headline_temps_take_each_parts_hottest() {
+        let t = super::temps(&[(Kind::Chip, 58.), (Kind::Chip, 63.), (Kind::Battery, 35.)]);
+        assert_eq!(t, super::Temps { chip: Some(63.), ssd: None, battery: Some(35.) });
     }
 
     #[test]

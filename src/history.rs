@@ -81,6 +81,9 @@ fn record_on(c: &Connection, s: &Snapshot) {
         ("gpu_measured", s.gpu.utilization),
         ("batt_measured", s.battery.percent),
         ("power_measured", s.power_w),
+        ("temp_chip", s.temps.chip),
+        ("temp_ssd", s.temps.ssd),
+        ("temp_battery", s.temps.battery),
     ] {
         if let Some(value) = value.filter(|v| v.is_finite() && *v >= 0.) {
             let _ = stmt.execute(rusqlite::params![ts, metric, value]);

@@ -2543,7 +2543,35 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                 l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.")
             }).text_color(t::ink_dim(dark)))
         })
-        .children(sample.fans.iter().map(|r| reading_row(r, "RPM")));
+        .children(sample.fans.iter().enumerate().map(|(i, r)| {
+            let (min, max) = sample.fan_limits.get(i).copied().unwrap_or((None, None));
+            let share = r.value.filter(|_| fresh).and_then(|rpm| crate::sensors::fan_share(rpm, min, max));
+            div()
+                .flex()
+                .flex_col()
+                .gap(t::SPACE_1)
+                .child(reading_row(r, "RPM"))
+                .when_some(share, |d, share| {
+                    let accent = Metric::Cpu.accent(dark);
+                    d.child(
+                        div()
+                            .h(px(4.))
+                            .w_full()
+                            .rounded(t::RADIUS_CHIP)
+                            .bg(t::card_hi(dark))
+                            .child(div().h_full().rounded(t::RADIUS_CHIP).bg(accent).w(relative((share / 100.) as f32))),
+                    )
+                    .child(
+                        div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(format!(
+                            "{} · {} {:.0}–{:.0} RPM",
+                            fmt_pct(share),
+                            l("range", "område"),
+                            min.unwrap_or(0.),
+                            max.unwrap_or(0.)
+                        )),
+                    )
+                })
+        }));
     let thermal = format!("{}: {}", l("macOS thermal state", "Termisk tilstand fra macOS"), s.thermal);
     div().flex().flex_col().gap_3()
         .child(section_header(l("Temperatures and fans", "Temperaturer og vifter"), &thermal, dark))

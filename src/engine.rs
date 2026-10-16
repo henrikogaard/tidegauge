@@ -200,6 +200,9 @@ pub struct Snapshot {
     pub thermal: String,
     /// The same state as a level, 0 nominal to 3 critical, for alerts.
     pub thermal_level: Option<u8>,
+    /// Chip, SSD and battery temperatures from the sensors macOS names;
+    /// empty while the sensor reading is stale.
+    pub temps: crate::named_sensors::Temps,
     pub uptime: Duration,
     pub alerts: Vec<Alert>,
 }
@@ -244,6 +247,7 @@ impl Default for Snapshot {
             power_hist: h(),
             thermal: "—".into(),
             thermal_level: None,
+            temps: Default::default(),
             uptime: Duration::ZERO,
             alerts: Vec::new(),
         }
@@ -328,6 +332,8 @@ impl Engine {
         s.load_avg = load_avg();
         s.thermal = thermal_state().unwrap_or("—").into();
         s.thermal_level = crate::metrics::thermal_level();
+        let sensors = crate::sensors::latest();
+        s.temps = if sensors.is_fresh() { crate::named_sensors::temps(&sensors.named) } else { Default::default() };
 
         // Memory
         s.mem = mem_stats();
