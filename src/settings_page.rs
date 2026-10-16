@@ -384,6 +384,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             Some(&view.sliders.mem),
             settings.alert_mem_enabled,
         ),
+        (
+            "pressure",
+            l("Memory pressure", "Minnepress"),
+            l("Warning or critical for 20 seconds", "Advarsel eller kritisk i 20 sekunder").to_string(),
+            None,
+            settings.alert_pressure_enabled,
+        ),
         ("disk", "Disk", l("Above 400 MB/s for 30 seconds", "Over 400 MB/s i 30 sekunder").to_string(), None, settings.alert_disk_enabled),
         (
             "net",
@@ -448,6 +455,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "app-memory" => s.alert_app_mem_enabled = value,
                             "low-disk" => s.alert_low_disk_enabled = value,
                             "thermal" => s.alert_thermal_enabled = value,
+                            "pressure" => s.alert_pressure_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));

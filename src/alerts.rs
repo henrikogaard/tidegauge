@@ -18,6 +18,9 @@ const LOW_DISK_DURATION: f64 = 60.0;
 /// Serious (2) or critical (3): macOS is slowing the Mac down to cool it.
 const THERMAL_LEVEL: f64 = 1.5;
 const THERMAL_DURATION: f64 = 10.0;
+/// Warning (2) or critical (4) memory pressure, as macOS numbers them.
+const PRESSURE_LEVEL: f64 = 1.5;
+const PRESSURE_DURATION: f64 = 20.0;
 
 #[derive(Default)]
 struct Episode {
@@ -102,6 +105,7 @@ pub struct AlertEngine {
     app_memory: std::collections::HashMap<String, Episode>,
     low_disk: Episode,
     thermal: Episode,
+    pressure: Episode,
 }
 
 impl AlertEngine {
@@ -115,6 +119,7 @@ impl AlertEngine {
             app_memory: std::collections::HashMap::new(),
             low_disk: Episode::default(),
             thermal: Episode::default(),
+            pressure: Episode::default(),
         }
     }
 
@@ -300,6 +305,37 @@ impl AlertEngine {
                 )
             },
         ));
+
+        let pressure = snapshot.mem.pressure.map(|p| match p {
+            crate::metrics::Pressure::Normal => 1.,
+            crate::metrics::Pressure::Warning => 2.,
+            crate::metrics::Pressure::Critical => 4.,
+        });
+        if let Some(alert) = self.pressure.check(
+            at,
+            settings.alert_pressure_enabled,
+            PRESSURE_LEVEL,
+            pressure,
+            PRESSURE_DURATION,
+            |level| Alert {
+                metric: "pressure".into(),
+                message: if level >= 4. {
+                    crate::locale::text(
+                        "Memory pressure is critical: macOS is out of memory to hand out. Quit something you don't need.",
+                        "Minnepresset er kritisk: macOS har ikke mer minne å gi ut. Avslutt noe du ikke trenger.",
+                    )
+                } else {
+                    crate::locale::text(
+                        "Memory pressure is high: macOS is compressing and swapping memory to keep up.",
+                        "Minnepresset er høyt: macOS komprimerer og veksler minne for å henge med.",
+                    )
+                }
+                .into(),
+                at,
+            },
+        ) {
+            alerts.push(alert);
+        }
 
         alerts
     }
@@ -496,6 +532,29 @@ mod tests {
         for at in [100., 200.] {
             s.at = at;
             assert!(engine.check(&s, &settings).is_empty(), "an unknown state never alerts");
+        }
+    }
+
+    #[test]
+    fn pressure_alerts_on_warning_or_critical_for_twenty_seconds() {
+        use crate::metrics::Pressure;
+        let settings = Settings { alert_pressure_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(100.);
+        s.mem.pressure = Some(Pressure::Normal);
+        assert!(engine.check(&s, &settings).is_empty());
+        s.mem.pressure = Some(Pressure::Warning);
+        s.at = 101.;
+        assert!(engine.check(&s, &settings).is_empty());
+        s.at = 121.;
+        let alerts = engine.check(&s, &settings);
+        assert_eq!(alerts[0].metric, "pressure");
+        assert!(!alerts[0].message.contains("critical") && !alerts[0].message.contains("kritisk"), "warning is not worded as critical: {}", alerts[0].message);
+        let mut engine = AlertEngine::new();
+        s.mem.pressure = None;
+        for at in [200., 300.] {
+            s.at = at;
+            assert!(engine.check(&s, &settings).is_empty(), "an unknown level never alerts");
         }
     }
 

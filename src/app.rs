@@ -34,6 +34,7 @@ fn still_enabled(metric: &str, settings: &Settings) -> bool {
         app if app.starts_with("appmem:") => settings.alert_app_mem_enabled,
         "low_disk" => settings.alert_low_disk_enabled,
         "thermal" => settings.alert_thermal_enabled,
+        "pressure" => settings.alert_pressure_enabled,
         _ => false,
     }
 }
@@ -208,9 +209,10 @@ mod tests {
             alert_app_mem_enabled: true,
             alert_low_disk_enabled: true,
             alert_thermal_enabled: true,
+            alert_pressure_enabled: true,
             ..Settings::default()
         };
-        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "low_disk", "thermal"] {
+        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "low_disk", "thermal", "pressure"] {
             assert!(still_enabled(metric, &on), "{metric} was dropped");
             assert!(!still_enabled(metric, &Settings::default()), "{metric} passed while off");
         }
