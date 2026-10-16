@@ -190,6 +190,11 @@ fn main_bundle_path() -> Option<PathBuf> {
 #[link(name = "ServiceManagement", kind = "framework")]
 unsafe extern "C" {}
 
+/// Whether the bundle at `path` is in /Applications or ~/Applications.
+pub fn installed_here(path: &Path) -> bool {
+    installed_bundle_path(path)
+}
+
 fn installed_bundle_path(bundle: &Path) -> bool {
     let Some(home) = std::env::var_os("HOME") else {
         return false;

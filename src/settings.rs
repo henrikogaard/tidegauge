@@ -45,6 +45,8 @@ pub struct Settings {
     /// The keyboard shortcut that opens the menu-bar panel, one of
     /// `shortcut::CHOICES`, or `None` for none.
     pub panel_shortcut: Option<String>,
+    /// "Don't ask again" on the Move to Applications prompt.
+    pub move_prompt_declined: bool,
 }
 
 impl Default for Settings {
@@ -72,6 +74,7 @@ impl Default for Settings {
             compact_dashboard: false,
             language: None,
             panel_shortcut: None,
+            move_prompt_declined: false,
         }
     }
 }

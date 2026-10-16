@@ -8,6 +8,9 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- Started from outside Applications (Downloads, a disk image), Tidegauge
+  offers once to move itself there and relaunch, so launch at login and
+  updates work. The old copy goes to the Trash; Don't ask again is kept.
 - Measured system power: the whole Mac's draw as its power controller reports
   it, on battery or on the adapter. It shows on the Battery page, in the
   menu bar's power reading and in History. Macs without a battery do not

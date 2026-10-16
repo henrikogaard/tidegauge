@@ -143,6 +143,11 @@ impl UpdaterState {
     }
 }
 
+/// Whether this copy is a development preview bundle.
+pub fn is_preview() -> bool {
+    mode(&NSBundle::mainBundle()) == Some(BundleMode::Preview)
+}
+
 fn mode(bundle: &NSBundle) -> Option<BundleMode> {
     let key = NSString::from_str("TidegaugeUpdaterMode");
     bundle

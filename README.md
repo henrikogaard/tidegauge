@@ -115,7 +115,8 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 - Launch at login is
   available on macOS 13+ only for a bundle installed in `/Applications` or
   `~/Applications`; approval may be required in System Settings > General >
-  Login Items. Closing the dashboard hides it while collection continues.
+  Login Items. Started from anywhere else, Tidegauge offers once to move
+  itself into Applications (the old copy goes to the Trash) and relaunch. Closing the dashboard hides it while collection continues.
 - Live module charts show the current session; the History tab reads persisted SQLite data off the UI thread. Retention targets 30 days with hourly pruning while running. Legacy placeholders and the selection of recorded apps have important limitations; see [history semantics](docs/HISTORY.md).
 - Keep awake prevents **idle system sleep only**. Displays may sleep, and closing the lid or explicitly sleeping still takes precedence. It releases on expiry, Stop, or app exit and does not resume automatically after restart.
 - Dashboard reset affects only tab order, favorites, and compact layout. It does not reset menu-bar readings, appearance, login, or alert preferences. Overview and Settings remain reachable.
