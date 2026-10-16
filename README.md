@@ -14,15 +14,17 @@ notarized; a locally generated image is not automatically notarized.
 
 ![Tidegauge dashboard](assets/dashboard.png)
 
-Current dashboard in dark appearance, captured on a virtual Mac. Readings
-describe that development environment, not physical-hardware validation.
+Overview in Tidegauge 0.3.3, dark appearance, captured on a virtual Mac. The
+virtual Mac has no battery and no readable GPU usage, so those read as
+unavailable; readings describe that environment, not physical hardware.
 
 | Light appearance | Dark appearance |
 |---|---|
 | ![CPU in light appearance](assets/screenshots/cpu-light.png) | ![CPU in dark appearance](assets/screenshots/cpu-dark.png) |
+| ![Settings in light appearance](assets/screenshots/settings-light.png) | ![Apps and processes in dark appearance](assets/screenshots/apps-dark.png) |
 
-The [screenshot archive](assets/README.md#screenshot-archive) includes capture
-provenance, Norwegian layouts, and explicitly labeled hardware fixtures.
+The [screenshot archive](assets/README.md#screenshot-archive) records how each
+capture was made.
 
 ## Project status
 
@@ -53,7 +55,7 @@ cargo build --release
 ./target/release/tidegauge
 ```
 
-The app opens a resizable dashboard and adds one item to the menu bar. It runs without a Dock icon. Click the menu-bar item and choose Open Dashboard to bring it forward. Closing the window hides it while collection continues. The single menu-bar item opens a native menu with Open Dashboard, Settings, and Quit. Every dashboard tab has a Settings button in the footer. Command-comma also opens Settings, and Command-Q quits while the dashboard is focused. A per-user lock prevents duplicate instances; launching again leaves the existing app running.
+The app opens a resizable window and adds one item to the menu bar. It runs without a Dock icon. A left click on the menu-bar item opens a small panel with live readings, AI plans and the busiest apps, and a button that opens the window; a right or Control click opens a menu with Open Dashboard, Check for Updates, Settings, and Quit. Closing the window hides it while collection continues. The window's sidebar lists every page and ends with Settings. Command-comma also opens Settings, and Command-Q quits while the window is focused. A per-user lock prevents duplicate instances; launching again leaves the existing app running.
 
 Create an ad-hoc preview bundle after the optimized build:
 
@@ -80,19 +82,23 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Area | Current implementation |
 |---|---|
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
-| Overview | Favorite metric tiles, optional compact layout, and independently configurable tab visibility/order |
-| Metric tabs | CPU, Memory, Disk, Network, GPU, Neural, Battery, and stored History |
+| Menu-bar panel | Live CPU, memory, network and disk with recent curves, AI plans, the busiest apps, and quick actions |
+| Overview | Favorite metric cards, busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
+| Metric pages | CPU, Memory, Disk, Network, GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
 | Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and estimated power grouped by executable bundle or parent app |
 | Sound | Default media-output volume/mute controls where the device supports them, plus read-only process audio activity |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
-| Projects | Owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
+| Development servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
 | History | Local 12-hour, 24-hour, 7-day, and 30-day system/app trends with downsampled averages and visible gaps |
 | Alerts | Opt-in CPU, used-memory, disk, and network alerts; configurable CPU/memory thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
-| Processes | Observed app/helper ownership, start time, UID, current parent, possible startup associations, normal app Quit and guarded helper Stop |
+| Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
+| Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
+| Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
 | Tools · Startup | Bounded legacy registration inventory, explicit override evidence, Tidegauge login preference and System Settings handoff |
-| Tools · Resource activity | Recent per-process CPU and disk I/O averages with observed coverage, not an energy score |
+| Last minute | Apps & processes view of recent per-process CPU, disk I/O and wakeups with observed coverage, not an energy score |
 | Tools · Compare | Frozen 5-, 15- or 30-minute system summaries and equal-length, non-overlapping comparisons |
 | Tools · Storage | Cancellable metadata-only selected-folder scan, allocated/logical sizes, largest files and Reveal in Finder |
 | Tools · Apps & Packages | Explicit source-filtered app/package inventory and single-item package-manager actions where ownership can be verified |
@@ -102,7 +108,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 - Project Stop rechecks ownership, start time, project eligibility, and a confirmed listening port. It requests termination with SIGTERM and reports whether the original process exited; it never escalates to force-kill. As with any PID-based API, validation and signaling are not an atomic operation.
 - Process signing metadata is fetched only on request and is not signature validation or a safety verdict. It never changes Quit/Stop eligibility. See [process semantics](docs/PROCESSES.md).
 - Sound controls apply to the default **media output**, not individual apps or the microphone. Unsupported device controls are unavailable. Per-app volume, mute, and signal meters remain deferred; no audio is captured. See [audio capabilities](docs/AUDIO.md).
-- Neural utilization is unavailable. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
+- Neural Engine usage is not measured. GPU and battery detail depend on hardware and available system properties. Per-app watts are estimates derived from process counters.
 - Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
 - Launch at login is
   available on macOS 13+ only for a bundle installed in `/Applications` or
@@ -128,7 +134,7 @@ Projects requires a working directory within four levels of a Git root or a reco
 | Saved system baseline | `~/Library/Application Support/no.ogard.tidegauge/system-baseline-v1.json` |
 | Cached app icons | `~/Library/Caches/no.ogard.tidegauge/icons/` |
 
-Open Settings using the dashboard footer, the app menu, or Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Optional readings appear together in one native item, with labels for values and graphs, consistent spacing, and fixed widths for changing values. Changes are saved immediately and applied on the next refresh. Use Reset to icon only to clear extra readings. Existing preferences are preserved on upgrade.
+Open Settings from the sidebar, the menu-bar panel, the menu, or Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Optional readings appear together in one native item, with labels for values and graphs, consistent spacing, and fixed widths for changing values. Changes are saved immediately and applied on the next refresh. Use Reset to icon only to clear extra readings. Existing preferences are preserved on upgrade.
 
 You can hide the Tidegauge icon while a metric is enabled; it stays visible if every metric is Off so Settings and Quit remain reachable. Graphs show a dash until enough samples are available. K/s, M/s, G/s, and T/s are byte rates using powers of 1024.
 
