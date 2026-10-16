@@ -1369,7 +1369,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
             ),
         ],
         Tab::Battery => vec![
-            l("Power per app is the energy macOS accounts to each process, averaged over the last two seconds. It comes from macOS's own energy model, not a meter.", "Effekt per app er energien macOS fører på hver prosess, i snitt over de siste to sekundene. Den kommer fra macOS sin egen energimodell, ikke en måler."),
+            l("Power per app is the processor energy macOS accounts to each process, averaged over the last two seconds. It leaves out GPU, display, radio and work done for the app by system processes, so graphics-heavy apps read low. It comes from macOS's own energy model, not a meter.", "Effekt per app er prosessorenergien macOS fører på hver prosess, i snitt over de siste to sekundene. GPU, skjerm, radio og arbeid systemprosesser gjør for appen er ikke med, så grafikktunge apper viser for lavt. Den kommer fra macOS sin egen energimodell, ikke en måler."),
             l("Capacity health compares full-charge and design capacity; it may differ from the macOS health percentage.", "Kapasitetshelse sammenligner fullade- og designkapasitet; den kan avvike fra helseprosenten i macOS."),
             l("Battery flow: + charging, − discharging. Adapter rating is not live consumption. System power is unavailable without a dedicated sensor.", "Batteristrøm: + lading, − utlading. Adapterkapasitet er ikke faktisk forbruk. Systemeffekt er utilgjengelig uten en egen sensor."),
         ],
@@ -1395,7 +1395,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "Apps: the 60 busiest names are recorded, so an app that is missing may still have been active.",
                 "Apper: de 60 travleste navnene registreres, så en app som mangler kan likevel ha vært aktiv.",
             ),
-            l("App CPU can exceed 100% across cores. Power comes from macOS's energy model, not a meter.", "App-CPU kan overstige 100 % på flere kjerner. Effekt kommer fra macOS sin energimodell, ikke en måler."),
+            l("App CPU can exceed 100% across cores. Power is processor energy only, from macOS's energy model, not a meter.", "App-CPU kan overstige 100 % på flere kjerner. Effekt er kun prosessorenergi, fra macOS sin energimodell, ikke en måler."),
         ],
     }
 }
@@ -2297,7 +2297,7 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
     }
     let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
     if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
-    donut_card(l("Power by App", "Effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("from macOS", "fra macOS"), breakdown_watts, dark)
+    donut_card(l("CPU Power by App", "CPU-effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("CPU only · from macOS", "Kun CPU · fra macOS"), breakdown_watts, dark)
 }
 
 // ---------- metric tabs ----------
@@ -3081,7 +3081,7 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             dark,
         )))
         .when(b.present, |d| d
-            .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Power from macOS", "Effekt fra macOS"), dark))
+            .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("CPU power from macOS", "CPU-effekt fra macOS"), dark))
             // Below a milliwatt reads as zero, so those apps are left out.
             .child(if s.apps.iter().any(|a| a.power_w >= 0.001) {
                 list_card(
