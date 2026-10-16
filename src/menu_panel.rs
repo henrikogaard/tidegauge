@@ -109,6 +109,19 @@ fn footer_button(
     dark: bool,
     action: impl Fn(&mut App) + 'static,
 ) -> impl IntoElement {
+    footer_control(id, icon, label, true, dark, action)
+}
+
+/// A footer action; `show_label` false keeps only the icon on screen (the
+/// label still names it for VoiceOver) where the row has no room.
+fn footer_control(
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    show_label: bool,
+    dark: bool,
+    action: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
     div()
@@ -129,7 +142,7 @@ fn footer_button(
         .cursor_pointer()
         .text_size(t::TEXT_BODY)
         .child(svg().path(icon).size(px(13.)).text_color(t::ink_dim(dark)))
-        .child(label)
+        .when(show_label, |d| d.child(label))
         .on_click(move |_, _, cx| action(cx))
         .capture_key_down(move |event, window, cx| {
             if crate::controls::is_activation_key(&event.keystroke) {
@@ -302,6 +315,12 @@ impl Render for MenuPanel {
                         })
                     })
                     .child(div().flex_1())
+                    .when(matches!(crate::updater::availability(), crate::updater::Availability::Available), |d| {
+                        d.child(footer_control("panel-updates", "icons/refresh-cw.svg", crate::updater::check_for_updates_title(), false, dark, |cx| {
+                            crate::app::close_popover(cx);
+                            crate::updater::ask_for_check();
+                        }))
+                    })
                     .child({
                         let main = main.clone();
                         footer_button("panel-settings", "icons/settings.svg", l("Settings", "Innstillinger"), dark, move |cx| {

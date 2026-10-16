@@ -143,6 +143,9 @@ fn main() {
                     {
                         statusbar::show_context_menu();
                     }
+                    if updater::CHECK_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = updater::request_check();
+                    }
                     if statusbar::SHOW_ITEM_MENU.swap(false, std::sync::atomic::Ordering::SeqCst) {
                         let _ = cx.update(app::close_popover);
                         statusbar::show_item_menu();

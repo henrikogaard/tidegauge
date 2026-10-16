@@ -71,6 +71,23 @@ pub fn request_check() -> Result<(), Availability> {
     })
 }
 
+/// Ask for an update check from the dashboard or the menu-bar panel. Sparkle
+/// may show its own dialog, so the check runs from the main loop outside any
+/// UI update, like the native menu.
+pub static CHECK_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn ask_for_check() {
+    CHECK_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The installed app's version, as its bundle states it.
+pub fn app_version() -> Option<String> {
+    NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))
+        .and_then(|value| value.downcast::<NSString>().ok())
+        .map(|value| value.to_string())
+}
+
 /// Return the localized title used by the native menu item.
 pub fn check_for_updates_title() -> &'static str {
     crate::locale::text(CHECK_FOR_UPDATES, CHECK_FOR_UPDATES_NO)
