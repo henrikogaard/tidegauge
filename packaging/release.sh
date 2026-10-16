@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=packaging/retry.sh
+source "$ROOT/packaging/retry.sh"
 VERSION="${TIDEGAUGE_VERSION:-$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/Cargo.toml")}"
 OUTPUT_ROOT="${TIDEGAUGE_OUTPUT_ROOT:-$ROOT/build/release}"
 APP="$OUTPUT_ROOT/production/Tidegauge.app"
@@ -54,8 +56,8 @@ else
         --keychain-profile "$NOTARY_PROFILE" \
         --wait
 fi
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+retry_network "Stapling the app" xcrun stapler staple "$APP"
+retry_network "Validating the app's ticket" xcrun stapler validate "$APP"
 spctl --assess --type execute --verbose=2 "$APP"
 rm -rf "$NOTARY_TEMP"
 trap - EXIT
@@ -71,8 +73,8 @@ else
         --keychain-profile "$NOTARY_PROFILE" \
         --wait
 fi
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
+retry_network "Stapling the disk image" xcrun stapler staple "$DMG"
+retry_network "Validating the disk image's ticket" xcrun stapler validate "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 DMG_BASENAME="$(basename "$DMG")"
 (cd "$OUTPUT_ROOT" && shasum -a 256 "$DMG_BASENAME" > "$DMG_BASENAME.sha256")
