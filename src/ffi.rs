@@ -37,6 +37,7 @@ pub const PROC_PIDVNODEPATHINFO: c_int = 9;
 pub const PROC_PIDFDSOCKETINFO: c_int = 11;
 pub const PROC_PIDLISTFDS: c_int = 1;
 pub const RUSAGE_INFO_V4: c_int = 4;
+pub const RUSAGE_INFO_V6: c_int = 6;
 pub const PROCESSOR_CPU_LOAD_INFO: c_int = 2;
 pub const HOST_VM_INFO64: c_int = 4;
 pub const CPU_STATE_USER: usize = 0;
@@ -146,6 +147,16 @@ pub struct rusage_info_v4 {
     pub ri_serviced_energy: u64,
     pub ri_interval_max_phys_footprint: u64,
     pub ri_runnable_time: u64,
+    // Version 6 fields; a version 4 read leaves them zero.
+    pub ri_flags: u64,
+    pub ri_user_ptime: u64,
+    pub ri_system_ptime: u64,
+    pub ri_pinstructions: u64,
+    pub ri_pcycles: u64,
+    /// Energy macOS accounts to the process, in nanojoules (Apple silicon).
+    pub ri_energy_nj: u64,
+    pub ri_penergy_nj: u64,
+    pub ri_v6_rest: [u64; 14],
 }
 
 #[repr(C)]
@@ -429,7 +440,10 @@ mod tests {
 
     #[test]
     fn rusage_wakeup_layout_matches_macos_sdk() {
-        assert_eq!(std::mem::size_of::<rusage_info_v4>(), 296);
+        // Version 6 layout from <sys/resource.h>: 464 bytes, energy at 336.
+        assert_eq!(std::mem::size_of::<rusage_info_v4>(), 464);
+        assert_eq!(std::mem::offset_of!(rusage_info_v4, ri_energy_nj), 336);
+        assert_eq!(std::mem::offset_of!(rusage_info_v4, ri_phys_footprint), 72);
         assert_eq!(std::mem::offset_of!(rusage_info_v4, ri_pkg_idle_wkups), 32);
         assert_eq!(std::mem::offset_of!(rusage_info_v4, ri_interrupt_wkups), 40);
     }
