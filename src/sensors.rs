@@ -111,6 +111,9 @@ pub fn start() {
                                 // After sleep, start over with fresh connections
                                 // rather than trust ones opened before it.
                                 if slept(before.0.elapsed().unwrap_or_default(), before.1.elapsed()) {
+                                    // The pre-sleep reading is not current:
+                                    // hide it until a new one arrives.
+                                    out.lock().unwrap().collected_at = None;
                                     crate::named_sensors::reset();
                                     break;
                                 }
@@ -131,6 +134,7 @@ pub fn start() {
                             // The HID sensors do not need AppleSMC, so keep
                             // them fresh at the normal pace until the retry.
                             for _ in 0..15 {
+                                let before = (std::time::SystemTime::now(), Instant::now());
                                 *out.lock().unwrap() = SensorSnapshot {
                                     source: source.clone(),
                                     collected_at: Some(Instant::now()),
@@ -138,6 +142,12 @@ pub fn start() {
                                     ..Default::default()
                                 };
                                 std::thread::sleep(Duration::from_secs(2));
+                                // The HID sensors reconnect after sleep here too.
+                                if slept(before.0.elapsed().unwrap_or_default(), before.1.elapsed()) {
+                                    out.lock().unwrap().collected_at = None;
+                                    crate::named_sensors::reset();
+                                    break;
+                                }
                             }
                         }
                     }
