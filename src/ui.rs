@@ -1373,10 +1373,6 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
         Tab::Gpu => vec![
             l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
             l("GPU power is measured: the change in macOS's GPU energy counter between samples.", "GPU-effekten er målt: endringen i GPU-energitelleren i macOS mellom målingene."),
-            l(
-                "Neural Engine power shows only once macOS's Neural Engine energy counter has moved on this Mac. On some Macs it stays at zero even under load (an M5 Max on macOS 27, for one), and then nothing is shown rather than a false zero.",
-                "Effekt for Neural Engine vises først når energitelleren for Neural Engine i macOS har beveget seg på denne Macen. På noen Macer står den på null også under last (blant annet en M5 Max på macOS 27), og da vises ingenting i stedet for en falsk null.",
-            ),
         ],
         Tab::Battery => vec![
             l("Power per app is the processor energy macOS accounts to each process, averaged over the last two seconds. It leaves out GPU, display, radio and work done for the app by system processes, so graphics-heavy apps read low. It comes from macOS's own energy model, not a meter.", "Effekt per app er prosessorenergien macOS fører på hver prosess, i snitt over de siste to sekundene. GPU, skjerm, radio og arbeid systemprosesser gjør for appen er ikke med, så grafikktunge apper viser for lavt. Den kommer fra macOS sin egen energimodell, ikke en måler."),
@@ -3095,9 +3091,7 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
             .when_some(s.gpu.power_w, |d, w| {
                 d.child(stat_card(l("GPU power · measured", "GPU-effekt · målt"), crate::engine::fmt_watts(w), None, dark))
             })
-            .when_some(s.gpu.neural_engine_w, |d, w| {
-                d.child(stat_card(l("Neural Engine power · measured", "Neural Engine-effekt · målt"), crate::engine::fmt_watts(w), None, dark))
-            });
+;
     } else {
         page = page
             .child(hero(
@@ -3115,9 +3109,7 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
                 ],
                 Some(100.0),
             ))
-            .when_some(s.gpu.neural_engine_w, |d, w| {
-                d.child(stat_card(l("Neural Engine power · measured", "Neural Engine-effekt · målt"), crate::engine::fmt_watts(w), None, dark))
-            })
+
             .when(!supported, |d| {
                 d.child(empty_state(
                     "icons/gpu.svg",
