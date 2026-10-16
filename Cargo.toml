@@ -25,11 +25,11 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSButton", "NSMenu", "NSMenuItem", "NSWorkspace", "NSBitmapImageRep",
     "NSGraphicsContext", "NSScreen", "NSWindow", "NSView", "NSColor", "NSFont",
     "NSAttributedString", "NSEvent", "NSRunningApplication", "NSBezierPath",
-    "NSPasteboard", "NSStringDrawing", "NSGraphics", "NSAppearance", "block2",
+    "NSPasteboard", "NSStringDrawing", "NSGraphics", "NSAppearance", "NSAlert", "NSPanel", "block2",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSData", "NSDictionary", "NSObject", "NSString", "NSArray", "NSValue",
-    "NSGeometry", "NSProcessInfo", "NSURL", "NSBundle", "NSError", "NSLocale",
+    "NSGeometry", "NSProcessInfo", "NSURL", "NSBundle", "NSError", "NSLocale", "NSFileManager",
 ] }
 objc2-core-foundation = "0.3"
 block2 = "0.6"

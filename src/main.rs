@@ -25,6 +25,7 @@ mod locale_guard;
 mod login;
 mod menu_panel;
 mod metrics;
+mod move_to_applications;
 mod named_sensors;
 mod notifications;
 mod packages;
@@ -97,6 +98,8 @@ fn main() {
             }
             notifications::initialize();
             updater::initialize();
+            // Before any window: on yes, the copy in Applications takes over.
+            move_to_applications::offer();
         }
 
         let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);
