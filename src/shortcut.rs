@@ -67,6 +67,14 @@ extern "C" fn pressed(_call: *mut c_void, _event: *mut c_void, _data: *mut c_voi
 thread_local! {
     static HANDLER_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static REGISTERED: std::cell::Cell<*mut c_void> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// The choice that is actually registered, which may differ from the
+    /// saved one when another app took it while Tidegauge was not running.
+    static ACTIVE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// The shortcut in effect now, as a `CHOICES` key. Main thread only.
+pub fn active() -> Option<&'static str> {
+    ACTIVE.with(|a| a.get())
 }
 
 /// How a saved choice is shown: "⌃⌥⌘T", or `None` for off or unknown.
@@ -84,7 +92,8 @@ pub fn apply(key: Option<&str>) -> Result<(), String> {
             unsafe { UnregisterEventHotKey(old) };
         }
     });
-    let Some(&(_, _, code, modifiers)) = CHOICES.iter().find(|c| Some(c.0) == key) else {
+    ACTIVE.with(|a| a.set(None));
+    let Some(&(choice, _, code, modifiers)) = CHOICES.iter().find(|c| Some(c.0) == key) else {
         return Ok(());
     };
     unsafe {
@@ -100,6 +109,7 @@ pub fn apply(key: Option<&str>) -> Result<(), String> {
         match RegisterEventHotKey(code, modifiers, EventHotKeyId { signature: SIGNATURE, id: 1 }, target, 0, &mut hot_key) {
             0 => {
                 REGISTERED.with(|r| r.set(hot_key));
+                ACTIVE.with(|a| a.set(Some(choice)));
                 Ok(())
             }
             HOT_KEY_EXISTS => Err(l("Another app already uses that shortcut.", "En annen app bruker allerede den snarveien.").into()),
@@ -110,7 +120,15 @@ pub fn apply(key: Option<&str>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{label, CHOICES};
+    use super::{active, apply, label, CHOICES};
+
+    #[test]
+    fn off_and_unknown_choices_leave_no_shortcut_in_effect() {
+        assert_eq!(apply(None), Ok(()));
+        assert_eq!(active(), None);
+        assert_eq!(apply(Some("cmd-q")), Ok(()), "an unknown saved value is ignored, not registered");
+        assert_eq!(active(), None);
+    }
 
     #[test]
     fn choices_have_labels_and_unknown_keys_are_off() {

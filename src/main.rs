@@ -134,7 +134,8 @@ fn main() {
         #[cfg(target_os = "macos")]
         {
             let mut bar = statusbar::StatusBar::new();
-            // A shortcut another app has taken since is simply left off.
+            // A shortcut another app has taken since stays off; Settings
+            // says so, since what is in effect is read from shortcut::active.
             let _ = shortcut::apply(settings::Settings::load().panel_shortcut.as_deref());
             // status bar pump: refresh readouts + handle toggles
             cx.spawn(async move |cx: &mut AsyncApp| {

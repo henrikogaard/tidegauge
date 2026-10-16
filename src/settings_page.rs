@@ -189,13 +189,15 @@ fn set_language(this: &Entity<TideGaugeView>, value: Option<&'static str>, windo
 /// Register the shortcut first and save it only once macOS has taken it, so
 /// a shortcut another app holds is never shown as on.
 fn set_panel_shortcut(this: &Entity<TideGaugeView>, value: Option<&'static str>, cx: &mut App) {
+    // The one in effect before, to put back if this change does not stick.
+    let previous = crate::shortcut::active();
     let error = match crate::shortcut::apply(value) {
         Ok(()) => crate::settings::mutate(|s| s.panel_shortcut = value.map(str::to_string)).err().map(|_| {
+            let _ = crate::shortcut::apply(previous);
             l("Settings could not be saved. Try again.", "Innstillingene kunne ikke lagres. Prøv igjen.").to_string()
         }),
         Err(error) => {
-            // Put back the one that was working.
-            let _ = crate::shortcut::apply(Settings::load().panel_shortcut.as_deref());
+            let _ = crate::shortcut::apply(previous);
             Some(error)
         }
     };
@@ -263,7 +265,7 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         shortcut = shortcut.child(segment(
             format!("shortcut-{i}"),
             label,
-            settings.panel_shortcut.as_deref() == value,
+            crate::shortcut::active() == value,
             dark,
             t::accent(dark),
             move |_, cx| set_panel_shortcut(&target, value, cx),
@@ -292,7 +294,14 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             row(l("Language", "Språk"), None, language, false, dark),
             row(
                 l("Open the panel", "Åpne panelet"),
-                Some(l("A shortcut that opens the menu-bar panel from any app.", "En snarvei som åpner menylinjepanelet fra hvilken som helst app.").into()),
+                Some(match crate::shortcut::label(settings.panel_shortcut.as_deref()) {
+                    // Saved but not in effect: another app took it while
+                    // Tidegauge was not running.
+                    Some(saved) if crate::shortcut::active().is_none() => {
+                        format!("{saved} {}", l("is used by another app; choose it again or pick another.", "brukes av en annen app; velg den igjen eller velg en annen."))
+                    }
+                    _ => l("A shortcut that opens the menu-bar panel from any app.", "En snarvei som åpner menylinjepanelet fra hvilken som helst app.").into(),
+                }),
                 shortcut,
                 false,
                 dark,
