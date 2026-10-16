@@ -194,8 +194,6 @@ pub struct Snapshot {
     pub power_w: Option<f64>,
     pub power_hist: Hist,
     pub thermal: String,
-    pub neural: Option<f64>,
-    pub neural_hist: Hist,
     pub uptime: Duration,
     pub alerts: Vec<Alert>,
 }
@@ -239,8 +237,6 @@ impl Default for Snapshot {
             power_w: None,
             power_hist: h(),
             thermal: "—".into(),
-            neural: None,
-            neural_hist: h(),
             uptime: Duration::ZERO,
             alerts: Vec::new(),
         }
@@ -485,8 +481,6 @@ impl Engine {
         s.agents = crate::agents::sessions(&procs, &s.projects);
         s.plans = crate::agents::plans();
         s.uptime = self.started.elapsed();
-
-        s.neural = None; // No public ANE counter; leave the history empty.
     }
 }
 

@@ -307,6 +307,24 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
         )
 }
 
+/// What the Agents page's numbers mean, behind the header's ⓘ.
+pub(crate) fn notes() -> Vec<&'static str> {
+    vec![
+        l(
+            "Plan usage is read from OpenQuota's saved data on this Mac. Tidegauge never signs in to your accounts.",
+            "Abonnementsbruk leses fra OpenQuotas lagrede data på denne Macen. Tidegauge logger aldri inn på kontoene dine.",
+        ),
+        l(
+            "Pace compares how much you have used with how much of the period has passed.",
+            "Tempo sammenligner hvor mye du har brukt med hvor mye av perioden som har gått.",
+        ),
+        l(
+            "A session counts as working while it is busy or using CPU.",
+            "En økt regnes som i arbeid mens den er opptatt eller bruker CPU.",
+        ),
+    ]
+}
+
 fn role_label(role: Role) -> &'static str {
     match role {
         Role::Server => l("server", "server"),

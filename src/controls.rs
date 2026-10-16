@@ -4,7 +4,7 @@ use crate::locale::text as l;
 use crate::settings::Settings;
 use crate::theme as t;
 use crate::ui::{
-    caption, card, empty_state, section_header, sub, update_preference, Tab, TideGaugeView,
+    card, empty_state, section_header, sub, update_preference, Tab, TideGaugeView,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -156,19 +156,6 @@ pub fn button_indexed(
     control(s, action)
 }
 
-pub fn button_labeled(
-    id: impl Into<String>,
-    label: impl Into<String>,
-    aria: impl Into<String>,
-    selected: bool,
-    dark: bool,
-    action: impl Fn(&mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let mut s = spec(id, label, selected, dark, t::accent(dark));
-    s.aria = Some(aria.into());
-    control(s, action)
-}
-
 pub fn segment(
     id: impl Into<String>,
     label: impl Into<String>,
@@ -234,6 +221,23 @@ pub fn step_value(value: String, dark: bool) -> Div {
         .text_sm()
         .text_color(t::ink(dark))
         .child(value)
+}
+
+/// An icon-only control for the page header: framed, with the selected tint
+/// while what it opens is showing.
+pub(crate) fn icon_toggle(
+    id: impl Into<String>,
+    icon: &'static str,
+    aria: impl Into<String>,
+    selected: bool,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let color = if selected { t::accent(dark) } else { t::ink_dim(dark) };
+    let content = svg().path(icon).size(px(14.)).text_color(color);
+    let mut s = spec(id, aria, selected, dark, t::accent(dark));
+    s.role = Role::Button;
+    control_with(s, content, action)
 }
 
 /// A framed, icon-only action button (the label is its accessible name).
@@ -322,7 +326,7 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
         ),
     ];
     let mut alert_panel = card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Alerts", "Varsler")))
-        .child(sub(l("Opt-in. CPU/memory: sustained for 20 seconds; disk/network: 30 seconds. One alert until recovery, with a 10-minute cooldown per metric.", "Valgfritt. CPU/minne: vedvarende i 20 sekunder; disk/nettverk: 30 sekunder. Ett varsel frem til normalisering, med 10 minutters pause per måling.")));
+;
     for (key, label, enabled) in alerts {
         let mut row = div()
             .id(SharedString::from(format!("alert-row-{key}")))
@@ -402,7 +406,6 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
         ));
         alert_panel = alert_panel.child(row);
     }
-    alert_panel = alert_panel.child(sub(l("Permission is requested with the first alert. macOS notification settings and Focus may suppress delivery. Memory measures usage, not memory pressure.", "Tillatelse forespørres ved første varsel. Varselinnstillinger og Fokus i macOS kan hindre levering. Minnetallet viser bruk, ikke minnepress.")));
 
     let mut order = s.dashboard_tabs.clone();
     for key in crate::settings::DASHBOARD_TABS {
@@ -548,10 +551,6 @@ pub fn settings(dark: bool, this: Entity<TideGaugeView>) -> Div {
                     |s, on| s.compact_dashboard = on,
                 )),
         )
-        .child(sub(l(
-            "Overview and Settings stay available. Menu-bar readings are independent.",
-            "Oversikt og Innstillinger er alltid tilgjengelige. Menylinjemålinger er uavhengige.",
-        )))
         .child(preference(
             "reset-dashboard".into(),
             l("Reset dashboard only", "Tilbakestill kun oversikten"),
@@ -649,7 +648,6 @@ pub fn keep_awake(dark: bool, this: Entity<TideGaugeView>) -> Div {
         ));
     }
     card(dark).child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
-        .child(sub(l("Prevents idle system sleep only. The display may sleep; closing the lid still sleeps. Off after quitting or restarting Tidegauge.", "Hindrer kun automatisk systemdvale. Skjermen kan sove; lukket lokk gir fortsatt dvale. Av etter avslutning eller omstart av Tidegauge.")))
         .child(choices).when_some(status.error, |d,e| d.child(sub(e).text_color(t::warn(dark))))
 }
 
@@ -747,11 +745,6 @@ pub fn history_panel(
         .flex()
         .flex_col()
         .gap_4()
-        .child(section_header(
-            l("History", "Historikk"),
-            l("Read-only", "Kun avlesning"),
-            dark,
-        ))
         .child(
             card(dark)
                 .child(
@@ -933,81 +926,7 @@ pub fn history_panel(
             dark,
         ));
     }
-    panel.child(recording_details(dark))
-}
-
-fn recording_details(dark: bool) -> Div {
-    let row = |label: &'static str, text: &'static str| {
-        div()
-            .flex()
-            .gap_3()
-            .child(
-                div()
-                    .w(px(112.))
-                    .flex_shrink_0()
-                    .child(caption(label, dark)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(sub(text).text_color(t::ink_dim(dark))),
-            )
-    };
-    card(dark)
-        .child(caption(
-            l("Recording details", "Registreringsdetaljer"),
-            dark,
-        ))
-        .child(row(
-            l("Retention", "Lagring"),
-            l(
-                "30-day target, pruned hourly",
-                "mål om 30 dager, ryddes hver time",
-            ),
-        ))
-        .child(row(
-            l("Values", "Verdier"),
-            l(
-                "bucket means, never peaks; missing is not zero",
-                "intervallgjennomsnitt, aldri topper; manglende er ikke null",
-            ),
-        ))
-        .child(row(
-            l("Refresh", "Oppdater"),
-            l(
-                "manual — include new samples with Refresh",
-                "manuell — inkluder nye målinger med Oppdater",
-            ),
-        ))
-        .child(row(
-            l("Apps", "Apper"),
-            l(
-                "top 60 recorded names; absence does not prove inactivity",
-                "topp 60 registrerte navn; fravær beviser ikke inaktivitet",
-            ),
-        ))
-        .child(row(
-            "CPU",
-            l(
-                "app CPU can exceed 100% across cores",
-                "app-CPU kan overstige 100 % på flere kjerner",
-            ),
-        ))
-        .child(row(
-            l("GPU · Battery", "GPU · Batteri"),
-            l(
-                "legacy zero placeholders are omitted",
-                "eldre nullverdier er utelatt",
-            ),
-        ))
-        .child(row(
-            l("Power", "Effekt"),
-            l(
-                "estimates are not shown as measurements",
-                "estimater vises ikke som målinger",
-            ),
-        ))
+    panel
 }
 
 fn history_chart(values: &[Option<f64>], max: f64, color: Hsla) -> impl IntoElement {
@@ -1060,10 +979,7 @@ pub fn audio_output(
     pending: bool,
 ) -> Div {
     let id = audio.output_id;
-    let mut controls = div().flex().flex_col().gap_2().child(sub(l(
-        "Controls the default media output device, not individual apps.",
-        "Styrer standard lydutgang, ikke enkeltapper.",
-    )));
+    let mut controls = div().flex().flex_col().gap_2();
     if pending {
         return controls.child(sub(l("Updating output…", "Oppdaterer lydutgang…")));
     }

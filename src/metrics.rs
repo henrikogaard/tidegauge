@@ -508,7 +508,6 @@ pub struct ChipInfo {
     pub cores: usize,
     pub p_cores: usize,
     pub e_cores: usize,
-    pub neural_cores: usize,
 }
 
 pub fn chip_info() -> ChipInfo {
@@ -522,22 +521,11 @@ pub fn chip_info() -> ChipInfo {
         p = sysctl_u64("hw.perflevel0.physicalcpu").unwrap_or(cores as u64) as usize;
         e = sysctl_u64("hw.perflevel1.physicalcpu").unwrap_or(0) as usize;
     }
-    // ANE core count is not exposed; infer 16-core for most M-chips (or 0 on VM).
-    let has_ane = !matching_services("IOService")
-        .filter(|e| {
-            let n = entry_prop(*e, "IOName");
-            let s = cf_to_string(n);
-            if !n.is_null() { unsafe { CFRelease(n) }; }
-            s.map(|x| x.to_lowercase().contains("ane")).unwrap_or(false)
-        })
-        .count()
-        == 0;
     ChipInfo {
         brand,
         cores,
         p_cores: p,
         e_cores: e,
-        neural_cores: if has_ane { 0 } else { 16 },
     }
 }
 
