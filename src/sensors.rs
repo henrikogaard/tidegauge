@@ -59,6 +59,9 @@ pub struct SensorSnapshot {
     pub collected_at: Option<Instant>,
     pub discovering: bool,
     pub inventory_limited: bool,
+    /// Temperatures macOS names (chip, SSD, battery), from the HID sensor
+    /// service; the CPU page leads with these.
+    pub named: Vec<(crate::named_sensors::Kind, f64)>,
 }
 
 impl SensorSnapshot {
@@ -97,7 +100,8 @@ pub fn start() {
                             smc.key_count = count;
                             let opened = Instant::now();
                             while opened.elapsed() < Duration::from_secs(60) {
-                                let sample = smc.sample();
+                                let mut sample = smc.sample();
+                                sample.named = crate::named_sensors::read();
                                 *out.lock().unwrap() = sample;
                                 std::thread::sleep(Duration::from_secs(2));
                             }
@@ -114,12 +118,17 @@ pub fn start() {
                             }
                         }
                         Err(source) => {
-                            *out.lock().unwrap() = SensorSnapshot {
-                                source,
-                                collected_at: Some(Instant::now()),
-                                ..Default::default()
-                            };
-                            std::thread::sleep(Duration::from_secs(30));
+                            // The HID sensors do not need AppleSMC, so keep
+                            // them fresh at the normal pace until the retry.
+                            for _ in 0..15 {
+                                *out.lock().unwrap() = SensorSnapshot {
+                                    source: source.clone(),
+                                    collected_at: Some(Instant::now()),
+                                    named: crate::named_sensors::read(),
+                                    ..Default::default()
+                                };
+                                std::thread::sleep(Duration::from_secs(2));
+                            }
                         }
                     }
                 }
@@ -390,6 +399,7 @@ impl Smc {
                 .key_count
                 .is_some_and(|count| self.next_key < count.min(8192)),
             inventory_limited: self.inventory_limited,
+            named: Vec::new(),
         }
     }
 }

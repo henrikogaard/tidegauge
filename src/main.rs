@@ -24,6 +24,7 @@ mod locale_guard;
 mod login;
 mod menu_panel;
 mod metrics;
+mod named_sensors;
 mod notifications;
 mod packages;
 mod processes;

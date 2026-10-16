@@ -1338,6 +1338,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "App CPU: 100% is one full core, so a busy app can show more than 100%.",
                 "App-CPU: 100 % er én hel kjerne, så en travel app kan vise mer enn 100 %.",
             ),
+            l("Chip, SSD and battery come from the sensors macOS names itself. The channel list is the SMC's own; its codes are the hardware's, and some are not temperatures.", "Brikke, SSD og batteri kommer fra sensorene macOS selv navngir. Kanallisten er SMC-ens egen; kodene er maskinvarens, og noen er ikke temperaturer."),
             l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll."),
         ],
         Tab::Memory => vec![
@@ -2443,7 +2444,10 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
     };
     let temperature_display = bound_temperature_display(&sample.temperatures, fresh);
     let temperature_caption = temperature_display_caption(&temperature_display, l);
-    let summary = temperature_summary(&sample.temperatures, fresh);
+    // macOS's named sensors lead: they are real temperatures of named parts.
+    // Without them (a virtual or Intel Mac), the SMC channels stand in.
+    let named = if fresh { crate::named_sensors::summarise(&sample.named) } else { Vec::new() };
+    let summary = named.is_empty().then(|| temperature_summary(&sample.temperatures, fresh)).flatten();
     let reading_row = move |reading: &crate::sensors::Reading, unit: &'static str| {
         div()
             .flex()
@@ -2461,7 +2465,7 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                 ),
             )
     };
-    let summary_stat = |label: &'static str, value: f64| {
+    let summary_stat = |label: String, value: f64| {
         div()
             .flex()
             .flex_col()
@@ -2480,10 +2484,24 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                 l("Temperature channels unavailable. This does not mean the Mac is cool.", "Temperaturkanaler utilgjengelige. Dette betyr ikke at Macen er kjølig.")
             }).text_color(t::ink_dim(dark)))
         })
+        .when(!named.is_empty(), |d| {
+            d.child(div().flex().flex_wrap().gap(t::SPACE_6).children(named.iter().flat_map(|part| {
+                // The chip has dozens of sensors: its hottest and average. A
+                // part with one or a few reads as its hottest.
+                let stats = match part.kind {
+                    crate::named_sensors::Kind::Chip => vec![
+                        (format!("{} · {}", part.kind.label(), l("hottest", "varmest")), part.hottest),
+                        (format!("{} · {}", part.kind.label(), l("average", "snitt")), part.average),
+                    ],
+                    _ => vec![(part.kind.label().to_string(), part.hottest)],
+                };
+                stats.into_iter().map(|(label, value)| summary_stat(label, value))
+            })))
+        })
         .when_some(summary, |d, (hottest, average)| {
             d.child(div().flex().gap(t::SPACE_6)
-                .child(summary_stat(l("Hottest", "Varmest"), hottest))
-                .child(summary_stat(l("Average", "Gjennomsnitt"), average)))
+                .child(summary_stat(l("Hottest", "Varmest").into(), hottest))
+                .child(summary_stat(l("Average", "Gjennomsnitt").into(), average)))
         })
         .when(open, |d| {
             d.children(temperature_display.rows.iter().map(|r| reading_row(r, "°C")))
