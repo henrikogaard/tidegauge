@@ -48,10 +48,32 @@ type IoProc = extern "C" fn(
     *mut c_void,
 ) -> OSStatus;
 
+type CreateTap = unsafe extern "C" fn(*const AnyObject, *mut AudioObjectID) -> OSStatus;
+type DestroyTap = unsafe extern "C" fn(AudioObjectID) -> OSStatus;
+
+/// The tap functions arrived in macOS 14.2. They are looked up at run time,
+/// so Tidegauge still starts on older macOS, where they are simply absent.
+fn tap_functions() -> Option<(CreateTap, DestroyTap)> {
+    static FUNCTIONS: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    let (create, destroy) = (*FUNCTIONS.get_or_init(|| unsafe {
+        let handle = libc::dlopen(c"/System/Library/Frameworks/CoreAudio.framework/CoreAudio".as_ptr(), libc::RTLD_LAZY);
+        if handle.is_null() {
+            return None;
+        }
+        let create = libc::dlsym(handle, c"AudioHardwareCreateProcessTap".as_ptr());
+        let destroy = libc::dlsym(handle, c"AudioHardwareDestroyProcessTap".as_ptr());
+        (!create.is_null() && !destroy.is_null()).then_some((create as usize, destroy as usize))
+    }))?;
+    unsafe { Some((std::mem::transmute::<usize, CreateTap>(create), std::mem::transmute::<usize, DestroyTap>(destroy))) }
+}
+
+#[allow(non_snake_case)]
+unsafe fn AudioHardwareDestroyProcessTap(tap: AudioObjectID) -> OSStatus {
+    tap_functions().map_or(0, |(_, destroy)| destroy(tap))
+}
+
 #[link(name = "CoreAudio", kind = "framework")]
 extern "C" {
-    fn AudioHardwareCreateProcessTap(description: *const AnyObject, tap: *mut AudioObjectID) -> OSStatus;
-    fn AudioHardwareDestroyProcessTap(tap: AudioObjectID) -> OSStatus;
     fn AudioHardwareCreateAggregateDevice(description: *const c_void, device: *mut AudioObjectID) -> OSStatus;
     fn AudioHardwareDestroyAggregateDevice(device: AudioObjectID) -> OSStatus;
     fn AudioDeviceCreateIOProcID(device: AudioObjectID, proc_: IoProc, data: *mut c_void, id: *mut *mut c_void) -> OSStatus;
@@ -199,7 +221,9 @@ fn failed(step: &str, status: OSStatus) -> String {
 /// Start passing one audio process through Tidegauge at `gain`.
 fn start(process: AudioObjectID, output: AudioObjectID, gain: f32) -> Result<Tap, String> {
     let output_uid = device_uid(output).ok_or_else(|| failed("output", -1))?;
-    let class = AnyClass::get(c"CATapDescription").ok_or_else(|| l("Per-app volume needs macOS 14.2 or later.", "Volum per app krever macOS 14.2 eller nyere.").to_string())?;
+    let too_old = || l("Per-app volume needs macOS 14.2 or later.", "Volum per app krever macOS 14.2 eller nyere.").to_string();
+    let class = AnyClass::get(c"CATapDescription").ok_or_else(too_old)?;
+    let (create_tap, _) = tap_functions().ok_or_else(too_old)?;
     unsafe {
         let processes = NSArray::from_retained_slice(&[NSNumber::new_u32(process)]);
         let description: Retained<AnyObject> = {
@@ -216,7 +240,7 @@ fn start(process: AudioObjectID, output: AudioObjectID, gain: f32) -> Result<Tap
         let tap_uid: Retained<NSString> = msg_send![&*uuid, UUIDString];
 
         let mut tap: AudioObjectID = 0;
-        let status = AudioHardwareCreateProcessTap(Retained::as_ptr(&description), &mut tap);
+        let status = create_tap(Retained::as_ptr(&description), &mut tap);
         if status != 0 {
             return Err(failed("tap", status));
         }
@@ -375,6 +399,12 @@ mod tests {
         let mut out = [7f32; 4];
         assert_eq!(render(&[&[]], 0, &mut [&mut out], &[2], 1.0), 0.0);
         assert_eq!(out, [0.; 4]);
+    }
+
+    #[test]
+    fn the_tap_functions_are_found_at_run_time() {
+        // On this macOS (14.2+) they exist; the binary does not import them.
+        assert!(super::tap_functions().is_some());
     }
 
     #[test]

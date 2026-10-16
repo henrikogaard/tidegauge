@@ -26,7 +26,7 @@ The process-object list and `kAudioProcessPropertyIsRunningInput` / `IsRunningOu
 
 `kAudioDevicePropertyProcessMute` (`appm`) applies to the **calling process** on a real device, not to an arbitrary process object/PID. It cannot implement another app's mute button. `kAudioHardwarePropertyProcessIsAudible` (`pmut`) likewise concerns the caller. The earlier unused setter and indicative-level path have been removed.
 
-Arbitrary per-app volume/mute needs a separately designed routing solution, permissions, and verification that only the intended output changes. That remains open; unsupported controls are not wired to an unrelated API. No synthetic level meter is displayed.
+Per-app volume and mute therefore use process taps (see Per-app volume above), not these properties. The per-app meter shows the tapped signal's own peak, only while Tidegauge carries that app.
 
 ## Native references
 
