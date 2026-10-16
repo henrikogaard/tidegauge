@@ -118,13 +118,17 @@ pub fn start() {
                             }
                         }
                         Err(source) => {
-                            *out.lock().unwrap() = SensorSnapshot {
-                                source,
-                                collected_at: Some(Instant::now()),
-                                named: crate::named_sensors::read(),
-                                ..Default::default()
-                            };
-                            std::thread::sleep(Duration::from_secs(30));
+                            // The HID sensors do not need AppleSMC, so keep
+                            // them fresh at the normal pace until the retry.
+                            for _ in 0..15 {
+                                *out.lock().unwrap() = SensorSnapshot {
+                                    source: source.clone(),
+                                    collected_at: Some(Instant::now()),
+                                    named: crate::named_sensors::read(),
+                                    ..Default::default()
+                                };
+                                std::thread::sleep(Duration::from_secs(2));
+                            }
                         }
                     }
                 }
