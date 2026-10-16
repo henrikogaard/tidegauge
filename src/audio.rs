@@ -597,6 +597,76 @@ mod tests {
         assert!((after.volume.unwrap() - volume).abs() < 0.005);
         speak("Six. The starting volume is restored.");
     }
+
+    struct RestoreDefaultOutput(u32);
+    impl Drop for RestoreDefaultOutput {
+        fn drop(&mut self) {
+            set_default_output(self.0);
+        }
+    }
+
+    fn set_default_output(id: u32) -> bool {
+        unsafe {
+            set(
+                K_AUDIO_OBJECT_SYSTEM_OBJECT,
+                &addr(
+                    K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
+                    K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+                ),
+                &id,
+            )
+        }
+    }
+
+    fn device_volume_and_mute(id: u32) -> (Option<f32>, Option<bool>) {
+        unsafe {
+            let (mut volume, mut muted) = (0f32, 0u32);
+            (
+                get(id, &output_property(K_AUDIO_DEVICE_PROPERTY_VOLUME_SCALAR), &mut volume)
+                    .then_some(volume),
+                get(id, &output_property(K_AUDIO_DEVICE_PROPERTY_MUTE), &mut muted)
+                    .then_some(muted != 0),
+            )
+        }
+    }
+
+    #[test]
+    #[ignore = "switches the default output to TIDEGAUGE_SWITCH_OUTPUT, then restores it"]
+    fn native_output_switch_rejects_stale_target() {
+        let name = std::env::var("TIDEGAUGE_SWITCH_OUTPUT")
+            .expect("set TIDEGAUGE_SWITCH_OUTPUT to another output device's name");
+        let before = observed("before");
+        let target = object_list(K_AUDIO_HARDWARE_PROPERTY_DEVICES)
+            .into_iter()
+            .find(|id| *id != before.id && device_name(*id) == name)
+            .expect("no other device with that name");
+        let original = device_volume_and_mute(before.id);
+        let _restore = RestoreDefaultOutput(before.id);
+
+        assert!(set_default_output(target));
+        let switched = observed("switched");
+        assert_eq!(switched.id, target);
+
+        assert!(set_output_volume(before.id, 0.).is_err());
+        assert!(adjust_output_volume(before.id, -0.1).is_err());
+        assert!(toggle_output_mute(before.id).is_err());
+        assert_eq!(device_volume_and_mute(before.id), original);
+
+        if !switched.can_volume {
+            assert!(set_output_volume(target, 0.3).is_err());
+            assert!(adjust_output_volume(target, -0.1).is_err());
+        }
+        if !switched.can_mute {
+            assert!(toggle_output_mute(target).is_err());
+        }
+        assert_eq!(observed("after unsupported requests").volume, switched.volume);
+        assert_eq!(output_state().muted, switched.muted);
+
+        assert!(set_default_output(before.id));
+        let after = observed("restored");
+        assert_eq!(after.id, before.id);
+        assert_eq!((after.volume, after.muted), (before.volume, before.muted));
+    }
 }
 
 pub fn output_device_names() -> Vec<String> {
