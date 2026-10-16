@@ -4,6 +4,7 @@ mod agents;
 mod agents_panel;
 mod alerts;
 mod app;
+mod app_volume;
 mod appearance;
 mod audio;
 mod battery;
@@ -76,6 +77,8 @@ fn main() {
         gpui_kit::init(cx);
         cx.on_app_quit(|_| async {
             crate::keepawake::shutdown();
+            // Apps play on their own again.
+            crate::app_volume::stop_all();
         })
         .detach();
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);

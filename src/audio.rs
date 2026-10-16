@@ -753,6 +753,7 @@ pub fn audio_processes() -> Vec<AudioApp> {
             };
             out.push(AudioApp {
                 pid,
+                object: id,
                 name: app_name,
                 icon_path: icon,
                 running_output: run_out != 0,
