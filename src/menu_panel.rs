@@ -260,8 +260,22 @@ impl Render for MenuPanel {
                     .flex_col()
                     .children(busiest.iter().take(3).enumerate().map(|(i, app)| {
                         let target = main.clone();
+                        let keyboard = main.clone();
                         div()
                             .id(SharedString::from(format!("panel-app-{i}")))
+                            .role(Role::Button)
+                            .aria_label(SharedString::from(format!("{} {}", app.name, fmt_pct(app.cpu_pct))))
+                            .tab_index(0)
+                            .border_1()
+                            .border_color(gpui_kit::transparent_black())
+                            .focus_visible(move |d| d.border_color(t::accent(dark)))
+                            .capture_key_down(move |event, window, cx| {
+                                if crate::controls::is_activation_key(&event.keystroke) {
+                                    window.prevent_default();
+                                    open(&keyboard, Destination::Apps, cx);
+                                    cx.stop_propagation();
+                                }
+                            })
                             .h(px(28.))
                             .px(t::SPACE_2)
                             .flex()

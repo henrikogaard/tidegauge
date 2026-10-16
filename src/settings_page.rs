@@ -494,21 +494,44 @@ fn overview(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
     group(l("Overview", "Oversikt"), rows, dark)
 }
 
+/// The sidebar entries in their saved order, without Projects, which shows
+/// inside Agents now. Positions and moves count only these.
+fn sidebar_order(tabs: &[String]) -> Vec<String> {
+    tabs.iter().filter(|key| *key != "projects").cloned().collect()
+}
+
+/// Move `key` one place up or down among the visible entries, swapping it
+/// with its visible neighbour wherever that sits in the saved list.
+fn move_sidebar_entry(tabs: &mut [String], key: &str, up: bool) {
+    let order = sidebar_order(tabs);
+    let Some(at) = order.iter().position(|x| x == key) else {
+        return;
+    };
+    let Some(neighbour) = (if up { at.checked_sub(1) } else { (at + 1 < order.len()).then_some(at + 1) }) else {
+        return;
+    };
+    let a = tabs.iter().position(|x| *x == order[at]);
+    let b = tabs.iter().position(|x| *x == order[neighbour]);
+    if let (Some(a), Some(b)) = (a, b) {
+        tabs.swap(a, b);
+    }
+}
+
 fn sidebar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let mut order = settings.dashboard_tabs.clone();
+    let shown = sidebar_order(&settings.dashboard_tabs);
+    let mut order = shown.clone();
     for key in crate::settings::DASHBOARD_TABS {
-        if !order.iter().any(|x| x == key) {
+        if key != "projects" && !order.iter().any(|x| x == key) {
             order.push(key.into());
         }
     }
-    let enabled_count = settings.dashboard_tabs.len();
+    let enabled_count = shown.len();
     let mut rows = Vec::new();
     for (row_index, key) in order.into_iter().enumerate() {
-        // Projects shows inside Agents now, not as its own sidebar entry.
-        let Some(tab) = Tab::from_key(&key).filter(|tab| *tab != Tab::Projects) else {
+        let Some(tab) = Tab::from_key(&key) else {
             continue;
         };
-        let position = settings.dashboard_tabs.iter().position(|x| x == &key);
+        let position = shown.iter().position(|x| x == &key);
         // Arrows sit in a fixed-width slot so the switches line up; the first
         // row has no up arrow and the last no down arrow.
         let mut arrows = div().w(px(64.)).flex_shrink_0().flex().justify_end().gap(t::SPACE_1);
@@ -527,19 +550,7 @@ fn sidebar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
                     dark,
                     move |window, cx| {
                         let move_key = move_key.clone();
-                        update_preference(
-                            &target,
-                            move |s| {
-                                if let Some(i) = s.dashboard_tabs.iter().position(|x| x == &move_key) {
-                                    let j = if up { i.checked_sub(1) } else { (i + 1 < s.dashboard_tabs.len()).then_some(i + 1) };
-                                    if let Some(j) = j {
-                                        s.dashboard_tabs.swap(i, j);
-                                    }
-                                }
-                            },
-                            window,
-                            cx,
-                        )
+                        update_preference(&target, move |s| move_sidebar_entry(&mut s.dashboard_tabs, &move_key, up), window, cx)
                     },
                 ));
             }
@@ -594,4 +605,18 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                 }))
                 .child(button_indexed("settings-quit", l("Quit Tidegauge", "Avslutt Tidegauge"), false, dark, 0, |_, cx| cx.quit())),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::move_sidebar_entry;
+
+    #[test]
+    fn moving_skips_the_hidden_projects_entry() {
+        let mut tabs: Vec<String> = ["cpu", "projects", "history", "bluetooth"].map(String::from).to_vec();
+        move_sidebar_entry(&mut tabs, "history", true);
+        assert_eq!(tabs, ["history", "projects", "cpu", "bluetooth"], "history passes cpu, not projects");
+        move_sidebar_entry(&mut tabs, "bluetooth", false);
+        assert_eq!(tabs, ["history", "projects", "cpu", "bluetooth"], "the last visible entry stays last");
+    }
 }

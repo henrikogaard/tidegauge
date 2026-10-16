@@ -998,6 +998,13 @@ fn storage_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>
     actions
 }
 
+fn scan_folder(this: &Entity<TideGaugeView>, path: std::path::PathBuf, cx: &mut App) {
+    this.update(cx, |v, cx| {
+        v.tools.scan = Some(crate::storage::start(path));
+        cx.notify();
+    });
+}
+
 /// Folders most people want to look at first, so the page never opens empty.
 fn quick_folders() -> Vec<(&'static str, &'static str, std::path::PathBuf)> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
@@ -1095,12 +1102,16 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
                     .text_size(t::TEXT_BODY)
                     .child(svg().path(icon).size(px(13.)).text_color(t::ink_dim(dark)))
                     .child(label)
-                    .on_click(move |_, _, cx| {
-                        let path = path.clone();
-                        target.update(cx, |v, cx| {
-                            v.tools.scan = Some(crate::storage::start(path));
-                            cx.notify();
-                        });
+                    .on_click({
+                        let (target, path) = (target.clone(), path.clone());
+                        move |_, _, cx| scan_folder(&target, path.clone(), cx)
+                    })
+                    .capture_key_down(move |event, window, cx| {
+                        if crate::controls::is_activation_key(&event.keystroke) {
+                            window.prevent_default();
+                            scan_folder(&target, path.clone(), cx);
+                            cx.stop_propagation();
+                        }
                     }),
             );
         }

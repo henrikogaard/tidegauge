@@ -543,8 +543,7 @@ pub fn history_panel(
                 );
             // When recording began inside the range, say when: that, not a
             // fault, is why the left of the plot is empty.
-            if let Some(first) = data.values.iter().position(Option::is_some).filter(|&i| i > 0) {
-                let at = data.start + (data.end - data.start) * first as f64 / data.values.len().max(1) as f64;
+            if let Some(at) = data.recording_began {
                 plot = plot.child(
                     sub(format!("{} {}", l("Recorded since", "Registrert siden"), crate::history_browser::local_time(at)))
                         .text_color(t::ink_dim(dark)),
