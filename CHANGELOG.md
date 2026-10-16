@@ -14,7 +14,7 @@ hardware acceptance checks. A merge and a published release are separate events.
   Updates button, and the menu-bar panel has an update button in its footer.
   Since 0.3.0 a left click on the menu-bar item opens the panel, so the update
   check was only in the right-click menu
-  ([#56](https://github.com/henrikogaard/tidegauge/pull/56)).
+  ([#55](https://github.com/henrikogaard/tidegauge/pull/55)).
 
 ## [0.3.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.0) — 2026-10-16
 
