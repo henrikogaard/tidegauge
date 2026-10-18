@@ -14,7 +14,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   1 GB. The Memory page lists it under Growing memory with a Quit button that
   asks first, and an opt-in "Memory keeps growing" alert (off by default, once
   per app, ten-minute cooldown) says so. The readings are kept in memory once
-  a minute, so a warning needs three hours of Tidegauge running.
+  a minute, so a warning needs three hours of Tidegauge running
+  ([#89](https://github.com/henrikogaard/tidegauge/pull/89)).
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
