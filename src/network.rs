@@ -402,14 +402,21 @@ pub fn details() -> Details {
         addresses(&interface)
     };
     let usable = !interface.is_empty() && (ipv4.is_some() || ipv6.is_some());
+    let kind = classify(&interface, wifi_name.as_deref());
     Details {
-        kind: classify(&interface, wifi_name.as_deref()),
+        kind,
         online: is_online(usable),
         interface,
         ipv4,
         ipv6,
-        wifi,
+        wifi: primary_wifi(kind, wifi),
     }
+}
+
+/// Wi-Fi details describe the connection only when Wi-Fi carries it; on
+/// Ethernet or a VPN they would belong to a link that is not in use.
+fn primary_wifi(kind: LinkKind, wifi: Option<Wifi>) -> Option<Wifi> {
+    wifi.filter(|_| kind == LinkKind::WiFi)
 }
 
 #[cfg(test)]
@@ -440,6 +447,15 @@ mod tests {
         // Channel 37 exists in both 5 and 6 GHz; the reported band wins.
         assert_eq!(band_for(37, Some(Band::Ghz6)), Some(Band::Ghz6));
         assert_eq!(band_for(5, Some(Band::Ghz6)), Some(Band::Ghz6));
+    }
+
+    #[test]
+    fn wifi_details_follow_only_a_wifi_connection() {
+        let wifi = || Some(Wifi::default());
+        assert!(primary_wifi(LinkKind::WiFi, wifi()).is_some());
+        assert!(primary_wifi(LinkKind::Ethernet, wifi()).is_none());
+        assert!(primary_wifi(LinkKind::Vpn, wifi()).is_none());
+        assert!(primary_wifi(LinkKind::None, wifi()).is_none());
     }
 
     #[test]
