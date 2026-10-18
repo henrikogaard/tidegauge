@@ -2148,7 +2148,7 @@ fn donut_card(
                 .child(donut(&chart, 92., t::card_hi(dark)))
                 .child(div().absolute().inset_0().flex().flex_col().items_center().justify_center()
                     .child(div().text_size(t::TEXT_BODY).font_weight(FontWeight::SEMIBOLD).child(center))
-                    .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(center_label.to_string()))))
+                    .child(div().text_size(t::TEXT_CAPTION).whitespace_nowrap().text_color(t::ink_dim(dark)).child(center_label.to_string()))))
             .child(div().flex_1().min_w_0().flex().flex_col().children(legend)))
 }
 
@@ -2303,7 +2303,7 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
     }
     let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
     if other > 0. { slices.push(BreakdownEntry::new(l("Other", "Annet"), other, color.opacity(0.35))); }
-    donut_card(l("CPU Power by App", "CPU-effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("CPU only · from macOS", "Kun CPU · fra macOS"), breakdown_watts, dark)
+    donut_card(l("CPU Power by App", "CPU-effekt etter app"), Tab::Battery, slices, breakdown_watts(total), l("CPU only", "kun CPU"), breakdown_watts, dark)
 }
 
 // ---------- metric tabs ----------
@@ -2541,7 +2541,7 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
         })
         .children(sample.fans.iter().enumerate().map(|(i, r)| {
             let (min, max) = sample.fan_limits.get(i).copied().unwrap_or((None, None));
-            let share = r.value.filter(|_| fresh).and_then(|rpm| crate::sensors::fan_share(rpm, min, max));
+            let share = r.value.filter(|_| fresh).and_then(|rpm| crate::sensors::fan_share(rpm, max));
             div()
                 .flex()
                 .flex_col()
@@ -2559,11 +2559,11 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                     )
                     .child(
                         div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(format!(
-                            "{} · {} {:.0}–{:.0} RPM",
+                            "{} {} · {} {:.0} RPM",
                             fmt_pct(share),
-                            l("range", "område"),
-                            min.unwrap_or(0.),
-                            max.unwrap_or(0.)
+                            l("of top speed", "av toppfart"),
+                            l("lowest", "lavest"),
+                            min.unwrap_or(0.)
                         )),
                     )
                 })

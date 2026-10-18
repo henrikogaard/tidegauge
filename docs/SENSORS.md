@@ -93,7 +93,7 @@ the SSD (`NAND`) and the battery (`gas gauge battery`). Calibration channels
 
 - **History** records the chip's hottest named sensor, the SSD and the battery every History write (`temp_chip`, `temp_ssd`, `temp_battery`), only while the sensor reading is fresh. History offers them as Chip °C, SSD °C and Battery °C.
 - **Chip temperature alert** (opt-in, Settings → Alerts): the chip's hottest named sensor above the chosen level (95 °C by default, 70–105 °C) for 30 seconds. SMC channels are not used for it, since some of their codes are not temperatures.
-- **Fans** show where their speed sits between the controller's own lowest and highest (`F0Mn`/`F0Mx`). On the Mac17,7 both fans report 2,317–7,826 RPM.
+- **Fans** show their speed as a share of the controller's top speed (`F0Mx`), as Stats and iStat Menus do, with the lowest speed (`F0Mn`) beside it. On the Mac17,7 both fans report 2,317–7,826 RPM; 2,315 and 2,500 RPM read 30 % and 32 %, matching Stats' 29 % and 32 %.
 - **After sleep** the sampler notices that wall time ran on while the monotonic clock did not, then reopens AppleSMC and the HID sensor client instead of trusting connections opened before sleep.
 
 ### Checked on hardware
