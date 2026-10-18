@@ -17,7 +17,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   unavailable simulators are cleared by their own commands. Afterwards the page
   rescans and reports how much moved or was freed. Only a fixed list is
   touched, never through links and never outside your home folder, and
-  Tidegauge never empties the Trash or asks for administrator rights.
+  Tidegauge never empties the Trash or asks for administrator rights
+  ([#91](https://github.com/henrikogaard/tidegauge/pull/91)).
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
