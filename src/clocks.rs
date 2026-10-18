@@ -79,12 +79,16 @@ pub fn cpu_table(tables: &HashMap<String, Vec<u32>>, states: usize) -> Option<Ve
 }
 
 /// The GPU's frequencies in MHz: a table that starts with an off state of 0
-/// followed by rising frequencies in Hz.
-pub fn gpu_table(tables: &HashMap<String, Vec<u32>>) -> Option<Vec<f64>> {
+/// followed by rising frequencies in Hz, with no more entries than the
+/// counter has performance states. On the Mac17,7 the counter has 15 and the
+/// table 13; the top two are never entered, and `weighted_mhz` refuses the
+/// table if one ever is.
+pub fn gpu_table(tables: &HashMap<String, Vec<u32>>, states: usize) -> Option<Vec<f64>> {
     let mut found: Option<&Vec<u32>> = None;
     for (name, t) in tables {
         let shape = !name.ends_with("-sram")
             && t.len() > 2
+            && t.len() - 1 <= states
             && t[0] == 0
             && t[1..].iter().all(|f| (100_000_000..5_000_000_000).contains(&(*f as u64)))
             && t[1..].windows(2).all(|w| w[0] < w[1]);
@@ -100,7 +104,9 @@ pub fn gpu_table(tables: &HashMap<String, Vec<u32>>) -> Option<Vec<f64>> {
 
 /// The residency-weighted frequency over active states. CPU states are named
 /// "V{i}P{j}" (table index i); GPU states "P{n}" (table index n-1). Idle,
-/// down and off states are not active.
+/// down and off states are not active. Time spent in a state the table has
+/// no frequency for means the table does not fit: no clock rather than one
+/// that leaves that time out.
 pub fn weighted_mhz(states: &[(String, i64)], freqs: &[f64]) -> Option<f64> {
     let (mut sum, mut time) = (0f64, 0i64);
     for (name, residency) in states {
@@ -112,10 +118,9 @@ pub fn weighted_mhz(states: &[(String, i64)], freqs: &[f64]) -> Option<f64> {
             None
         };
         if let (Some(i), true) = (index, *residency > 0) {
-            if let Some(f) = freqs.get(i) {
-                sum += f * *residency as f64;
-                time += residency;
-            }
+            let f = freqs.get(i)?;
+            sum += f * *residency as f64;
+            time += residency;
         }
     }
     (time > 0).then(|| sum / time as f64)
@@ -270,7 +275,8 @@ fn read(reader: &mut Reader) -> Option<Clocks> {
                 }
             }
         }
-        if let Some(freqs) = gpu_table(&reader.tables) {
+        let gpu_states = gpu.iter().filter(|(n, _)| n.starts_with('P')).count();
+        if let Some(freqs) = gpu_table(&reader.tables, gpu_states) {
             clocks.gpu = weighted_mhz(&gpu, &freqs);
         }
         Some(clocks)
@@ -309,7 +315,8 @@ mod tests {
         let mut t = HashMap::new();
         t.insert("voltage-states9".into(), vec![0, 338_000_000, 486_000_000, 1_620_000_000]);
         t.insert("voltage-states8".into(), vec![732_000_000, 816_000_000]);
-        assert_eq!(gpu_table(&t), Some(vec![338., 486., 1620.]));
+        assert_eq!(gpu_table(&t, 15), Some(vec![338., 486., 1620.]));
+        assert_eq!(gpu_table(&t, 2), None, "more speeds than the counter has steps");
     }
 
     #[test]
@@ -319,6 +326,10 @@ mod tests {
         let gpu = [("OFF".to_string(), 10), ("P1".into(), 30), ("P3".into(), 10)];
         assert_eq!(weighted_mhz(&gpu, &[338., 486., 636.]), Some((338. * 30. + 636. * 10.) / 40.));
         assert_eq!(weighted_mhz(&[("IDLE".to_string(), 5)], &[1000.]), None, "all idle, no clock");
+        let beyond = [("P1".to_string(), 10), ("P5".into(), 10)];
+        assert_eq!(weighted_mhz(&beyond, &[338., 486.]), None, "time in a step with no speed: no clock");
+        let unused = [("P1".to_string(), 10), ("P5".into(), 0)];
+        assert_eq!(weighted_mhz(&unused, &[338., 486.]), Some(338.), "an unused step beyond the table is fine");
     }
 
     #[test]
