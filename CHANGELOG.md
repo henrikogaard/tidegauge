@@ -13,14 +13,15 @@ hardware acceptance checks. A merge and a published release are separate events.
   Warning and error colours stay orange and red in every choice, and it
   applies to the dashboard and the menu-bar panel. Settings → General →
   Charts draws sparklines and area charts as a line, a filled area (the
-  default) or bars (in review).
+  default) or bars ([#94](https://github.com/henrikogaard/tidegauge/pull/94), in review).
 
 ### Changed
 
 - Live numbers use digits of equal width, so they no longer shift sideways as
-  they change (in review).
+  they change ([#94](https://github.com/henrikogaard/tidegauge/pull/94), in review).
 - Charts draw about one value per two pixels instead of up to 240, which keeps
-  the shape and the high-water line while painting less (in review).
+  the shape and the high-water line while painting less
+  ([#94](https://github.com/henrikogaard/tidegauge/pull/94), in review).
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
