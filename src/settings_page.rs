@@ -615,11 +615,39 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
     group(l("Menu bar", "Menylinje"), rows, dark)
 }
 
+/// Which tiles the menu-bar panel shows. At least one stays on, so the
+/// panel always has a reading.
+fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let only_one = settings.panel_tiles.len() <= 1;
+    let rows = crate::settings::PANEL_TILES
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            let enabled = settings.panel_tiles.iter().any(|x| x == key);
+            let label = crate::ui::Card::from_key(key).map(|c| c.label()).unwrap_or(key);
+            let control: AnyElement = if enabled && only_one {
+                div().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(l("Always shown", "Vises alltid")).into_any_element()
+            } else {
+                preference_switch(format!("panel-{key}"), format!("{} {label}", l("Show in the panel:", "Vis i panelet:")), enabled, dark, this.clone(), move |s, on| {
+                    if !on {
+                        s.panel_tiles.retain(|x| x != key);
+                    } else if !s.panel_tiles.iter().any(|x| x == key) {
+                        s.panel_tiles.push((*key).into());
+                    }
+                })
+                .into_any_element()
+            };
+            row(label, None, control, i == 0, dark)
+        })
+        .collect();
+    group(l("Menu-bar panel", "Menylinjepanel"), rows, dark)
+}
+
 fn overview(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut rows = Vec::new();
     for (i, key) in crate::settings::FAVORITE_METRICS.iter().enumerate() {
         let enabled = settings.favorite_metrics.iter().any(|x| x == key);
-        let label = Tab::from_key(key).unwrap().label();
+        let label = crate::ui::Card::from_key(key).map(|c| c.label()).unwrap_or(key);
         rows.push(row(
             label,
             None,
@@ -754,6 +782,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         .child(general(view, &settings, dark, this.clone()))
         .child(alerts(view, &settings, dark, this.clone()))
         .child(menu_bar(&settings, dark, this.clone()))
+        .child(panel_tiles(&settings, dark, this.clone()))
         .child(div().grid().grid_cols(2).gap(t::SPACE_4).items_start()
             .child(overview(&settings, dark, this.clone()))
             .child(sidebar(&settings, dark, this.clone())))

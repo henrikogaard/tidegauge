@@ -42,6 +42,8 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
+    /// The tiles in the menu-bar panel, in order; any of `PANEL_TILES`.
+    pub panel_tiles: Vec<String>,
     pub compact_dashboard: bool,
     /// The app's language: "en", "nb", or `None` to follow macOS.
     pub language: Option<String>,
@@ -75,7 +77,8 @@ impl Default for Settings {
             alert_temp_c: CHIP_TEMP_DEFAULT,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
-            favorite_metrics: FAVORITE_METRICS.iter().map(|s| (*s).into()).collect(),
+            favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
+            panel_tiles: DEFAULT_PANEL_TILES.iter().map(|s| (*s).into()).collect(),
             compact_dashboard: false,
             language: None,
             panel_shortcut: None,
@@ -140,11 +143,12 @@ impl Settings {
         self.alert_temp_c = valid_chip_temp(self.alert_temp_c);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
+        normalize_choices(&mut self.panel_tiles, &PANEL_TILES);
     }
 
     pub fn reset_dashboard(&mut self) {
         self.dashboard_tabs = DASHBOARD_TABS.iter().map(|s| (*s).into()).collect();
-        self.favorite_metrics = FAVORITE_METRICS.iter().map(|s| (*s).into()).collect();
+        self.favorite_metrics = DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect();
         self.compact_dashboard = false;
     }
 
@@ -186,7 +190,13 @@ pub const DASHBOARD_TABS: [&str; 10] = [
     "projects",
     "history",
 ];
-pub const FAVORITE_METRICS: [&str; 6] = ["cpu", "memory", "gpu", "disk", "network", "battery"];
+/// Every card Overview can show, in its order.
+pub const FAVORITE_METRICS: [&str; 9] = ["cpu", "memory", "gpu", "disk", "network", "battery", "temperature", "fans", "power"];
+/// The cards a new or reset Overview shows.
+pub const DEFAULT_FAVORITES: [&str; 6] = ["cpu", "memory", "gpu", "disk", "network", "battery"];
+/// Every tile the menu-bar panel can show, in its order.
+pub const PANEL_TILES: [&str; 9] = ["cpu", "memory", "network", "disk", "gpu", "battery", "temperature", "fans", "power"];
+pub const DEFAULT_PANEL_TILES: [&str; 4] = ["cpu", "memory", "network", "disk"];
 
 pub fn valid_threshold(value: f64, fallback: f64) -> f64 {
     if value.is_finite() {
@@ -311,6 +321,11 @@ mod tests {
         let loaded: Settings =
             serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert_eq!(loaded.dashboard_tabs, settings.dashboard_tabs);
+        settings.favorite_metrics = vec!["fans".into(), "nonsense".into(), "temperature".into()];
+        settings.panel_tiles = vec!["power".into(), "power".into(), "gpu".into()];
+        settings.normalize();
+        assert_eq!(settings.favorite_metrics, ["fans", "temperature"], "new cards are kept, in the order chosen");
+        assert_eq!(settings.panel_tiles, ["power", "gpu"], "one of each, in the order chosen");
         settings.reset_dashboard();
         assert_eq!(settings.favorite_metrics.len(), 6);
         assert_eq!(settings.dark, Some(true));

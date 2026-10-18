@@ -205,6 +205,12 @@ pub struct Snapshot {
     pub clocks: crate::clocks::Clocks,
     pub power_w: Option<f64>,
     pub power_hist: Hist,
+    /// The chip's hottest named sensor over time, °C.
+    pub temp_hist: Hist,
+    /// Each fan's speed (RPM) and share of its top speed (%), and the
+    /// fastest share over time.
+    pub fans: Vec<(f64, Option<f64>)>,
+    pub fan_hist: Hist,
     pub thermal: String,
     /// The same state as a level, 0 nominal to 3 critical, for alerts.
     pub thermal_level: Option<u8>,
@@ -255,6 +261,9 @@ impl Default for Snapshot {
             clocks: Default::default(),
             power_w: None,
             power_hist: h(),
+            temp_hist: h(),
+            fans: Vec::new(),
+            fan_hist: h(),
             thermal: "—".into(),
             thermal_level: None,
             temps: Default::default(),
@@ -353,6 +362,28 @@ impl Engine {
         s.thermal_level = crate::metrics::thermal_level();
         let sensors = crate::sensors::latest();
         s.temps = if sensors.is_fresh() { crate::named_sensors::temps(&sensors.named) } else { Default::default() };
+        match s.temps.chip {
+            Some(c) => s.temp_hist.push(c),
+            None => s.temp_hist.pts.clear(),
+        }
+        s.fans = if sensors.is_fresh() {
+            sensors
+                .fans
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    let rpm = r.value?;
+                    let max = sensors.fan_limits.get(i).and_then(|l| l.1);
+                    Some((rpm, crate::sensors::fan_share(rpm, max)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        match s.fans.iter().filter_map(|f| f.1).reduce(f64::max) {
+            Some(share) => s.fan_hist.push(share),
+            None => s.fan_hist.pts.clear(),
+        }
 
         // Memory
         s.mem = mem_stats();
