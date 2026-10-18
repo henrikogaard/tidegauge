@@ -302,7 +302,7 @@ pub fn localized_style_label(style: &str) -> Option<&'static str> {
         "value" => l("Value", "Verdi"),
         "graph" => l("Graph", "Graf"),
         "both" => l("Value + graph", "Verdi + graf"),
-        "bars" => l("Bars", "Stolper"),
+        "bars" => l("Bars", "Søyler"),
         "pie" => l("Ring", "Ring"),
         "gauge" => l("Gauge", "Måler"),
         _ => return None,
