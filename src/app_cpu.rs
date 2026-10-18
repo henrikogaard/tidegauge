@@ -35,13 +35,26 @@ impl AppCpu {
 
     /// "<1%" for almost nothing, one decimal below 10, whole numbers above.
     pub fn format(self, raw: f64) -> String {
-        let v = self.value(raw);
+        Self::display(self.value(raw))
+    }
+
+    /// `format` for a value already in the chosen unit, as charts hold them.
+    pub fn display(v: f64) -> String {
         if v < 0.5 {
             format!("<{}", crate::locale::percent(1., 0))
         } else if v < 9.95 {
             crate::locale::percent(v, 1)
         } else {
             crate::locale::percent(v, 0)
+        }
+    }
+
+    /// The unit on its own, for a chart's heading.
+    pub fn unit(self) -> &'static str {
+        if self.per_core {
+            l("% of one core", "% av én kjerne")
+        } else {
+            l("% of whole Mac", "% av hele Macen")
         }
     }
 
@@ -124,7 +137,21 @@ mod tests {
     }
 
     #[test]
+    fn charts_hold_converted_values_and_format_them_alike() {
+        let mac = AppCpu::new(18, false);
+        let converted = mac.value(163.);
+        assert_eq!(AppCpu::display(converted), mac.format(163.));
+        assert_eq!(
+            mac.value(100.),
+            100. / 18.,
+            "one core, as a chart's lowest top"
+        );
+        assert_eq!(AppCpu::new(18, true).value(100.), 100.);
+    }
+
+    #[test]
     fn the_unit_is_named_in_both_modes() {
+        assert_ne!(AppCpu::new(8, false).unit(), AppCpu::new(8, true).unit());
         assert_ne!(
             AppCpu::new(8, false).column_header(),
             AppCpu::new(8, true).column_header()

@@ -620,6 +620,7 @@ pub fn load_app_history(this: &Entity<TideGaugeView>, app: String, cx: &mut App)
 /// CPU and memory over the last hour, and a way into History for more.
 fn app_hour(view: &TideGaugeView, app: &AppGroup, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let data = view.app_history.as_ref().filter(|h| h.app == app.name).and_then(|h| h.data.as_ref());
+    let cpu = AppCpu::chosen(view.snap.chip.cores);
     let chart = |label: &str, values: &[Option<f64>], color: Hsla, format: &dyn Fn(f64) -> String, floor: f64| {
         let peak = values.iter().flatten().copied().fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))));
         div()
@@ -640,10 +641,18 @@ fn app_hour(view: &TideGaugeView, app: &AppGroup, dark: bool, this: Entity<TideG
             .child(crate::controls::history_chart(values, peak.unwrap_or(0.).max(floor), color, 44.))
     };
     let body = match data {
-        Some(Ok((cpu, mem))) if cpu.values.iter().chain(&mem.values).any(Option::is_some) => div()
+        Some(Ok((cpu_hour, mem))) if cpu_hour.values.iter().chain(&mem.values).any(Option::is_some) => div()
             .flex()
             .gap_4()
-            .child(chart(l("CPU · last hour", "CPU · siste time"), &cpu.values, Metric::Cpu.accent(dark), &|v| crate::locale::percent(v, 1), 100.))
+            // History keeps the raw per-core figure; the chart shows the
+            // unit chosen in Settings, with one core as its lowest top.
+            .child(chart(
+                l("CPU · last hour", "CPU · siste time"),
+                &cpu_hour.values.iter().map(|v| v.map(|v| cpu.value(v))).collect::<Vec<_>>(),
+                Metric::Cpu.accent(dark),
+                &AppCpu::display,
+                cpu.value(100.),
+            ))
             .child(chart(l("Memory · last hour", "Minne · siste time"), &mem.values, Metric::Memory.accent(dark), &|v| fmt_bytes(v), 1.)),
         Some(Ok(_)) => sub(l("Nothing recorded for this app in the last hour. History records every ten seconds or so.", "Ingenting registrert for denne appen den siste timen. Historikken registrerer omtrent hvert tiende sekund.")).text_color(t::ink_dim(dark)),
         Some(Err(error)) => sub(error.clone()).text_color(t::ink_dim(dark)),

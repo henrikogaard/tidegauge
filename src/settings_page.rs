@@ -291,7 +291,7 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         ));
     }
     let app_cpu = segment_group("app-cpu-options", l("App CPU shown as", "App-CPU vises som"), dark).children(
-        [(false, l("% of whole Mac", "% av hele Macen")), (true, l("% of one core", "% av én kjerne"))]
+        [(false, crate::app_cpu::AppCpu::new(1, false).unit()), (true, crate::app_cpu::AppCpu::new(1, true).unit())]
             .into_iter()
             .enumerate()
             .map(|(i, (per_core, label))| {

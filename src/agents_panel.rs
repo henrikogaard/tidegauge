@@ -2,6 +2,7 @@
 //! coding agents running now, with what each one started.
 
 use crate::agents::{Activity, Pace, Plan, Plans, Role, Session, Window};
+use crate::app_cpu::AppCpu;
 use crate::controls::button;
 use crate::engine::fmt_bytes;
 use crate::locale::text as l;
@@ -381,7 +382,7 @@ fn session_title(session: &Session) -> String {
 }
 
 /// One line per session; selecting it shows what it started and Quit.
-fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, cpu: AppCpu, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let title = session_title(&session);
     let working = session.activity == Activity::Working;
     let (chip, chip_color) = match session.activity {
@@ -501,7 +502,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 .justify_end()
                 .text_size(t::TEXT_BODY)
                 .text_color(t::ink_dim(dark))
-                .child(if session.cpu_pct >= 1. { crate::locale::percent(session.cpu_pct, 0) } else { String::new() }),
+                .child(if cpu.value(session.cpu_pct) >= 0.5 { cpu.format(session.cpu_pct) } else { String::new() }),
         )
         .child(
             div()
@@ -554,8 +555,8 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
         if let Some(port) = started.port {
             what = format!("{what} · {} {port}", l("port", "port"));
         }
-        if started.cpu_pct >= 1. {
-            what = format!("{what} · {} CPU", crate::locale::percent(started.cpu_pct, 0));
+        if cpu.value(started.cpu_pct) >= 0.5 {
+            what = format!("{what} · {} CPU", cpu.format(started.cpu_pct));
         }
         detail = detail.child(
             div()
@@ -580,6 +581,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let s = &view.snap;
     let now = now();
+    let cpu = AppCpu::chosen(s.chip.cores);
     let mut page = div().flex().flex_col().gap(t::SECTION_GAP);
     page = page.child(section_header(l("AI plans", "AI-abonnementer"), l("From OpenQuota", "Fra OpenQuota"), dark));
     page = match &s.plans {
@@ -674,7 +676,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let mut list = card(dark).p_1().gap(px(2.));
     for session in &s.agents {
         let expanded = view.agent_expanded == Some(session.root.pid);
-        list = list.child(session_row(session, now, expanded, view.process_pending, dark, this.clone()));
+        list = list.child(session_row(session, now, expanded, view.process_pending, cpu, dark, this.clone()));
     }
     page.child(list)
 }

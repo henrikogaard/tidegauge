@@ -20,19 +20,49 @@ const TILE_ROW: f32 = 108.;
 /// A section's caption, its card of three rows and the gaps around them.
 const SECTION: f32 = 128.;
 
-/// The panel grows or shrinks by a row for every two tiles beyond or short
-/// of the default four, and by a section for each of AI plans and Busiest
-/// apps that it leaves out.
-pub fn height() -> f32 {
-    let settings = crate::settings::Settings::load();
-    let plans = visible_plans(&crate::engine::latest().plans, &settings, crate::metrics::now_unix()).len();
-    panel_height(settings.panel_tiles.len(), plans > 0, settings.panel_show_apps)
+/// What the panel shows, decided once when it opens and kept until it
+/// closes. The window's size is fixed at that moment, so the tiles and
+/// sections must not come or go while it is open: a section appearing would
+/// clip the footer, one vanishing would leave a gap.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layout {
+    tiles: Vec<String>,
+    plans: bool,
+    apps: bool,
 }
 
-fn panel_height(tiles: usize, plans: bool, apps: bool) -> f32 {
-    let rows = tiles.max(1).div_ceil(2) as f32;
-    let missing = [plans, apps].iter().filter(|shown| !**shown).count() as f32;
-    BASE_HEIGHT + (rows - 2.) * TILE_ROW - missing * SECTION
+impl Layout {
+    /// The layout for a panel opened now.
+    pub fn now() -> Self {
+        Self::new(&crate::settings::Settings::load(), &crate::engine::latest().plans, crate::metrics::now_unix())
+    }
+
+    fn new(settings: &crate::settings::Settings, plans: &crate::agents::Plans, now: f64) -> Self {
+        Layout {
+            tiles: settings.panel_tiles.clone(),
+            plans: settings.panel_show_plans && !current_plans(plans, now).is_empty(),
+            apps: settings.panel_show_apps,
+        }
+    }
+
+    /// The panel grows or shrinks by a row for every two tiles beyond or
+    /// short of the default four, and by a section for each of AI plans and
+    /// Busiest apps that it leaves out.
+    pub fn height(&self) -> f32 {
+        let rows = self.tiles.len().max(1).div_ceil(2) as f32;
+        let missing = [self.plans, self.apps].iter().filter(|shown| !**shown).count() as f32;
+        BASE_HEIGHT + (rows - 2.) * TILE_ROW - missing * SECTION
+    }
+
+    /// The plans to draw now: none unless the section was open for, else the
+    /// first three that are being updated at this moment.
+    fn plans<'a>(&self, plans: &'a crate::agents::Plans, now: f64) -> Vec<&'a crate::agents::Plan> {
+        if self.plans {
+            current_plans(plans, now)
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Whether the tile at `index` of `count` takes both columns: the last of an
@@ -41,25 +71,23 @@ fn spans_both_columns(index: usize, count: usize) -> bool {
     count % 2 == 1 && index + 1 == count
 }
 
-/// The plans the panel shows: none if the section is turned off, else the
-/// first three that are being updated.
-fn visible_plans<'a>(plans: &'a crate::agents::Plans, settings: &crate::settings::Settings, now: f64) -> Vec<&'a crate::agents::Plan> {
+/// The first three plans that are being updated.
+fn current_plans(plans: &crate::agents::Plans, now: f64) -> Vec<&crate::agents::Plan> {
     match plans {
-        crate::agents::Plans::Loaded(plans) if settings.panel_show_plans => {
-            crate::agents_panel::current_plans(plans, now).into_iter().take(3).collect()
-        }
+        crate::agents::Plans::Loaded(plans) => crate::agents_panel::current_plans(plans, now).into_iter().take(3).collect(),
         _ => Vec::new(),
     }
 }
 
 pub struct MenuPanel {
+    layout: Layout,
     snap: Snapshot,
     main: Entity<TideGaugeView>,
     focus: FocusHandle,
 }
 
 impl MenuPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, main: Entity<TideGaugeView>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, main: Entity<TideGaugeView>, layout: Layout) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         cx.spawn(async move |this: WeakEntity<MenuPanel>, cx: &mut AsyncApp| loop {
@@ -77,7 +105,7 @@ impl MenuPanel {
             }
         })
         .detach();
-        Self { snap: crate::engine::latest(), main, focus }
+        Self { layout, snap: crate::engine::latest(), main, focus }
     }
 }
 
@@ -259,13 +287,13 @@ impl Render for MenuPanel {
         ));
         let s = &self.snap;
         let main = self.main.clone();
-        let settings = crate::settings::Settings::load();
+        let layout = &self.layout;
         let cpu = AppCpu::chosen(s.chip.cores);
         let mut busiest: Vec<&AppGroup> = s.apps.iter().filter(|a| a.cpu_pct > 0.).collect();
         busiest.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
         let now = crate::metrics::now_unix();
         let plans: Vec<crate::agents_panel::PlanGlance> =
-            visible_plans(&s.plans, &settings, now).into_iter().map(|p| crate::agents_panel::plan_glance(p, now, dark)).collect();
+            layout.plans(&s.plans, now).into_iter().map(|p| crate::agents_panel::plan_glance(p, now, dark)).collect();
         let caption = |text: &'static str| {
             div()
                 .px(t::SPACE_1)
@@ -315,7 +343,7 @@ impl Render for MenuPanel {
                     .grid_cols(2)
                     .gap(t::SPACE_2)
                     .children({
-                        let cards: Vec<Card> = settings.panel_tiles.iter().filter_map(|key| Card::from_key(key)).collect();
+                        let cards: Vec<Card> = layout.tiles.iter().filter_map(|key| Card::from_key(key)).collect();
                         let count = cards.len();
                         let main = main.clone();
                         cards.into_iter().enumerate().map(move |(i, card)| {
@@ -349,7 +377,7 @@ impl Render for MenuPanel {
                     })),
                 )
             })
-            .when(settings.panel_show_apps, |d| d.child(caption(l("Busiest apps", "Mest aktive apper"))).child(
+            .when(layout.apps, |d| d.child(caption(l("Busiest apps", "Mest aktive apper"))).child(
                 div()
                     .rounded(t::RADIUS_CONTROL)
                     .bg(t::card(dark))
@@ -422,7 +450,32 @@ impl Render for MenuPanel {
 #[cfg(test)]
 mod tests {
     // Named imports: the UI kit's glob export includes its own `test`.
-    use super::{panel_height, spans_both_columns, BASE_HEIGHT, SECTION, TILE_ROW};
+    use super::{spans_both_columns, Layout, BASE_HEIGHT, SECTION, TILE_ROW};
+    use crate::agents::{Plan, Plans};
+    use crate::settings::Settings;
+
+    const NOW: f64 = 100_000.;
+
+    fn plan(provider: &str, age: f64) -> Plan {
+        Plan {
+            provider: provider.into(),
+            plan: None,
+            windows: Vec::new(),
+            credits: None,
+            fetched_at: Some(NOW - age),
+            stale: false,
+            failed: false,
+        }
+    }
+
+    fn settings(tiles: usize, plans: bool, apps: bool) -> Settings {
+        Settings {
+            panel_tiles: crate::settings::PANEL_TILES.iter().take(tiles).map(|s| (*s).into()).collect(),
+            panel_show_plans: plans,
+            panel_show_apps: apps,
+            ..Settings::default()
+        }
+    }
 
     #[test]
     fn only_the_last_tile_of_an_odd_count_takes_the_full_width() {
@@ -438,12 +491,51 @@ mod tests {
 
     #[test]
     fn the_height_follows_tile_rows_and_the_sections_left_out() {
-        let full = panel_height(4, true, true);
+        let fresh = Plans::Loaded(vec![plan("claude", 60.)]);
+        let height = |tiles, plans, apps| Layout::new(&settings(tiles, plans, apps), &fresh, NOW).height();
+        let full = height(4, true, true);
         assert_eq!(full, BASE_HEIGHT);
-        assert_eq!(panel_height(5, true, true), panel_height(6, true, true), "an odd last tile shares its row");
-        assert_eq!(panel_height(0, true, true), panel_height(1, true, true), "at least one row");
-        assert_eq!(panel_height(6, true, true), full + TILE_ROW);
-        assert_eq!(panel_height(4, false, true), full - SECTION);
-        assert_eq!(panel_height(4, false, false), full - 2. * SECTION);
+        assert_eq!(height(5, true, true), height(6, true, true), "an odd last tile shares its row");
+        assert_eq!(height(0, true, true), height(1, true, true), "at least one row");
+        assert_eq!(height(6, true, true), full + TILE_ROW);
+        assert_eq!(height(4, false, true), full - SECTION);
+        assert_eq!(height(4, false, false), full - 2. * SECTION);
+    }
+
+    #[test]
+    fn a_plan_that_is_not_updating_leaves_no_section() {
+        let stale = Plans::Loaded(vec![plan("claude", 7200.)]);
+        let layout = Layout::new(&settings(4, true, true), &stale, NOW);
+        assert!(!layout.plans);
+        assert_eq!(layout.height(), BASE_HEIGHT - SECTION);
+        assert!(Layout::new(&settings(4, true, true), &Plans::Loaded(Vec::new()), NOW).height() < BASE_HEIGHT);
+    }
+
+    #[test]
+    fn the_layout_stays_as_decided_when_plans_change_while_open() {
+        let fresh = Plans::Loaded(vec![plan("claude", 60.), plan("codex", 60.)]);
+        let stale = Plans::Loaded(vec![plan("claude", 7200.)]);
+
+        // Opened with a plan: the section keeps its room and draws nothing
+        // once the plan goes stale; the height never changes.
+        let open_with = Layout::new(&settings(4, true, true), &fresh, NOW);
+        let height = open_with.height();
+        assert_eq!(open_with.plans(&fresh, NOW).len(), 2);
+        assert!(open_with.plans(&stale, NOW + 1.).is_empty());
+        assert_eq!(open_with.height(), height);
+
+        // Opened without one: a plan appearing later is not drawn, so the
+        // footer is never pushed out of the smaller window.
+        let open_without = Layout::new(&settings(4, true, true), &stale, NOW);
+        assert!(open_without.plans(&fresh, NOW + 1.).is_empty());
+        assert_eq!(open_without.height(), BASE_HEIGHT - SECTION);
+
+        // Switched off in Settings: never drawn, whatever the plans do.
+        let off = Layout::new(&settings(4, false, true), &fresh, NOW);
+        assert!(off.plans(&fresh, NOW).is_empty());
+
+        // At most three, as before.
+        let many = Plans::Loaded((0..5).map(|i| plan(&format!("p{i}"), 1.)).collect());
+        assert_eq!(Layout::new(&settings(4, true, true), &many, NOW).plans(&many, NOW).len(), 3);
     }
 }
