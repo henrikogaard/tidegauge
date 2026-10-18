@@ -35,6 +35,8 @@ Surfaces, body text, and controls stay neutral in both appearances. Charts, metr
 | Projects | `#ba4f22` | `#f28d60` |
 | Neural | `#8648b8` | `#c28df2` |
 
+Settings → Colors changes only these metric colors, through one transform in `src/theme.rs` (`Look`): **Tidegauge** keeps the table, **macOS accent** gives every metric the system accent with its lightness moved into a band that reads on the card (HSL 0.58–0.76 in Night, 0.30–0.48 in Day), and **Calm** gives every metric one blue-gray (`#56677b` Day, `#93a4b8` Night). Success, caution and error colors never change. Segments of one ring step down in opacity from the largest, so a single accent still separates them.
+
 The soft metric tone uses 16% alpha. Chart fills use lower opacity. Selected navigation uses a 12% metric tint without an outline; keyboard focus uses a visible metric-colored border.
 
 ## Layout
@@ -49,8 +51,10 @@ The soft metric tone uses 16% alpha. Chart fills use lower opacity. Selected nav
 - **Icons**: an app's own icon when its bundle names one. Otherwise a 20 px soft tile with a line glyph: a window for an app without an icon, a terminal for a background program, a bot for an agent session, a package, beer or hexagon for Homebrew casks, formulae and npm packages. Never a letter tile or macOS's grey placeholder.
 - **List rows**: Apps & packages, Startup and Recent activity share one row: icon, name, one quiet second line, values right-aligned in fixed columns. A row that can be picked gets a hover, a selected tint and keyboard activation, and shows its details and actions underneath while selected. Long lists show 60 rows and a "Show more (N)" button, never pages.
 - **Donuts**: convex ring segments (inner radius 0.70), 92 px chart with a center value and subtitle, legend beside the chart with actual amounts and app icons. App breakdowns show the top four entries and Other. Donut cards pad 16 px with 12 px gaps.
-- **Fonts**: `.AppleSystemUIFont`; captions uppercase 10 px semibold, body 12–14 px, page titles 20 px, hero number 42 px bold (sizes are the Tokens below). Explanatory sentences and honesty disclaimers stay at 12 px.
+- **Fonts**: `.AppleSystemUIFont` with tabular figures (`tnum`, set on the root of the window and the panel), so live numbers keep their width as digits change; captions uppercase 10 px semibold, body 12–14 px, page titles 20 px, hero number 42 px bold (sizes are the Tokens below). Explanatory sentences and honesty disclaimers stay at 12 px.
 - **Spacing**: 4/8/12/16/20/24 grid; 20 px page gutter; lists always expanded.
+
+Settings → Charts draws every area chart and sparkline (Overview cards, detail pages, panel tiles) as a line, a filled area (default) or bars, always with the dashed high-water line. A chart thins its series to about one value per two pixels (three for bars), keeping each stretch's highest sample.
 
 Overview sparklines share the detail-tab area chart and show the same recent samples. CPU/GPU averages and peaks cover the current session; network totals are interface counters since boot. A card without a reading says "Not available on this Mac" in place of the number and keeps only the supporting values that exist. The card grid never leaves a hole: a short last row takes a "Busiest apps" card (top apps by CPU, opens Apps & processes), which otherwise sits beside the memory donuts. Per-app power remains labeled as estimated.
 

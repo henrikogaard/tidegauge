@@ -6,6 +6,7 @@ use crate::controls::is_activation_key;
 use crate::engine::*;
 use crate::locale::text as l;
 use crate::processes::AppGroup;
+use crate::settings::ChartStyle;
 use crate::theme::{self as t, Metric};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -479,12 +480,58 @@ impl ChartScale {
     }
 }
 
-/// Area+line chart drawn with canvas: low-opacity fill under the series and a
-/// full-opacity stroke on top, so a full or flat series stays legible. Empty
-/// series draw nothing; a single point draws a short tick; non-finite samples
-/// become gaps rather than fabricated values.
-pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option<f64>) -> Canvas<()> {
-    let pts = pts.to_vec();
+/// How many of the newest samples a chart draws.
+const CHART_SAMPLES: usize = 240;
+
+/// Fewer values for a narrow chart: at most `max_buckets`, each the highest
+/// finite sample of its stretch (a gap stays a gap), so a spike survives and
+/// the high-water line still touches the curve. Stretches are counted back
+/// from the newest sample, which always ends the last one.
+fn downsample_max(values: &[f64], max_buckets: usize) -> std::borrow::Cow<'_, [f64]> {
+    let max_buckets = max_buckets.max(1);
+    if values.len() <= max_buckets {
+        return std::borrow::Cow::Borrowed(values);
+    }
+    let stride = values.len().div_ceil(max_buckets);
+    let mut out: Vec<f64> = values
+        .rchunks(stride)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .reduce(f64::max)
+                .unwrap_or(f64::NAN)
+        })
+        .collect();
+    out.reverse();
+    std::borrow::Cow::Owned(out)
+}
+
+/// Left and right edge of bar `index` of `count` in a `width`-pixel chart:
+/// equal slots inside a 2 px inset, a 1 px gap between bars once a slot is
+/// wide enough to spare it, never thinner than 1 px.
+fn bar_span(index: usize, count: usize, width: f32) -> (f32, f32) {
+    let slot = (width - 4.) / count.max(1) as f32;
+    let gap = if slot >= 3. { 1. } else { 0. };
+    let left = 2. + index as f32 * slot;
+    (left, left + (slot - gap).max(1.))
+}
+
+/// Chart of one series in the chosen style (Settings → Charts): a stroked
+/// line, the line over a low-opacity fill, or one bar per bucket. Every style
+/// keeps the dashed high-water line. Empty series draw nothing; a single
+/// point draws a short tick (a single bar in bars style); non-finite samples
+/// become gaps rather than fabricated values. The series is thinned to the
+/// chart's own width when it paints.
+pub(crate) fn area_chart(
+    pts: &[f64],
+    height: f32,
+    color: Hsla,
+    max_hint: Option<f64>,
+) -> Canvas<()> {
+    let style = t::chart_style();
+    let pts = pts[pts.len().saturating_sub(CHART_SAMPLES)..].to_vec();
     canvas(
         move |_, _, _| (),
         move |bounds, _, window, _| {
@@ -495,13 +542,37 @@ pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option
             if pts.is_empty() || w < 4.0 {
                 return;
             }
-            let n = pts.len().min(240);
-            let tail = &pts[pts.len() - n..];
-            let data_max = tail.iter().copied().filter(|v| v.is_finite()).fold(0.0f64, f64::max);
+            // About one value per two pixels (one per three for bars).
+            let per = if style == ChartStyle::Bars { 3. } else { 2. };
+            let tail = downsample_max(&pts, (w / per) as usize);
+            let n = tail.len();
+            let data_max = tail
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .fold(0.0f64, f64::max);
             let scale = ChartScale::new(data_max, max_hint);
             let y_of = |v: f64| -> f32 { oy + scale.y(v, h) };
 
-            if n == 1 {
+            if style == ChartStyle::Bars {
+                let floor = oy + h - 2.0;
+                for (i, value) in tail.iter().enumerate().filter(|(_, v)| v.is_finite()) {
+                    let (left, right) = bar_span(i, n, w);
+                    let top = y_of(*value).min(floor - 1.0);
+                    let mut bar = Path::new(point(px(ox + left), px(floor)));
+                    bar.line_to(point(px(ox + left), px(top)));
+                    bar.line_to(point(px(ox + right), px(top)));
+                    bar.line_to(point(px(ox + right), px(floor)));
+                    bar.line_to(point(px(ox + left), px(floor)));
+                    // The newest bar is the one at full strength.
+                    let fill = if i + 1 == n {
+                        color
+                    } else {
+                        color.opacity(0.7)
+                    };
+                    window.paint_path(bar, fill);
+                }
+            } else if n == 1 {
                 // A lone sample has no interval to span; draw it as a tick.
                 if tail[0].is_finite() {
                     let yc = y_of(tail[0]);
@@ -517,41 +588,45 @@ pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option
 
             let px_per = (w - 4.0) / (n - 1).max(1) as f32;
 
-            // Fill each interval with a convex trapezoid. A single concave
-            // area path would be triangulated across the chart by GPUI.
-            for i in 1..n {
-                if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
-                    continue;
+            if style != ChartStyle::Bars {
+                // Fill each interval with a convex trapezoid. A single concave
+                // area path would be triangulated across the chart by GPUI.
+                if style == ChartStyle::Filled {
+                    for i in 1..n {
+                        if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
+                            continue;
+                        }
+                        let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
+                        let x1 = ox + 2.0 + i as f32 * px_per;
+                        let mut area = Path::new(point(px(x0), px(oy + h - 2.0)));
+                        area.line_to(point(px(x0), px(y_of(tail[i - 1]))));
+                        area.line_to(point(px(x1), px(y_of(tail[i]))));
+                        area.line_to(point(px(x1), px(oy + h - 2.0)));
+                        area.line_to(point(px(x0), px(oy + h - 2.0)));
+                        window.paint_path(area, color.opacity(0.18));
+                    }
                 }
-                let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
-                let x1 = ox + 2.0 + i as f32 * px_per;
-                let mut area = Path::new(point(px(x0), px(oy + h - 2.0)));
-                area.line_to(point(px(x0), px(y_of(tail[i - 1]))));
-                area.line_to(point(px(x1), px(y_of(tail[i]))));
-                area.line_to(point(px(x1), px(oy + h - 2.0)));
-                area.line_to(point(px(x0), px(oy + h - 2.0)));
-                window.paint_path(area, color.opacity(0.18));
-            }
 
-            // stroke as thin quads (each segment its own sub-path)
-            let mut stroke = Path::new(point(px(ox + 2.0), px(y_of(tail[0]))));
-            for i in 1..n {
-                if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
-                    continue;
+                // stroke as thin quads (each segment its own sub-path)
+                let mut stroke = Path::new(point(px(ox + 2.0), px(y_of(tail[0]))));
+                for i in 1..n {
+                    if !(tail[i - 1].is_finite() && tail[i].is_finite()) {
+                        continue;
+                    }
+                    let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
+                    let y0 = y_of(tail[i - 1]);
+                    let x1 = ox + 2.0 + i as f32 * px_per;
+                    let y1 = y_of(tail[i]);
+                    // perpendicular-ish: just a 1.6px box around the segment
+                    let thick = 0.8f32;
+                    stroke.move_to(point(px(x0), px(y0 - thick)));
+                    stroke.line_to(point(px(x1), px(y1 - thick)));
+                    stroke.line_to(point(px(x1), px(y1 + thick)));
+                    stroke.line_to(point(px(x0), px(y0 + thick)));
+                    stroke.line_to(point(px(x0), px(y0 - thick)));
                 }
-                let x0 = ox + 2.0 + (i - 1) as f32 * px_per;
-                let y0 = y_of(tail[i - 1]);
-                let x1 = ox + 2.0 + i as f32 * px_per;
-                let y1 = y_of(tail[i]);
-                // perpendicular-ish: just a 1.6px box around the segment
-                let thick = 0.8f32;
-                stroke.move_to(point(px(x0), px(y0 - thick)));
-                stroke.line_to(point(px(x1), px(y1 - thick)));
-                stroke.line_to(point(px(x1), px(y1 + thick)));
-                stroke.line_to(point(px(x0), px(y0 + thick)));
-                stroke.line_to(point(px(x0), px(y0 - thick)));
+                window.paint_path(stroke, color);
             }
-            window.paint_path(stroke, color);
 
             // High water: the highest sample in view, as a dashed line.
             if data_max > 0. {
@@ -571,14 +646,16 @@ pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option
                 window.paint_path(dash, color.opacity(0.6));
             }
             // Now: a dot on the newest sample.
-            if let Some(i) = tail.iter().rposition(|v| v.is_finite()) {
-                let (cx, cy, r) = (ox + 2.0 + i as f32 * px_per, y_of(tail[i]), 3.0f32);
-                let mut dot = Path::new(point(px(cx + r), px(cy)));
-                for k in 1..=8 {
-                    let a = k as f32 * std::f32::consts::TAU / 8.0;
-                    dot.line_to(point(px(cx + r * a.cos()), px(cy + r * a.sin())));
+            if style != ChartStyle::Bars {
+                if let Some(i) = tail.iter().rposition(|v| v.is_finite()) {
+                    let (cx, cy, r) = (ox + 2.0 + i as f32 * px_per, y_of(tail[i]), 3.0f32);
+                    let mut dot = Path::new(point(px(cx + r), px(cy)));
+                    for k in 1..=8 {
+                        let a = k as f32 * std::f32::consts::TAU / 8.0;
+                        dot.line_to(point(px(cx + r * a.cos()), px(cy + r * a.sin())));
+                    }
+                    window.paint_path(dot, color);
                 }
-                window.paint_path(dot, color);
             }
         },
     )
@@ -589,7 +666,7 @@ pub(crate) fn area_chart(pts: &[f64], height: f32, color: Hsla, max_hint: Option
 /// How far back a chart of `samples` reaches, as its axis's left label.
 /// Samples are about two seconds apart; the chart shows at most 240.
 fn chart_span(samples: usize) -> String {
-    let seconds = samples.min(240) * 2;
+    let seconds = samples.min(CHART_SAMPLES) * 2;
     if seconds < 120 {
         format!("−{seconds} s")
     } else {
@@ -1459,7 +1536,10 @@ fn info_card(notes: &[&'static str], dark: bool, this: Entity<TideGaugeView>) ->
 
 impl Render for TideGaugeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.dark = crate::settings::Settings::load().dark.unwrap_or(matches!(
+        let preferences = crate::settings::Settings::load();
+        // Colours and chart style first: everything below draws with them.
+        t::sync(&preferences);
+        self.dark = preferences.dark.unwrap_or(matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
@@ -1542,6 +1622,7 @@ impl Render for TideGaugeView {
             .bg(t::bg(dark))
             .text_color(t::ink(dark))
             .font_family(".AppleSystemUIFont")
+            .font_features(t::tabular())
             .track_focus(&self.focus)
             .child(sidebar(s, here, dark, this.clone()))
             .child(
@@ -2272,7 +2353,7 @@ fn top_apps_donut(s: &Snapshot, dark: bool) -> Div {
     for (i, app) in top.iter().take(4).enumerate() {
         slices.push(BreakdownEntry {
             name: app.name.clone(), value: app.mem_bytes as f64,
-            color: color.opacity(1.0 - i as f32 * 0.16), app: Some((*app).clone()),
+            color: t::shade(color, i), app: Some((*app).clone()),
         });
     }
     let other: f64 = top.iter().skip(4).map(|a| a.mem_bytes as f64).sum();
@@ -2409,7 +2490,7 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
     for (i, app) in top.iter().take(4).enumerate() {
         slices.push(BreakdownEntry {
             name: app.name.clone(), value: app.power_w,
-            color: color.opacity(1.0 - i as f32 * 0.16), app: Some((*app).clone()),
+            color: t::shade(color, i), app: Some((*app).clone()),
         });
     }
     let other: f64 = top.iter().skip(4).map(|a| a.power_w).sum();
@@ -4048,7 +4129,7 @@ mod tests {
     }
 
     use super::{
-        ChartScale, MAX_DISPLAYED_TEMPERATURE_CHANNELS, bound_temperature_display,
+        ChartScale, MAX_DISPLAYED_TEMPERATURE_CHANNELS, bar_span, bound_temperature_display, downsample_max,
         temperature_display_caption, temperature_summary,
     };
     use crate::sensors::Reading;
@@ -4232,5 +4313,65 @@ mod tests {
         assert!(scale.max.is_finite() && scale.y(0., 92.).is_finite());
         let scale = ChartScale::new(f64::INFINITY, None);
         assert!(scale.max.is_finite());
+    }
+
+    #[test]
+    fn downsample_keeps_short_series_and_never_exceeds_the_budget() {
+        let short = [1., 2., 3.];
+        assert!(matches!(
+            downsample_max(&short, 5),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(&*downsample_max(&short, 3), &short);
+        for len in [4, 7, 100, 239, 240] {
+            let values: Vec<f64> = (0..len).map(|i| i as f64).collect();
+            for budget in [1, 2, 3, 10, 60, 120] {
+                let out = downsample_max(&values, budget);
+                assert!(
+                    out.len() <= budget.max(1),
+                    "{len} values into {budget}: {}",
+                    out.len()
+                );
+                assert!(!out.is_empty());
+            }
+        }
+        // A zero budget still yields one bucket rather than nothing.
+        assert_eq!(downsample_max(&[1., 5., 2.], 0).len(), 1);
+    }
+
+    #[test]
+    fn downsample_keeps_peaks_the_newest_sample_and_gaps() {
+        let values = [1., 9., 2., 3., 4., 5., 6., 7.];
+        let out = downsample_max(&values, 4);
+        // Counted back from the newest sample, two per bucket.
+        assert_eq!(&*out, &[9., 3., 5., 7.]);
+        assert_eq!(out.last(), values.last());
+        assert_eq!(out.iter().copied().fold(0., f64::max), 9.);
+        // A stretch with no finite sample stays a gap.
+        let gappy = [f64::NAN, f64::NAN, 4., 5.];
+        let out = downsample_max(&gappy, 2);
+        assert!(out[0].is_nan());
+        assert_eq!(out[1], 5.);
+        // Odd lengths put the short bucket at the old end.
+        assert_eq!(&*downsample_max(&[8., 1., 2., 3., 4.], 3), &[8., 2., 4.]);
+    }
+
+    #[test]
+    fn bars_fill_the_width_without_overlap() {
+        for (count, width) in [(1, 120.), (10, 120.), (40, 131.5), (60, 120.), (80, 160.)] {
+            let spans: Vec<(f32, f32)> = (0..count).map(|i| bar_span(i, count, width)).collect();
+            assert!(spans[0].0 >= 2. - 1e-3);
+            for pair in spans.windows(2) {
+                assert!(pair[0].1 <= pair[1].0 + 1e-3, "{pair:?} overlap");
+            }
+            for (left, right) in &spans {
+                assert!(right - left >= 1. - 1e-3);
+            }
+            // Bars of slots wide enough leave a 1 px gap and stay inside.
+            if (width - 4.) / count as f32 >= 3. {
+                assert!(spans[count - 1].1 <= width - 2. + 1e-3);
+                assert!(spans[0].1 + 1. <= spans.get(1).map_or(f32::MAX, |s| s.0) + 1e-3);
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use crate::settings::{ChartStyle, ColorMode, Settings};
 use gpui_kit::*;
 
 #[derive(Clone, Copy)]
@@ -133,9 +134,14 @@ pub enum Metric {
 }
 
 impl Metric {
-    /// Metric identity stays colorful while the surrounding chrome stays neutral.
+    /// Metric identity stays colorful while the surrounding chrome stays
+    /// neutral, unless Settings → Colors says otherwise.
     pub fn accent(self, dark: bool) -> Hsla {
-        hex(match (self, dark) {
+        hex(look().metric(self, dark))
+    }
+    /// The Tidegauge palette's colour for this metric, before any transform.
+    pub fn base(self, dark: bool) -> u32 {
+        match (self, dark) {
             (Metric::Cpu, true) => 0x5a9cf0,
             (Metric::Memory, true) => 0xa397f4,
             (Metric::Gpu, true) => 0xf18db5,
@@ -154,13 +160,152 @@ impl Metric {
             (Metric::Sound, false) => 0xab338c,
             (Metric::Bluetooth, false) => 0x087d99,
             (Metric::Projects, false) => 0xba4f22,
-        })
+        }
     }
     /// Softer version for chart fills.
     pub fn soft(self, dark: bool) -> Hsla {
         let c = self.accent(dark);
         c.opacity(0.16)
     }
+}
+
+// ---------- Colors and chart style (Settings → Colors, Charts) ----------
+
+/// The appearance choices that change how metrics are drawn: the one place
+/// where the base palette and the settings meet. `Metric::accent` asks it for
+/// every metric colour; the warning, caution and success colours below never
+/// do, so they read the same in every mode.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Look {
+    pub colors: ColorMode,
+    pub charts: ChartStyle,
+    /// The macOS accent colour as 0xRRGGBB, as last read.
+    pub system_accent: u32,
+}
+
+/// The accent a Mac has until it is read (macOS blue).
+const FALLBACK_ACCENT: u32 = 0x007aff;
+
+impl Look {
+    pub const DEFAULT: Look = Look {
+        colors: ColorMode::Tidegauge,
+        charts: ChartStyle::Filled,
+        system_accent: FALLBACK_ACCENT,
+    };
+
+    /// The colour of `metric`: its own, the macOS accent, or one calm tone.
+    pub fn metric(&self, metric: Metric, dark: bool) -> u32 {
+        match self.colors {
+            ColorMode::Tidegauge => metric.base(dark),
+            ColorMode::Macos => legible(self.system_accent, dark),
+            ColorMode::Calm => calm(dark),
+        }
+    }
+}
+
+static LOOK: std::sync::Mutex<Look> = std::sync::Mutex::new(Look::DEFAULT);
+
+fn look() -> Look {
+    *LOOK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How the chart builders draw a series.
+pub fn chart_style() -> ChartStyle {
+    look().charts
+}
+
+/// Adopt the colour and chart settings. Every window's render calls this
+/// before it builds anything, so one change reaches the dashboard and the
+/// menu-bar panel alike. The macOS accent is read only while it is in use.
+pub fn sync(settings: &Settings) {
+    let system = (settings.colors == ColorMode::Macos)
+        .then(crate::appearance::system_accent)
+        .flatten();
+    let mut look = LOOK.lock().unwrap_or_else(|e| e.into_inner());
+    look.colors = settings.colors;
+    look.charts = settings.charts;
+    if let Some(system) = system {
+        look.system_accent = system;
+    }
+}
+
+/// Calm: one muted blue-gray for every metric, readable on both card fills.
+fn calm(dark: bool) -> u32 {
+    if dark {
+        0x93a4b8
+    } else {
+        0x56677b
+    }
+}
+
+/// Lightness band (HSL) an accent keeps on a card: lighter on dark cards,
+/// darker on light ones, so a pale or a dark system accent stays legible.
+fn lightness_band(dark: bool) -> (f32, f32) {
+    if dark {
+        (0.58, 0.76)
+    } else {
+        (0.30, 0.48)
+    }
+}
+
+/// `rgb` with its lightness moved into the card's band; hue and saturation
+/// stay, so the colour is still recognisably the user's accent.
+fn legible(rgb: u32, dark: bool) -> u32 {
+    let (h, s, l) = rgb_to_hsl(rgb);
+    let (low, high) = lightness_band(dark);
+    hsl_to_rgb(h, s, l.clamp(low, high))
+}
+
+fn rgb_to_hsl(rgb: u32) -> (f32, f32, f32) {
+    let channel = |shift: u32| ((rgb >> shift) & 0xff) as f32 / 255.;
+    let (r, g, b) = (channel(16), channel(8), channel(0));
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.;
+    let d = max - min;
+    if d < 1e-6 {
+        return (0., 0., l);
+    }
+    let s = d / (1. - (2. * l - 1.).abs());
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.)
+    } else if max == g {
+        (b - r) / d + 2.
+    } else {
+        (r - g) / d + 4.
+    };
+    (h * 60., s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> u32 {
+    let c = (1. - (2. * l - 1.).abs()) * s;
+    let x = c * (1. - ((h / 60.).rem_euclid(2.) - 1.).abs());
+    let (r, g, b) = match (h.rem_euclid(360.) / 60.) as u32 {
+        0 => (c, x, 0.),
+        1 => (x, c, 0.),
+        2 => (0., c, x),
+        3 => (0., x, c),
+        4 => (x, 0., c),
+        _ => (c, 0., x),
+    };
+    let m = l - c / 2.;
+    let byte = |v: f32| ((v + m).clamp(0., 1.) * 255.).round() as u32;
+    byte(r) << 16 | byte(g) << 8 | byte(b)
+}
+
+/// Opacity of the `step`-th segment of a breakdown ring (0 is the largest):
+/// one accent in steps, so a single-accent mode still tells segments apart.
+pub fn shade_opacity(step: usize) -> f32 {
+    (1. - step as f32 * 0.16).max(0.35)
+}
+
+pub fn shade(color: Hsla, step: usize) -> Hsla {
+    color.opacity(shade_opacity(step))
+}
+
+/// Digits of equal width, so a live number does not shift as it changes.
+/// Set on the root of each window; the text below inherits it.
+pub fn tabular() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
 pub fn warn(dark: bool) -> Hsla {
@@ -293,5 +438,141 @@ mod design_tokens_tests {
         for space in [SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, SECTION_GAP, CONTROL_H, ROW_H] {
             assert_eq!(f32::from(space) % 4., 0.);
         }
+    }
+}
+
+#[cfg(test)]
+mod look_tests {
+    // Explicit imports for the same reason as above: no glob, so `#[test]`
+    // stays the standard attribute.
+    use super::{
+        caution, hex, hsl_to_rgb, legible, lightness_band, ok, rgb_to_hsl, shade, shade_opacity,
+        tabular, warn, ChartStyle, ColorMode, Look, Metric,
+    };
+
+    const METRICS: [Metric; 10] = [
+        Metric::Cpu,
+        Metric::Memory,
+        Metric::Gpu,
+        Metric::Disk,
+        Metric::Network,
+        Metric::Battery,
+        Metric::Sound,
+        Metric::Bluetooth,
+        Metric::Projects,
+        Metric::Power,
+    ];
+
+    fn look(colors: ColorMode, system_accent: u32) -> Look {
+        Look {
+            colors,
+            charts: ChartStyle::Filled,
+            system_accent,
+        }
+    }
+
+    #[test]
+    fn tidegauge_mode_keeps_every_metric_colour() {
+        let look = look(ColorMode::Tidegauge, 0xff0000);
+        for dark in [false, true] {
+            for metric in METRICS {
+                assert_eq!(look.metric(metric, dark), metric.base(dark));
+            }
+        }
+        assert_eq!(Look::DEFAULT.colors, ColorMode::Tidegauge);
+        assert_eq!(Look::DEFAULT.charts, ChartStyle::Filled);
+    }
+
+    #[test]
+    fn macos_and_calm_give_every_metric_one_colour() {
+        for mode in [ColorMode::Macos, ColorMode::Calm] {
+            let look = look(mode, 0x007aff);
+            for dark in [false, true] {
+                let first = look.metric(Metric::Cpu, dark);
+                assert!(
+                    METRICS.iter().all(|m| look.metric(*m, dark) == first),
+                    "{mode:?} dark={dark}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn macos_mode_follows_the_accent_and_stays_legible_on_cards() {
+        // Pale, dark, saturated and grey accents, as System Settings offers:
+        // each lands in the lightness band of the card.
+        for accent in [
+            0x007aff, 0xff9500, 0xffd60a, 0x8e8e93, 0x1d1d1f, 0xf5f5f7, 0xa550a7, 0xf74f9e,
+        ] {
+            for dark in [false, true] {
+                let colour = look(ColorMode::Macos, accent).metric(Metric::Cpu, dark);
+                let (low, high) = lightness_band(dark);
+                let l = rgb_to_hsl(colour).2;
+                assert!(
+                    l >= low - 0.01 && l <= high + 0.01,
+                    "{accent:06x} dark={dark} -> {colour:06x} l={l}"
+                );
+            }
+        }
+        assert_ne!(
+            look(ColorMode::Macos, 0x007aff).metric(Metric::Cpu, false),
+            look(ColorMode::Macos, 0xff9500).metric(Metric::Cpu, false),
+            "a different accent gives a different colour"
+        );
+    }
+
+    #[test]
+    fn legible_keeps_the_hue_and_leaves_colours_inside_the_band_alone() {
+        let (hue, _, _) = rgb_to_hsl(0x007aff);
+        let (moved, _, _) = rgb_to_hsl(legible(0x007aff, true));
+        assert!((hue - moved).abs() < 2., "{hue} vs {moved}");
+        assert_eq!(legible(0x246fc7, false), 0x246fc7);
+    }
+
+    #[test]
+    fn hsl_round_trips() {
+        for rgb in [0x000000, 0xffffff, 0x246fc7, 0xe8ad39, 0x93a4b8, 0x6550bb] {
+            let (h, s, l) = rgb_to_hsl(rgb);
+            let back = hsl_to_rgb(h, s, l);
+            for shift in [16, 8, 0] {
+                let (a, b) = ((rgb >> shift & 0xff) as i32, (back >> shift & 0xff) as i32);
+                assert!((a - b).abs() <= 1, "{rgb:06x} -> {back:06x}");
+            }
+        }
+    }
+
+    #[test]
+    fn warnings_keep_their_colours_and_stay_distinct_from_every_mode() {
+        // warn, caution and ok are not metric colours and never pass through
+        // the transform; a calm or accent-coloured chart must not be
+        // mistakable for them.
+        for dark in [false, true] {
+            assert_eq!(warn(dark), hex(if dark { 0xff453a } else { 0xd70015 }));
+            assert_eq!(caution(dark), hex(if dark { 0xe8ad39 } else { 0x9b6900 }));
+            assert_eq!(ok(dark), hex(if dark { 0x30d158 } else { 0x248a3d }));
+            for mode in [ColorMode::Macos, ColorMode::Calm] {
+                let colour = hex(look(mode, 0x007aff).metric(Metric::Cpu, dark));
+                assert_ne!(colour, warn(dark));
+                assert_ne!(colour, caution(dark));
+            }
+        }
+    }
+
+    #[test]
+    fn shade_steps_fade_but_stay_visible() {
+        assert_eq!(shade_opacity(0), 1.);
+        let steps: Vec<f32> = (0..8).map(shade_opacity).collect();
+        assert!(steps.windows(2).all(|w| w[0] >= w[1]));
+        assert!(steps.iter().all(|o| *o >= 0.35));
+        assert!(
+            steps[..5].windows(2).all(|w| w[0] > w[1]),
+            "the first five steps differ"
+        );
+        assert_eq!(shade(hex(0x246fc7), 0), hex(0x246fc7));
+    }
+
+    #[test]
+    fn tabular_figures_ask_for_tnum() {
+        assert_eq!(tabular().tag_value_list(), [("tnum".to_string(), 1)]);
     }
 }

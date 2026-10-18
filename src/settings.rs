@@ -11,10 +11,36 @@ pub struct MenuItem {
     pub style: String,  // icon|value|graph|both
 }
 
+/// Where metric colours come from (Settings → Colors). The transform lives in
+/// `theme::Look`; warning and error colours ignore it.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// One colour per metric.
+    #[default]
+    Tidegauge,
+    /// Every metric in the macOS accent colour.
+    Macos,
+    /// Every metric in one muted blue-gray.
+    Calm,
+}
+
+/// How sparklines and area charts draw a series (Settings → Charts).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChartStyle {
+    Line,
+    #[default]
+    Filled,
+    Bars,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Settings {
     pub dark: Option<bool>, // None = follow system
+    pub colors: ColorMode,
+    pub charts: ChartStyle,
     pub show_app_icon: bool,
     pub menu_items: Vec<MenuItem>,
     pub alert_cpu_pct: f64,
@@ -58,6 +84,8 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             dark: None,
+            colors: ColorMode::default(),
+            charts: ChartStyle::default(),
             show_app_icon: true,
             menu_items: Vec::new(),
             alert_cpu_pct: 90.0,
@@ -350,6 +378,41 @@ mod tests {
             assert_eq!(loaded.menu_items[0].metric, "cpu");
             assert_eq!(loaded.menu_items[0].style, "both");
         }
+    }
+
+    #[test]
+    fn old_settings_files_keep_todays_colors_and_charts() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"dark":false,"alert_cpu_pct":73}"#).unwrap();
+        assert_eq!(settings.colors, ColorMode::Tidegauge);
+        assert_eq!(settings.charts, ChartStyle::Filled);
+        let defaults = Settings::default();
+        assert_eq!(
+            (defaults.colors, defaults.charts),
+            (ColorMode::Tidegauge, ChartStyle::Filled)
+        );
+    }
+
+    #[test]
+    fn colors_and_charts_round_trip_by_name() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"colors":"macos","charts":"bars"}"#).unwrap();
+        assert_eq!(
+            (settings.colors, settings.charts),
+            (ColorMode::Macos, ChartStyle::Bars)
+        );
+        let json = serde_json::to_string(&Settings {
+            colors: ColorMode::Calm,
+            charts: ChartStyle::Line,
+            ..Settings::default()
+        })
+        .unwrap();
+        assert!(json.contains(r#""colors":"calm""#) && json.contains(r#""charts":"line""#));
+        let loaded: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            (loaded.colors, loaded.charts),
+            (ColorMode::Calm, ChartStyle::Line)
+        );
     }
 
     #[test]

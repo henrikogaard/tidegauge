@@ -6,6 +6,22 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings → General → Colors: keep Tidegauge's colour for each metric, use
+  your macOS accent colour for all of them, or a single calm blue-gray.
+  Warning and error colours stay orange and red in every choice, and it
+  applies to the dashboard and the menu-bar panel. Settings → General →
+  Charts draws sparklines and area charts as a line, a filled area (the
+  default) or bars (in review).
+
+### Changed
+
+- Live numbers use digits of equal width, so they no longer shift sideways as
+  they change (in review).
+- Charts draw about one value per two pixels instead of up to 240, which keeps
+  the shape and the high-water line while painting less (in review).
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added

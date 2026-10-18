@@ -5,7 +5,7 @@
 use crate::controls::{button_indexed, segment, segment_group, switch};
 use crate::locale::text as l;
 use crate::settings::{
-    localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
+    localized_metric_label, localized_style_label, ChartStyle, ColorMode, Settings, MENU_METRICS, MENU_STYLES,
 };
 use crate::theme as t;
 use crate::ui::{caption, card, update_preference, Tab, TideGaugeView};
@@ -275,6 +275,46 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
                 )
             }),
     );
+    let colors = segment_group("color-options", l("Colors", "Farger"), dark).children(
+        [
+            (ColorMode::Tidegauge, "Tidegauge"),
+            (ColorMode::Macos, l("macOS accent", "macOS-aksentfarge")),
+            (ColorMode::Calm, l("Calm", "Rolig")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (value, label))| {
+            choice(
+                format!("colors-{i}"),
+                label,
+                format!("{}: {label}", l("Colors", "Farger")),
+                settings.colors == value,
+                dark,
+                this.clone(),
+                move |settings| settings.colors = value,
+            )
+        }),
+    );
+    let charts = segment_group("chart-options", l("Charts", "Diagrammer"), dark).children(
+        [
+            (ChartStyle::Line, l("Line", "Linje")),
+            (ChartStyle::Filled, l("Filled", "Fylt")),
+            (ChartStyle::Bars, l("Bars", "Søyler")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (value, label))| {
+            choice(
+                format!("charts-{i}"),
+                label,
+                format!("{}: {label}", l("Charts", "Diagrammer")),
+                settings.charts == value,
+                dark,
+                this.clone(),
+                move |settings| settings.charts = value,
+            )
+        }),
+    );
     let mut language = segment_group("language-options", l("Language", "Språk"), dark);
     for (i, (value, label)) in [(None, l("System", "System")), (Some("en"), l("English", "English")), (Some("nb"), l("Norsk", "Norsk"))]
         .into_iter()
@@ -323,6 +363,8 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         l("General", "Generelt"),
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
+            row(l("Colors", "Farger"), None, colors, false, dark),
+            row(l("Charts", "Diagrammer"), None, charts, false, dark),
             row(l("Language", "Språk"), None, language, false, dark),
             row(
                 l("Open the panel", "Åpne panelet"),
