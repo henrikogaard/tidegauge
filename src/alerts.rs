@@ -531,6 +531,9 @@ impl LowBattery {
 struct ChargedBattery {
     sent: bool,
     last_sent: Option<f64>,
+    /// A battery has been read once; a battery already full then is no
+    /// news, so a restart at full charge stays quiet.
+    seen: bool,
 }
 
 impl ChargedBattery {
@@ -543,6 +546,10 @@ impl ChargedBattery {
         // held at 80 % counts as full.
         let full =
             battery.ac_power && !battery.on_battery && (battery.is_charged || percent >= 100.);
+        if !self.seen {
+            self.seen = true;
+            self.sent = full;
+        }
         if !enabled {
             // Switching it on while already full is not a new charge.
             self.sent = full;
@@ -1065,6 +1072,34 @@ mod tests {
                 .check(&with_battery(1020., charged(100., true)), &settings)
                 .len()
                 == 1
+        );
+    }
+
+    #[test]
+    fn battery_charged_stays_quiet_when_it_starts_full() {
+        let settings = Settings {
+            alert_battery_full_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(
+            engine
+                .check(&with_battery(0., charged(100., true)), &settings)
+                .is_empty(),
+            "already full at launch"
+        );
+        assert!(engine
+            .check(&with_battery(10., charged(100., true)), &settings)
+            .is_empty());
+        // Unplugged and charged again: that is a real charge.
+        assert!(engine
+            .check(&with_battery(20., battery(90., true)), &settings)
+            .is_empty());
+        assert_eq!(
+            engine
+                .check(&with_battery(30., charged(100., true)), &settings)
+                .len(),
+            1
         );
     }
 
