@@ -438,10 +438,11 @@ pub fn slept(wall: Duration, monotonic: Duration) -> bool {
     wall.saturating_sub(monotonic) > Duration::from_secs(20)
 }
 
-/// Where a fan's speed sits between its lowest and highest, 0–100 %.
-pub fn fan_share(rpm: f64, min: Option<f64>, max: Option<f64>) -> Option<f64> {
-    let (min, max) = (min.unwrap_or(0.), max?);
-    (max > min && rpm.is_finite()).then(|| ((rpm - min) / (max - min) * 100.).clamp(0., 100.))
+/// A fan's speed as a share of its top speed, 0–100 %, the way Stats and
+/// iStat Menus show it: a fan turning at its lowest speed is not at 0 %.
+pub fn fan_share(rpm: f64, max: Option<f64>) -> Option<f64> {
+    let max = max?;
+    (max > 0. && rpm.is_finite()).then(|| (rpm / max * 100.).clamp(0., 100.))
 }
 
 fn accept_temperature_key(keys: &mut Vec<u32>, key: u32) -> bool {
@@ -571,12 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn fan_share_places_speed_between_its_limits() {
-        assert_eq!(fan_share(4950., Some(2300.), Some(6550.)), Some(62.35294117647059));
-        assert_eq!(fan_share(1000., Some(2300.), Some(6550.)), Some(0.));
-        assert_eq!(fan_share(4000., None, Some(8000.)), Some(50.));
-        assert_eq!(fan_share(4000., Some(2000.), None), None, "no top, no share");
-        assert_eq!(fan_share(4000., Some(5000.), Some(5000.)), None);
+    fn fan_share_is_speed_out_of_top_speed() {
+        // Mac17,7 under load: Stats showed 29 % and 32 % for these.
+        assert!((fan_share(2315., Some(7826.)).unwrap() - 29.58).abs() < 0.01);
+        assert!((fan_share(2500., Some(7826.)).unwrap() - 31.95).abs() < 0.01);
+        assert_eq!(fan_share(0., Some(7826.)), Some(0.), "a stopped fan is 0 %");
+        assert_eq!(fan_share(4000., None), None, "no top, no share");
+        assert_eq!(fan_share(4000., Some(0.)), None);
     }
 
     #[test]

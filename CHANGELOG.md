@@ -6,6 +6,11 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Changed
+
+- The fan bar shows speed as a share of the fan's top speed, as Stats and
+  iStat Menus do, so a fan at its lowest speed no longer reads 0%.
+
 ## [0.3.7](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.7) — 2026-10-17
 
 ### Removed

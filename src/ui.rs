@@ -2541,7 +2541,7 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
         })
         .children(sample.fans.iter().enumerate().map(|(i, r)| {
             let (min, max) = sample.fan_limits.get(i).copied().unwrap_or((None, None));
-            let share = r.value.filter(|_| fresh).and_then(|rpm| crate::sensors::fan_share(rpm, min, max));
+            let share = r.value.filter(|_| fresh).and_then(|rpm| crate::sensors::fan_share(rpm, max));
             div()
                 .flex()
                 .flex_col()
@@ -2559,11 +2559,11 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                     )
                     .child(
                         div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(format!(
-                            "{} · {} {:.0}–{:.0} RPM",
+                            "{} {} · {} {:.0} RPM",
                             fmt_pct(share),
-                            l("range", "område"),
-                            min.unwrap_or(0.),
-                            max.unwrap_or(0.)
+                            l("of top speed", "av toppfart"),
+                            l("lowest", "lavest"),
+                            min.unwrap_or(0.)
                         )),
                     )
                 })
