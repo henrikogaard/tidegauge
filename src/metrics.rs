@@ -92,6 +92,26 @@ pub struct CpuTicks {
 }
 
 pub fn cpu_ticks() -> Option<CpuTicks> {
+    let cores = core_ticks()?;
+    let mut t = CpuTicks::default();
+    for c in cores {
+        t.user += c.user;
+        t.system += c.system;
+        t.idle += c.idle;
+        t.nice += c.nice;
+    }
+    Some(t)
+}
+
+/// Busy share of one core between two tick readings, 0–100 %.
+pub fn busy_pct(a: CpuTicks, b: CpuTicks) -> f64 {
+    let busy = (b.user.saturating_sub(a.user) + b.nice.saturating_sub(a.nice) + b.system.saturating_sub(a.system)) as f64;
+    let idle = b.idle.saturating_sub(a.idle) as f64;
+    if busy + idle <= 0. { 0. } else { (busy / (busy + idle) * 100.).clamp(0., 100.) }
+}
+
+/// Each logical CPU's ticks, in the kernel's order.
+pub fn core_ticks() -> Option<Vec<CpuTicks>> {
     unsafe {
         let host = mach_host_self();
         let mut count: natural_t = 0;
@@ -107,21 +127,21 @@ pub fn cpu_ticks() -> Option<CpuTicks> {
             return None;
         }
         let ticks = std::slice::from_raw_parts(info as *const u32, info_count as usize);
-        let mut t = CpuTicks::default();
-        for c in ticks.chunks(4) {
-            if c.len() == 4 {
-                t.user += c[CPU_STATE_USER] as u64;
-                t.system += c[CPU_STATE_SYSTEM] as u64;
-                t.idle += c[CPU_STATE_IDLE] as u64;
-                t.nice += c[CPU_STATE_NICE] as u64;
-            }
-        }
+        let cores = ticks
+            .chunks_exact(4)
+            .map(|c| CpuTicks {
+                user: c[CPU_STATE_USER] as u64,
+                system: c[CPU_STATE_SYSTEM] as u64,
+                idle: c[CPU_STATE_IDLE] as u64,
+                nice: c[CPU_STATE_NICE] as u64,
+            })
+            .collect();
         vm_deallocate(
             mach_task_self(),
             info as usize,
             info_count as usize * size_of::<c_int>(),
         );
-        Some(t)
+        Some(cores)
     }
 }
 
@@ -548,6 +568,52 @@ pub struct ChipInfo {
     pub cores: usize,
     pub p_cores: usize,
     pub e_cores: usize,
+    /// Core groups in the kernel's CPU order, with macOS's own names
+    /// ("Super", "Performance", "Efficiency").
+    pub groups: Vec<CoreGroup>,
+    /// The GPU's core count, where the GPU reports it.
+    pub gpu_cores: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CoreGroup {
+    pub name: String,
+    /// The device tree's cluster type ("P", "M", "E"), which the clock
+    /// readings are keyed by.
+    pub kind: String,
+    pub first: usize,
+    pub count: usize,
+}
+
+/// Group consecutive CPUs of one cluster type. macOS lists the slowest
+/// performance level's cores first, so group i in CPU order is perflevel
+/// `levels.len() - 1 - i`; its name is used when the core counts agree.
+pub fn core_groups(kinds: &[String], levels: &[(String, usize)]) -> Vec<CoreGroup> {
+    let mut groups: Vec<CoreGroup> = Vec::new();
+    for (cpu, kind) in kinds.iter().enumerate() {
+        match groups.last_mut() {
+            Some(g) if &g.kind == kind => g.count += 1,
+            _ => groups.push(CoreGroup { name: String::new(), kind: kind.clone(), first: cpu, count: 1 }),
+        }
+    }
+    // Clusters of one type can be split (two "M" clusters); a level counts
+    // all cores of its type.
+    let mut merged: Vec<CoreGroup> = Vec::new();
+    for g in groups {
+        match merged.iter_mut().find(|m| m.kind == g.kind && m.first + m.count == g.first) {
+            Some(m) => m.count += g.count,
+            None => merged.push(g),
+        }
+    }
+    let n = merged.len();
+    for (i, g) in merged.iter_mut().enumerate() {
+        g.name = levels
+            .get(n - 1 - i)
+            .filter(|(_, count)| *count == g.count)
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| g.kind.clone());
+    }
+    merged
 }
 
 pub fn chip_info() -> ChipInfo {
@@ -561,11 +627,31 @@ pub fn chip_info() -> ChipInfo {
         p = sysctl_u64("hw.perflevel0.physicalcpu").unwrap_or(cores as u64) as usize;
         e = sysctl_u64("hw.perflevel1.physicalcpu").unwrap_or(0) as usize;
     }
+    let level_info: Vec<(String, usize)> = (0..levels)
+        .map(|i| {
+            (
+                sysctl_str(&format!("hw.perflevel{i}.name")).unwrap_or_default(),
+                sysctl_u64(&format!("hw.perflevel{i}.logicalcpu")).unwrap_or(0) as usize,
+            )
+        })
+        .collect();
+    let groups = core_groups(&crate::clocks::cluster_types(), &level_info);
+    let gpu_cores = matching_services("AGXAccelerator").find_map(|e| {
+        let value = entry_prop(e, "gpu-core-count");
+        let count = cf_to_i64(value).filter(|n| (1..1024).contains(n)).map(|n| n as u32);
+        if !value.is_null() {
+            unsafe { CFRelease(value) };
+        }
+        unsafe { IOObjectRelease(e) };
+        count
+    });
     ChipInfo {
         brand,
         cores,
         p_cores: p,
         e_cores: e,
+        groups,
+        gpu_cores,
     }
 }
 

@@ -2308,6 +2308,62 @@ fn power_donut(s: &Snapshot, dark: bool) -> Div {
 
 // ---------- metric tabs ----------
 
+/// macOS's name for a core type, in the app's language.
+fn core_kind(name: &str) -> String {
+    match name {
+        "Super" => "Super".into(),
+        "Performance" => l("Performance", "Ytelse").into(),
+        "Efficiency" => l("Efficiency", "Effektivitet").into(),
+        other => other.to_string(),
+    }
+}
+
+/// One card per core type: its clock speed and a small bar for each core.
+fn cores_card(s: &Snapshot, dark: bool) -> Option<Div> {
+    if s.core_pct.is_empty() || s.chip.groups.is_empty() {
+        return None;
+    }
+    let accent = Metric::Cpu.accent(dark);
+    let group = |g: &crate::metrics::CoreGroup| {
+        let cores = s.core_pct.get(g.first..g.first + g.count).unwrap_or(&[]);
+        let average = if cores.is_empty() { 0. } else { cores.iter().sum::<f64>() / cores.len() as f64 };
+        let mut header = format!("{} · {} {}", core_kind(&g.name), g.count, crate::locale::plural(g.count as u64, "core", "cores", "kjerne", "kjerner"));
+        if let Some(mhz) = s.clocks.cpu.get(&g.kind) {
+            header.push_str(" · ");
+            header.push_str(&crate::engine::fmt_clock(*mhz));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(div().text_size(t::TEXT_ROW).font_weight(FontWeight::SEMIBOLD).child(header))
+                    .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(format!("{} {}", l("Average", "Gjennomsnitt"), fmt_pct(average)))),
+            )
+            .child(div().flex().flex_wrap().gap(t::SPACE_1).children(cores.iter().map(|pct| {
+                div()
+                    .w(px(14.))
+                    .h(px(40.))
+                    .rounded(t::RADIUS_CHIP)
+                    .bg(t::card_hi(dark))
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .overflow_hidden()
+                    .child(div().w_full().h(relative((*pct / 100.).clamp(0.02, 1.) as f32)).bg(accent))
+            })))
+    };
+    Some(
+        card(dark)
+            .gap_4()
+            .child(section_header(l("Cores", "Kjerner"), l("Use per core · clock speed from macOS", "Bruk per kjerne · klokkefrekvens fra macOS"), dark))
+            .children(s.chip.groups.iter().rev().map(group)),
+    )
+}
+
 fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Cpu;
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
@@ -2320,13 +2376,21 @@ fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeV
         .child(hero(
             l("CPU usage", "CPU-bruk"),
             fmt_pct(s.cpu_pct),
-            format!(
-                "{} · {} P + {} E {}",
-                s.chip.brand,
-                s.chip.p_cores,
-                s.chip.e_cores,
-                crate::locale::plural((s.chip.p_cores + s.chip.e_cores) as u64, "core", "cores", "kjerne", "kjerner")
-            ),
+            if s.chip.groups.len() > 1 {
+                format!(
+                    "{} · {} {}",
+                    s.chip.brand,
+                    s.chip.groups.iter().rev().map(|g| format!("{} {}", g.count, core_kind(&g.name))).collect::<Vec<_>>().join(" + "),
+                    crate::locale::plural(s.chip.cores as u64, "core", "cores", "kjerne", "kjerner")
+                )
+            } else {
+                format!(
+                    "{} · {} {}",
+                    s.chip.brand,
+                    s.chip.cores,
+                    crate::locale::plural(s.chip.cores as u64, "core", "cores", "kjerne", "kjerner")
+                )
+            },
             &s.cpu_hist,
             m.accent(dark),
             dark,
@@ -2353,6 +2417,7 @@ fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeV
             ],
             Some(100.0),
         ))
+        .when_some(cores_card(s, dark), |d, c| d.child(c))
         .child(section_header(
             l("Apps · highest usage first", "Apper · høyest bruk først"),
             l("CPU · 100% per core", "CPU · 100 % per kjerne"),
@@ -3103,6 +3168,8 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
                 dark,
                 vec![
                     (l("Power · measured", "Effekt · målt").into(), s.gpu.power_w.map(crate::engine::fmt_watts).unwrap_or("—".into())),
+                    (l("Cores", "Kjerner").into(), s.chip.gpu_cores.map(|c| c.to_string()).unwrap_or("—".into())),
+                    (l("Clock · from macOS", "Klokke · fra macOS").into(), s.clocks.gpu.map(crate::engine::fmt_clock).unwrap_or("—".into())),
                     (l("GPU memory", "GPU-minne").into(), s.gpu.mem_in_use.map(|b| fmt_bytes(b as f64)).unwrap_or("—".into())),
                     (l("Average", "Gjennomsnitt").into(), history_average(&s.gpu_hist)),
                     (l("Peak", "Topp").into(), fmt_pct(s.gpu_hist.pts.iter().copied().fold(0., f64::max))),
