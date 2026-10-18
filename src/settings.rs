@@ -39,6 +39,9 @@ pub struct Settings {
     /// Alert when the chip's hottest sensor stays above `alert_temp_c`.
     pub alert_temp_enabled: bool,
     pub alert_temp_c: f64,
+    /// Alert when the Mac has had no usable network path for ten seconds, and
+    /// again when it is back.
+    pub alert_offline_enabled: bool,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
@@ -75,6 +78,7 @@ impl Default for Settings {
             alert_pressure_enabled: false,
             alert_temp_enabled: false,
             alert_temp_c: CHIP_TEMP_DEFAULT,
+            alert_offline_enabled: false,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
