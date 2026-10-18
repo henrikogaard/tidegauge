@@ -110,6 +110,13 @@ fn plan_not_updating(plan: &Plan, now: f64) -> bool {
     plan.stale || plan.failed || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS)
 }
 
+/// The plans worth showing at a glance (the Overview strip and the menu-bar
+/// panel): exactly those not labelled "not updating". The Agents page still
+/// lists every plan with its age.
+pub(crate) fn current_plans(plans: &[Plan], now: f64) -> Vec<&Plan> {
+    plans.iter().filter(|plan| !plan_not_updating(plan, now)).collect()
+}
+
 /// Plan rings for the Overview: one compact chip per provider, opening Agents.
 /// A plan at a glance: how much is left, in which colour, and one word on
 /// how it is going. Shared by the Overview strip and the menu-bar panel.
@@ -156,10 +163,11 @@ pub(crate) fn left_text(left: Option<f64>) -> String {
 
 pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
     let Plans::Loaded(plans) = plans else { return None };
+    let now = now();
+    let plans = current_plans(plans, now);
     if plans.is_empty() {
         return None;
     }
-    let now = now();
     let mut strip = div().flex().flex_wrap().gap_2();
     for plan in plans {
         let PlanGlance { left, color, ring, note, note_color, .. } = plan_glance(plan, now, dark);
@@ -674,7 +682,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
 #[cfg(test)]
 mod tests {
     // Named imports: the UI kit's glob export includes its own `test`.
-    use super::{credits_left, plan_not_updating, Plan, FRESH_SECS};
+    use super::{credits_left, current_plans, plan_not_updating, Plan, FRESH_SECS};
     use crate::locale::{number, text as l, whole};
 
     #[test]
@@ -703,5 +711,30 @@ mod tests {
         assert!(plan_not_updating(&plan(true, false, Some(now - 60.)), now));
         assert!(plan_not_updating(&plan(false, false, Some(now - FRESH_SECS - 1.)), now));
         assert!(plan_not_updating(&plan(false, false, None), now));
+    }
+
+    #[test]
+    fn only_plans_that_are_updating_are_shown_at_a_glance() {
+        let plan = |provider: &str, stale, failed, fetched_at| Plan {
+            provider: provider.into(),
+            plan: None,
+            windows: Vec::new(),
+            credits: None,
+            fetched_at,
+            stale,
+            failed,
+        };
+        let now = 10_000.;
+        let plans = vec![
+            plan("claude", false, false, Some(now - 60.)),
+            plan("codex", true, false, Some(now - 60.)),
+            plan("old", false, false, Some(now - FRESH_SECS - 1.)),
+            plan("never", false, false, None),
+            plan("broken", false, true, Some(now - 60.)),
+        ];
+        let shown: Vec<&str> = current_plans(&plans, now).iter().map(|p| p.provider.as_str()).collect();
+        assert_eq!(shown, ["claude"]);
+        assert!(current_plans(&plans[1..], now).is_empty(), "all stale: nothing to show, so no section");
+        assert!(current_plans(&[], now).is_empty());
     }
 }

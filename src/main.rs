@@ -4,6 +4,7 @@ mod agents;
 mod agents_panel;
 mod alerts;
 mod app;
+mod app_cpu;
 mod app_volume;
 mod appearance;
 mod audio;

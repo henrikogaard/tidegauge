@@ -2,6 +2,7 @@
 //! live readings with their recent curve, your AI plans, the busiest apps,
 //! and the way into the full window.
 
+use crate::app_cpu::AppCpu;
 use crate::engine::{fmt_bytes, fmt_pct, fmt_rate, Snapshot};
 use crate::locale::text as l;
 use crate::processes::AppGroup;
@@ -16,12 +17,39 @@ const BASE_HEIGHT: f32 = 600.;
 /// One row of two tiles, with the gap below it.
 const TILE_ROW: f32 = 108.;
 
+/// A section's caption, its card of three rows and the gaps around them.
+const SECTION: f32 = 128.;
+
 /// The panel grows or shrinks by a row for every two tiles beyond or short
-/// of the default four.
+/// of the default four, and by a section for each of AI plans and Busiest
+/// apps that it leaves out.
 pub fn height() -> f32 {
-    let tiles = crate::settings::Settings::load().panel_tiles.len().max(1);
-    let rows = tiles.div_ceil(2) as f32;
-    BASE_HEIGHT + (rows - 2.) * TILE_ROW
+    let settings = crate::settings::Settings::load();
+    let plans = visible_plans(&crate::engine::latest().plans, &settings, crate::metrics::now_unix()).len();
+    panel_height(settings.panel_tiles.len(), plans > 0, settings.panel_show_apps)
+}
+
+fn panel_height(tiles: usize, plans: bool, apps: bool) -> f32 {
+    let rows = tiles.max(1).div_ceil(2) as f32;
+    let missing = [plans, apps].iter().filter(|shown| !**shown).count() as f32;
+    BASE_HEIGHT + (rows - 2.) * TILE_ROW - missing * SECTION
+}
+
+/// Whether the tile at `index` of `count` takes both columns: the last of an
+/// odd number, which would otherwise leave a gap beside it.
+fn spans_both_columns(index: usize, count: usize) -> bool {
+    count % 2 == 1 && index + 1 == count
+}
+
+/// The plans the panel shows: none if the section is turned off, else the
+/// first three that are being updated.
+fn visible_plans<'a>(plans: &'a crate::agents::Plans, settings: &crate::settings::Settings, now: f64) -> Vec<&'a crate::agents::Plan> {
+    match plans {
+        crate::agents::Plans::Loaded(plans) if settings.panel_show_plans => {
+            crate::agents_panel::current_plans(plans, now).into_iter().take(3).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 pub struct MenuPanel {
@@ -64,8 +92,8 @@ fn tile(
     card: Card,
     value: String,
     detail: String,
-    points: &[f64],
-    max: Option<f64>,
+    (points, max): (&[f64], Option<f64>),
+    full_width: bool,
     dark: bool,
     main: Entity<TideGaugeView>,
 ) -> impl IntoElement {
@@ -78,6 +106,7 @@ fn tile(
         .aria_label(SharedString::from(format!("{}: {value}", card.label())))
         .tab_index(0)
         .min_w_0()
+        .when(full_width, |d| d.col_span(2))
         .p(t::SPACE_3)
         .rounded(t::RADIUS_CONTROL)
         .bg(t::card(dark))
@@ -118,10 +147,13 @@ fn tile_data(card: Card, s: &Snapshot) -> (String, String, Vec<f64>, Option<f64>
             let pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.;
             (fmt_bytes(s.mem.used as f64), fmt_pct(pct), s.mem_hist.pts.clone(), Some(100.))
         }
+        // Download is the reading and its curve (as on Overview); upload is
+        // the side note. A total would sit beside "↓" and read as a second,
+        // conflicting number.
         Card::Tab(Tab::Network) => (
-            fmt_rate(s.net.rate_in + s.net.rate_out),
             format!("↓ {}", fmt_rate(s.net.rate_in)),
-            sum(&s.net_in_hist.pts, &s.net_out_hist.pts),
+            format!("↑ {}", fmt_rate(s.net.rate_out)),
+            s.net_in_hist.pts.clone(),
             None,
         ),
         Card::Tab(Tab::Disk) => (
@@ -227,13 +259,13 @@ impl Render for MenuPanel {
         ));
         let s = &self.snap;
         let main = self.main.clone();
+        let settings = crate::settings::Settings::load();
+        let cpu = AppCpu::chosen(s.chip.cores);
         let mut busiest: Vec<&AppGroup> = s.apps.iter().filter(|a| a.cpu_pct > 0.).collect();
         busiest.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
         let now = crate::metrics::now_unix();
-        let plans: Vec<crate::agents_panel::PlanGlance> = match &s.plans {
-            crate::agents::Plans::Loaded(plans) => plans.iter().take(3).map(|p| crate::agents_panel::plan_glance(p, now, dark)).collect(),
-            _ => Vec::new(),
-        };
+        let plans: Vec<crate::agents_panel::PlanGlance> =
+            visible_plans(&s.plans, &settings, now).into_iter().map(|p| crate::agents_panel::plan_glance(p, now, dark)).collect();
         let caption = |text: &'static str| {
             div()
                 .px(t::SPACE_1)
@@ -282,10 +314,15 @@ impl Render for MenuPanel {
                     .grid()
                     .grid_cols(2)
                     .gap(t::SPACE_2)
-                    .children(crate::settings::Settings::load().panel_tiles.iter().filter_map(|key| Card::from_key(key)).map(|card| {
-                        let (value, detail, points, max) = tile_data(card, s);
-                        tile(card, value, detail, &points, max, dark, main.clone())
-                    }))
+                    .children({
+                        let cards: Vec<Card> = settings.panel_tiles.iter().filter_map(|key| Card::from_key(key)).collect();
+                        let count = cards.len();
+                        let main = main.clone();
+                        cards.into_iter().enumerate().map(move |(i, card)| {
+                            let (value, detail, points, max) = tile_data(card, s);
+                            tile(card, value, detail, (&points, max), spans_both_columns(i, count), dark, main.clone())
+                        })
+                    })
             )
             .when(!plans.is_empty(), |d| {
                 d.child(caption(l("AI plans", "AI-abonnementer"))).child(
@@ -312,8 +349,7 @@ impl Render for MenuPanel {
                     })),
                 )
             })
-            .child(caption(l("Busiest apps", "Mest aktive apper")))
-            .child(
+            .when(settings.panel_show_apps, |d| d.child(caption(l("Busiest apps", "Mest aktive apper"))).child(
                 div()
                     .rounded(t::RADIUS_CONTROL)
                     .bg(t::card(dark))
@@ -326,7 +362,7 @@ impl Render for MenuPanel {
                         div()
                             .id(SharedString::from(format!("panel-app-{i}")))
                             .role(Role::Button)
-                            .aria_label(SharedString::from(format!("{} {}", app.name, fmt_pct(app.cpu_pct))))
+                            .aria_label(SharedString::from(format!("{} {}", app.name, cpu.format(app.cpu_pct))))
                             .tab_index(0)
                             .border_1()
                             .border_color(gpui_kit::transparent_black())
@@ -347,10 +383,10 @@ impl Render for MenuPanel {
                             .hover(|d| d.bg(t::card_hi(dark)))
                             .child(app_icon(app, dark))
                             .child(div().flex_1().min_w_0().text_size(t::TEXT_BODY).truncate().child(app.name.clone()))
-                            .child(div().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(fmt_pct(app.cpu_pct)))
+                            .child(div().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(cpu.format(app.cpu_pct)))
                             .on_click(move |_, _, cx| open(&target, Destination::Apps, cx))
                     })),
-            )
+            ))
             .child(div().flex_1())
             .child(
                 div()
@@ -380,5 +416,34 @@ impl Render for MenuPanel {
                     })
                     .child(footer_control("panel-quit", "icons/power.svg", l("Quit Tidegauge", "Avslutt Tidegauge"), false, dark, |cx| cx.quit())),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Named imports: the UI kit's glob export includes its own `test`.
+    use super::{panel_height, spans_both_columns, BASE_HEIGHT, SECTION, TILE_ROW};
+
+    #[test]
+    fn only_the_last_tile_of_an_odd_count_takes_the_full_width() {
+        for count in 1..=9usize {
+            let full: Vec<usize> = (0..count).filter(|i| spans_both_columns(*i, count)).collect();
+            if count % 2 == 1 {
+                assert_eq!(full, [count - 1], "{count} tiles");
+            } else {
+                assert!(full.is_empty(), "{count} tiles pair up");
+            }
+        }
+    }
+
+    #[test]
+    fn the_height_follows_tile_rows_and_the_sections_left_out() {
+        let full = panel_height(4, true, true);
+        assert_eq!(full, BASE_HEIGHT);
+        assert_eq!(panel_height(5, true, true), panel_height(6, true, true), "an odd last tile shares its row");
+        assert_eq!(panel_height(0, true, true), panel_height(1, true, true), "at least one row");
+        assert_eq!(panel_height(6, true, true), full + TILE_ROW);
+        assert_eq!(panel_height(4, false, true), full - SECTION);
+        assert_eq!(panel_height(4, false, false), full - 2. * SECTION);
     }
 }

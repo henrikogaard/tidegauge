@@ -6,6 +6,27 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings → General → App CPU shown as: a share of the whole Mac (the
+  default) or of one core, as Activity Monitor shows it. Every list of apps
+  and processes follows it, and the column header says which it is.
+- Settings → Menu-bar panel can hide the AI plans and Busiest apps sections.
+
+### Changed
+
+- The menu-bar panel's last tile takes the full width when the number of tiles
+  is odd, instead of leaving a gap. Its Network tile reads "↓ download" with
+  "↑ upload" beside it and a download curve, as Overview does, rather than a
+  total next to the download rate.
+- App CPU used to read as a percentage of one core, so an app could show 163%.
+  It now defaults to a share of the whole Mac (9.1% on 18 cores), with one
+  decimal below 10% and "<1%" for almost nothing.
+- AI plans that are not updating (flagged stale, failed, never fetched, or
+  last fetched over an hour ago) are left out of the menu-bar panel and the
+  Overview strip; the Agents page still lists them. When none is left, the
+  section disappears and the panel shrinks to fit.
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added
