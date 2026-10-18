@@ -484,9 +484,10 @@ impl ChartScale {
 const CHART_SAMPLES: usize = 240;
 
 /// Fewer values for a narrow chart: at most `max_buckets`, each the highest
-/// finite sample of its stretch (a gap stays a gap), so a spike survives and
-/// the high-water line still touches the curve. Stretches are counted back
-/// from the newest sample, which always ends the last one.
+/// finite sample of its stretch (a gap stays a gap), so a spike survives.
+/// Stretches are counted back from the newest sample. The last value is the
+/// newest sample itself, not its stretch's peak, so the "now" dot and the
+/// newest bar show the current reading.
 fn downsample_max(values: &[f64], max_buckets: usize) -> std::borrow::Cow<'_, [f64]> {
     let max_buckets = max_buckets.max(1);
     if values.len() <= max_buckets {
@@ -505,6 +506,9 @@ fn downsample_max(values: &[f64], max_buckets: usize) -> std::borrow::Cow<'_, [f
         })
         .collect();
     out.reverse();
+    if let (Some(last), Some(newest)) = (out.last_mut(), values.last()) {
+        *last = *newest;
+    }
     std::borrow::Cow::Owned(out)
 }
 
@@ -4354,6 +4358,25 @@ mod tests {
         assert_eq!(out[1], 5.);
         // Odd lengths put the short bucket at the old end.
         assert_eq!(&*downsample_max(&[8., 1., 2., 3., 4.], 3), &[8., 2., 4.]);
+    }
+
+    #[test]
+    fn downsample_ends_on_the_true_latest_value() {
+        // Declining series: the newest stretch's peak is older than "now".
+        let falling = [9., 8., 7., 6., 5., 4., 3., 2., 1.];
+        for budget in [2, 3, 4, 5] {
+            let out = downsample_max(&falling, budget);
+            assert_eq!(out.last(), Some(&1.), "budget {budget}: {out:?}");
+        }
+        // Earlier stretches still keep their peaks.
+        assert_eq!(&*downsample_max(&falling, 3), &[9., 6., 1.]);
+        let spiky = [1., 50., 2., 3., 4., 40., 5., 6., 7., 1.];
+        let out = downsample_max(&spiky, 4);
+        assert!(out.contains(&50.) && out.contains(&40.), "{out:?}");
+        assert_eq!(out.last(), Some(&1.));
+        // A newest sample that is a gap stays a gap.
+        let gap = [5., 6., 7., f64::NAN];
+        assert!(downsample_max(&gap, 2).last().is_some_and(|v| v.is_nan()));
     }
 
     #[test]
