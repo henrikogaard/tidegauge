@@ -6,6 +6,19 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Folder sizes lists known caches over 100 MB with a button each: Xcode build
+  data and device support, unavailable simulators, Homebrew downloads, npm,
+  pnpm, Yarn and Bun caches, Cargo downloads, and the Trash (shown for
+  information, with a button that opens it). Each action first names the
+  folders and size and defaults to Cancel. A cache folder moves to the Trash
+  rather than being deleted, so it can be put back; Homebrew and Xcode's
+  unavailable simulators are cleared by their own commands. Afterwards the page
+  rescans and reports how much moved or was freed. Only a fixed list is
+  touched, never through links and never outside your home folder, and
+  Tidegauge never empties the Trash or asks for administrator rights.
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added

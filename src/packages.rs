@@ -29,7 +29,7 @@ const MAX_NPM_CANDIDATES: usize = 16;
 const MAX_APP_DEPTH: usize = 2;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const REGISTRY_TIMEOUT: Duration = Duration::from_secs(10);
-const ACTION_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const ACTION_TIMEOUT: Duration = Duration::from_secs(600);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(40);
 const TERMINATION_GRACE: Duration = Duration::from_millis(500);
 
@@ -2089,7 +2089,7 @@ fn official_tap(tap: &str, source: Source) -> bool {
     }
 }
 
-fn manager_executables(candidates: &[&str]) -> Vec<PathBuf> {
+pub(crate) fn manager_executables(candidates: &[&str]) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     candidates
         .iter()
@@ -2456,7 +2456,7 @@ fn plutil_extract_string(bytes: &[u8], keypath: &str, timeout: Duration) -> Resu
     Ok(value.to_owned())
 }
 
-fn run_manager(
+pub(crate) fn run_manager(
     program: &Path,
     args: &[&str],
     cwd: Option<&Path>,
@@ -2494,7 +2494,7 @@ fn run_manager(
     }
 }
 
-fn run_command(mut command: Command, timeout: Duration) -> Result<Output, ()> {
+pub(crate) fn run_command(mut command: Command, timeout: Duration) -> Result<Output, ()> {
     command.process_group(0);
     let mut child = command.spawn().map_err(|_| ())?;
     wait_bounded(&mut child, timeout)

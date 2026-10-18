@@ -10,6 +10,7 @@ mod audio;
 mod battery;
 mod baselines;
 mod bluetooth;
+mod caches;
 mod clocks;
 mod controls;
 mod disks;
