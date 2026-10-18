@@ -364,6 +364,13 @@ impl Render for MenuPanel {
                         })
                     })
                     .child(div().flex_1())
+                    .child({
+                        let main = main.clone();
+                        footer_control("panel-slow-check", "icons/stethoscope.svg", l("Why is my Mac slow?", "Hvorfor er Macen min treg?"), false, dark, move |cx| {
+                            crate::slow_check::run(&main, cx);
+                            open(&main, Destination::Tab(Tab::Overview), cx)
+                        })
+                    })
                     .when(matches!(crate::updater::availability(), crate::updater::Availability::Available), |d| {
                         d.child(footer_control("panel-updates", "icons/refresh-cw.svg", crate::updater::check_for_updates_title(), false, dark, |cx| {
                             crate::app::close_popover(cx);

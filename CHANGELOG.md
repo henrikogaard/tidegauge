@@ -6,6 +6,18 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- "Why is my Mac slow?" on Overview and in the menu-bar panel's footer. One
+  click checks the latest readings and the last half minute, and says in plain
+  words what is slowing the Mac, worst first: memory pressure and swap, a
+  sustained busy processor, heat, a nearly full startup disk, heavy disk
+  activity, Low Power Mode or a low battery, and a long time since the last
+  restart. It names the apps using the most, offers to quit the top one through
+  the usual confirmation, and opens Folder sizes for a full disk. When nothing
+  is wrong it says so and lists the three busiest apps. In review, not yet
+  merged.
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added

@@ -662,6 +662,22 @@ pub fn thermal_level() -> Option<u8> {
     (0..=3).contains(&level).then_some(level as u8)
 }
 
+/// Whether Low Power Mode is on.
+pub fn low_power_mode() -> bool {
+    objc2_foundation::NSProcessInfo::processInfo().isLowPowerModeEnabled()
+}
+
+/// When the Mac last started (`kern.boottime`), in Unix seconds.
+pub fn boot_unix() -> Option<f64> {
+    let name = CString::new("kern.boottime").ok()?;
+    let mut boot = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    let mut size = size_of::<libc::timeval>();
+    let status = unsafe {
+        libc::sysctlbyname(name.as_ptr(), &mut boot as *mut libc::timeval as *mut c_void, &mut size, std::ptr::null_mut(), 0)
+    };
+    (status == 0 && boot.tv_sec > 0).then(|| boot.tv_sec as f64 + boot.tv_usec as f64 / 1e6)
+}
+
 pub fn thermal_state() -> Option<&'static str> {
     use crate::locale::text as l;
     match objc2_foundation::NSProcessInfo::processInfo().thermalState().0 {
