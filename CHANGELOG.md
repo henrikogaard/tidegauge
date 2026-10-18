@@ -15,8 +15,9 @@ hardware acceptance checks. A merge and a published release are separate events.
   activity, Low Power Mode or a low battery, and a long time since the last
   restart. It names the apps using the most, offers to quit the top one through
   the usual confirmation, and opens Folder sizes for a full disk. When nothing
-  is wrong it says so and lists the three busiest apps. In review, not yet
-  merged.
+  is wrong it says so and lists the three busiest apps; if some checks had no
+  readings yet (just after launch) it says no problem was found so far and
+  names the checks it could not run. In review, not yet merged.
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 

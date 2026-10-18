@@ -126,7 +126,8 @@ pub fn diagnose(s: &Snapshot) -> Vec<Finding> {
     findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
     if findings.is_empty() {
         let busiest = top(s, |a| a.cpu_pct, BUSY_APP_MIN_PCT);
-        findings.push(
+        let unchecked = unchecked(s);
+        let finding = if unchecked.is_empty() {
             Finding::new(
                 Severity::Ok,
                 l(
@@ -138,10 +139,45 @@ pub fn diagnose(s: &Snapshot) -> Vec<Finding> {
                     "Minne, prosessor, varme og diskplass ser normale ut.",
                 ),
             )
-            .apps(uses(&busiest, |a| fmt_pct(a.cpu_pct))),
-        );
+        } else {
+            // Some checks never ran, so "all normal" would be a claim about
+            // readings nobody looked at.
+            Finding::new(
+                Severity::Ok,
+                l("No problem found so far", "Ingen problemer funnet så langt"),
+                l(
+                    "Nothing wrong was found, but some checks could not run yet: they need a few more seconds of readings, or this Mac does not report them.",
+                    "Ingenting galt ble funnet, men noen sjekker kunne ikke kjøres ennå: de trenger noen sekunder til med målinger, eller så melder ikke denne Macen dem.",
+                ),
+            )
+            .detail(format!(
+                "{} {}",
+                l("Not checked:", "Ikke sjekket:"),
+                unchecked.join(", ")
+            ))
+        };
+        findings.push(finding.apps(uses(&busiest, |a| fmt_pct(a.cpu_pct))));
     }
     findings
+}
+
+/// The checks named in the all-clear sentence that had no usable reading:
+/// too little history yet, or a value this Mac does not report.
+fn unchecked(s: &Snapshot) -> Vec<&'static str> {
+    let has_history = |h: &Hist| h.pts.len() >= MIN_SUSTAINED_SAMPLES;
+    [
+        (s.mem.pressure.is_some(), l("memory", "minne")),
+        (has_history(&s.cpu_hist), l("CPU", "CPU")),
+        (s.thermal_level.is_some(), l("heat", "varme")),
+        (s.disk.total > 0, l("disk space", "diskplass")),
+        (
+            has_history(&s.disk_r_hist) && has_history(&s.disk_w_hist),
+            l("disk activity", "diskaktivitet"),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(checked, name)| (!checked).then_some(name))
+    .collect()
 }
 
 /// The mean of the last `SUSTAINED_SAMPLES` readings, or `None` while there
@@ -413,6 +449,9 @@ mod tests {
         s.disk.free = 200 * GIB;
         s.thermal_level = Some(0);
         s.boot_unix = Some(NOW - 86_400.);
+        s.cpu_hist = history(&[5.; SUSTAINED_SAMPLES]);
+        s.disk_r_hist = history(&[0.; SUSTAINED_SAMPLES]);
+        s.disk_w_hist = history(&[0.; SUSTAINED_SAMPLES]);
         s
     }
 
@@ -512,6 +551,58 @@ mod tests {
             ..Snapshot::default()
         };
         assert_eq!(only(&s).severity, Severity::Ok);
+    }
+
+    fn full_all_clear_title() -> &'static str {
+        l(
+            "Nothing is slowing your Mac down right now",
+            "Ingenting gjør Macen din treg akkurat nå",
+        )
+    }
+
+    #[test]
+    fn too_little_history_is_not_a_full_all_clear() {
+        let mut s = healthy();
+        s.cpu_hist = history(&[5.; MIN_SUSTAINED_SAMPLES - 1]);
+        s.disk_r_hist = history(&[0.; MIN_SUSTAINED_SAMPLES - 1]);
+        s.disk_w_hist = history(&[0.; MIN_SUSTAINED_SAMPLES - 1]);
+        let f = only(&s);
+        assert_eq!(f.severity, Severity::Ok);
+        assert_ne!(f.title, full_all_clear_title());
+        let detail = f.detail.expect("the unchecked checks are named");
+        assert!(detail.contains(l("CPU", "CPU")), "{detail}");
+        assert!(
+            detail.contains(l("disk activity", "diskaktivitet")),
+            "{detail}"
+        );
+        assert!(!detail.contains(l("memory", "minne")), "{detail}");
+        assert!(!detail.contains(l("heat", "varme")), "{detail}");
+    }
+
+    #[test]
+    fn missing_readings_are_named_instead_of_called_normal() {
+        let mut s = healthy();
+        s.mem.pressure = None;
+        s.thermal_level = None;
+        s.disk.total = 0;
+        let f = only(&s);
+        assert_ne!(f.title, full_all_clear_title());
+        let detail = f.detail.expect("the unchecked checks are named");
+        for name in [
+            l("memory", "minne"),
+            l("heat", "varme"),
+            l("disk space", "diskplass"),
+        ] {
+            assert!(detail.contains(name), "{name} missing from {detail}");
+        }
+        assert!(!detail.contains(l("CPU", "CPU")), "{detail}");
+    }
+
+    #[test]
+    fn every_reading_present_gives_the_full_all_clear() {
+        let f = only(&healthy());
+        assert_eq!(f.title, full_all_clear_title());
+        assert!(f.detail.is_none());
     }
 
     #[test]
