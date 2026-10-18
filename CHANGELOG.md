@@ -6,6 +6,25 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- The Network page has a Connection card: whether the Mac is online, the
+  connection type (Wi-Fi, Ethernet or VPN, no longer always "Wi-Fi"), the
+  interface and its IPv4 and IPv6 addresses, and on Wi-Fi the signal strength
+  in dBm with a quality word, noise, channel and band, transmit rate and Wi-Fi
+  standard. The network's name is not read, so macOS asks for no permission.
+  Online comes from macOS's own network-path monitor; nothing is sent to check
+  ([#88](https://github.com/henrikogaard/tidegauge/pull/88)).
+- An opt-in alert (Settings → Alerts → Network lost) that says so after 10
+  seconds without a network path and again when it is back
+  ([#88](https://github.com/henrikogaard/tidegauge/pull/88)).
+
+### Changed
+
+- The default network interface is read from macOS's system configuration
+  instead of running `route`
+  ([#88](https://github.com/henrikogaard/tidegauge/pull/88)).
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added
