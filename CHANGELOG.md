@@ -6,12 +6,15 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
+
 ### Added
 
 - New Overview cards for Temperature, Fans and Power, off until chosen in
   Settings → Overview. The menu-bar panel shows the tiles chosen in Settings
   → Menu-bar panel, from CPU, memory, network, disk, GPU, battery,
-  temperature, fans and power, and grows or shrinks to fit them.
+  temperature, fans and power, and grows or shrinks to fit them
+  ([#84](https://github.com/henrikogaard/tidegauge/pull/84)).
 - The CPU page shows each core's use, grouped by core type with macOS's own
   names (Super, Performance, Efficiency), and each group's clock speed. The
   GPU page shows the GPU's core count and clock speed. Clock speeds come from
