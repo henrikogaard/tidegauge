@@ -14,9 +14,12 @@ hardware acceptance checks. A merge and a published release are separate events.
   Battery charged alerts once per charge when the Mac on the adapter reaches
   100% or the limit macOS reports. Disk health alerts when an internal disk's
   SMART status turns to failing. The two battery alerts are hidden on a Mac
-  without a battery. Rendered check pending.
-- The high CPU, heavy disk and heavy network alerts now name the busiest app.
-- Clicking an alert brings Tidegauge's window forward.
+  without a battery. Rendered check pending
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- The high CPU, heavy disk and heavy network alerts now name the busiest app
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- Clicking an alert brings Tidegauge's window forward
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
