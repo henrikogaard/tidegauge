@@ -6,6 +6,20 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Menu-bar readings can show one bar per CPU core (grouped by core type), a
+  ring for CPU, memory, free disk space or battery, and a battery gauge with a
+  charging bolt. Settings → Menu bar has a new Colors choice: Monochrome keeps
+  the menu bar's own ink, Colored uses each metric's accent and turns orange or
+  red at warning levels (CPU above 80 % and 95 %, memory pressure, battery or
+  free disk space below 20 % and 10 %). Rendered check pending; in review.
+
+### Changed
+
+- The menu-bar image is redrawn only when what it shows changes, not on every
+  refresh.
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added

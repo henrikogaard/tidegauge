@@ -26,6 +26,7 @@ mod locale;
 mod locale_guard;
 mod login;
 mod menu_panel;
+mod menu_style;
 mod metrics;
 mod move_to_applications;
 mod named_sensors;

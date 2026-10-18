@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct MenuItem {
     pub metric: String, // cpu|memory|disk|network|battery|gpu|power
-    pub style: String,  // icon|value|graph|both
+    pub style: String,  // icon|value|graph|both|bars|pie|gauge, see `style_fits`
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -16,6 +16,9 @@ pub struct MenuItem {
 pub struct Settings {
     pub dark: Option<bool>, // None = follow system
     pub show_app_icon: bool,
+    /// Menu-bar readings in each metric's accent colours, turning orange and
+    /// red at warning levels. Off: the menu bar's own ink.
+    pub menu_colored: bool,
     pub menu_items: Vec<MenuItem>,
     pub alert_cpu_pct: f64,
     pub alert_mem_pct: f64,
@@ -59,6 +62,7 @@ impl Default for Settings {
         Settings {
             dark: None,
             show_app_icon: true,
+            menu_colored: false,
             menu_items: Vec::new(),
             alert_cpu_pct: 90.0,
             alert_mem_pct: 92.0,
@@ -163,7 +167,7 @@ impl Settings {
         if !MENU_METRICS.iter().any(|(key, _)| *key == metric) {
             return;
         }
-        if style.is_some_and(|style| !MENU_STYLES.iter().any(|(key, _)| *key == style)) {
+        if style.is_some_and(|style| !style_fits(metric, style)) {
             return;
         }
         self.menu_items.retain(|item| item.metric != metric);
@@ -254,12 +258,28 @@ pub const MENU_METRICS: [(&str, &str); 7] = [
     ("battery", "Battery"),
     ("power", "Power"),
 ];
-pub const MENU_STYLES: [(&str, &str); 4] = [
+pub const MENU_STYLES: [(&str, &str); 7] = [
     ("icon", "Icon"),
     ("value", "Value"),
     ("graph", "Graph"),
     ("both", "Value + graph"),
+    ("bars", "Bars"),
+    ("pie", "Ring"),
+    ("gauge", "Gauge"),
 ];
+
+/// Whether a style suits a metric: bars show each CPU core, a ring shows one
+/// percentage (CPU, memory, free disk space, battery) and the gauge is a
+/// battery.
+pub fn style_fits(metric: &str, style: &str) -> bool {
+    match style {
+        "icon" | "value" | "graph" | "both" => true,
+        "bars" => metric == "cpu",
+        "pie" => matches!(metric, "cpu" | "memory" | "disk" | "battery"),
+        "gauge" => metric == "battery",
+        _ => false,
+    }
+}
 
 pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
     use crate::locale::text as l;
@@ -282,6 +302,9 @@ pub fn localized_style_label(style: &str) -> Option<&'static str> {
         "value" => l("Value", "Verdi"),
         "graph" => l("Graph", "Graf"),
         "both" => l("Value + graph", "Verdi + graf"),
+        "bars" => l("Bars", "Stolper"),
+        "pie" => l("Ring", "Ring"),
+        "gauge" => l("Gauge", "Måler"),
         _ => return None,
     })
 }
@@ -372,6 +395,46 @@ mod tests {
         assert_eq!(settings.menu_items[0].style, "both");
         settings.set_menu_style("cpu", None);
         assert!(settings.menu_items.is_empty());
+    }
+
+    #[test]
+    fn new_styles_fit_only_the_metrics_they_suit() {
+        for (metric, _) in MENU_METRICS {
+            for style in ["icon", "value", "graph", "both"] {
+                assert!(style_fits(metric, style));
+            }
+        }
+        assert!(style_fits("cpu", "bars") && !style_fits("memory", "bars"));
+        for metric in ["cpu", "memory", "disk", "battery"] {
+            assert!(style_fits(metric, "pie"));
+        }
+        assert!(!style_fits("network", "pie") && !style_fits("gpu", "pie") && !style_fits("power", "pie"));
+        assert!(style_fits("battery", "gauge") && !style_fits("cpu", "gauge"));
+        assert!(!style_fits("cpu", "sparkles"));
+        let mut settings = Settings::default();
+        settings.set_menu_style("memory", Some("bars"));
+        assert!(settings.menu_items.is_empty(), "a style that doesn't fit is refused");
+        settings.set_menu_style("cpu", Some("bars"));
+        settings.set_menu_style("battery", Some("gauge"));
+        assert_eq!(settings.menu_items.len(), 2);
+        for (style, _) in MENU_STYLES {
+            assert!(localized_style_label(style).is_some(), "{style}");
+        }
+    }
+
+    #[test]
+    fn old_settings_files_load_uncolored_and_new_ones_round_trip() {
+        let old: Settings =
+            serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"graph"}]}"#).unwrap();
+        assert!(!old.menu_colored, "monochrome stays the default");
+        assert_eq!(old.menu_items[0].style, "graph");
+        let new = Settings { menu_colored: true, ..Settings::default() };
+        let loaded: Settings = serde_json::from_slice(&serde_json::to_vec(&new).unwrap()).unwrap();
+        assert!(loaded.menu_colored);
+        // A style a later version wrote still loads; the menu bar draws it as a value.
+        let future: Settings =
+            serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"hologram"}]}"#).unwrap();
+        assert_eq!(future.menu_items[0].style, "hologram");
     }
 
     #[test]
