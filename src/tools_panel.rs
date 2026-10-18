@@ -1330,11 +1330,16 @@ fn clear_cache(
         let target = cache.clone();
         let result = smol::unblock(move || crate::caches::clear(&target)).await;
         let inventory = smol::unblock(crate::caches::scan).await;
-        let freed = crate::caches::freed(cache.bytes, inventory.bytes_of(cache.kind));
+        let freed = crate::caches::freed_result(cache.bytes, inventory.remaining(cache.kind));
         this.update(cx, |v, cx| {
             v.tools.message = Some(match result {
                 Err(error) => error,
-                Ok(()) if freed == 0 => l(
+                Ok(()) if freed.is_none() => l(
+                    "Done. The freed space could not be measured.",
+                    "Ferdig. Plassen som ble frigjort kunne ikke måles.",
+                )
+                .to_string(),
+                Ok(()) if freed == Some(0) => l(
                     "Done, but the measured size did not change.",
                     "Ferdig, men den målte størrelsen endret seg ikke.",
                 )
@@ -1342,7 +1347,7 @@ fn clear_cache(
                 Ok(()) if cache.kind.method() == Method::Trash => format!(
                     "{} {}. {}",
                     l("Moved to the Trash:", "Flyttet til papirkurven:"),
-                    crate::engine::fmt_bytes(freed as f64),
+                    crate::engine::fmt_bytes(freed.unwrap_or(0) as f64),
                     l(
                         "Empty the Trash to free the space.",
                         "Tøm papirkurven for å frigjøre plassen."
@@ -1351,7 +1356,7 @@ fn clear_cache(
                 Ok(()) => format!(
                     "{} {}",
                     l("Freed", "Frigjorde"),
-                    crate::engine::fmt_bytes(freed as f64)
+                    crate::engine::fmt_bytes(freed.unwrap_or(0) as f64)
                 ),
             });
             v.tools.caches = Some(inventory);

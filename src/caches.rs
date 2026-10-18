@@ -88,6 +88,10 @@ pub struct Cache {
 #[derive(Clone, Debug)]
 pub struct Inventory {
     pub caches: Vec<Cache>,
+    /// Kinds whose size could not be read this time (a command failed or a
+    /// folder could not be measured). A kind that is neither here nor in
+    /// `caches` was confirmed gone.
+    pub unmeasured: Vec<Kind>,
     pub scanned: Instant,
 }
 
@@ -101,6 +105,34 @@ impl Inventory {
             .find(|c| c.kind == kind)
             .map_or(0, |c| c.bytes)
     }
+    /// What is left of a cache: its size, 0 when it is confirmed gone, and
+    /// none when this scan could not measure it.
+    pub fn remaining(&self, kind: Kind) -> Option<u64> {
+        (!self.unmeasured.contains(&kind)).then(|| self.bytes_of(kind))
+    }
+}
+
+/// What an action freed, or none when what is left could not be measured, so
+/// that a failed rescan is never reported as everything freed.
+pub fn freed_result(before: u64, after: Option<u64>) -> Option<u64> {
+    after.map(|after| freed(before, after))
+}
+
+/// The folders that could be measured, with their total. A folder that could
+/// not be measured is left out, so the size shown is the size that moves.
+fn measured(paths: Vec<PathBuf>, size: impl Fn(&Path) -> Option<u64>) -> (Vec<PathBuf>, u64, bool) {
+    let total = paths.len();
+    let sized: Vec<(PathBuf, u64)> = paths
+        .into_iter()
+        .filter_map(|path| size(&path).map(|bytes| (path, bytes)))
+        .collect();
+    let complete = sized.len() == total;
+    let bytes = sized.iter().map(|(_, bytes)| bytes).sum();
+    (
+        sized.into_iter().map(|(path, _)| path).collect(),
+        bytes,
+        complete,
+    )
 }
 
 /// The caches worth showing: over the threshold, biggest first, with the
@@ -273,11 +305,19 @@ fn query(program: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// Homebrew's download cache, as Homebrew reports it. It may sit outside
-/// the home folder, and is only measured: Homebrew clears it itself.
-fn brew_cache() -> Option<PathBuf> {
-    let path = PathBuf::from(query(&brew()?, &["--cache"])?);
-    let meta = std::fs::symlink_metadata(&path).ok()?;
-    (path.is_absolute() && meta.is_dir() && !meta.file_type().is_symlink()).then_some(path)
+/// the home folder, and is only measured: Homebrew clears it itself. Ok(None)
+/// when there is no Homebrew or no cache folder; Err when Homebrew would not say.
+fn brew_cache() -> Result<Option<PathBuf>, ()> {
+    let Some(brew) = brew() else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(query(&brew, &["--cache"]).ok_or(())?);
+    Ok(match std::fs::symlink_metadata(&path) {
+        Ok(meta) if path.is_absolute() && meta.is_dir() && !meta.file_type().is_symlink() => {
+            Some(path)
+        }
+        _ => None,
+    })
 }
 
 /// Every pnpm store folder found: the one pnpm reports, else the usual places.
@@ -305,13 +345,14 @@ fn pnpm_stores(home: &Path) -> Vec<PathBuf> {
 
 /// Simulators whose runtime is gone: their names with data sizes, and the
 /// total. Asked only when Xcode is selected and has simulators, so macOS
-/// never opens its "install developer tools" prompt.
-fn unavailable_simulators(home: &Path) -> Option<(Vec<String>, u64)> {
+/// never opens its "install developer tools" prompt. Ok(None) when there is
+/// nothing to ask or none are unavailable; Err when simctl would not answer.
+fn unavailable_simulators(home: &Path) -> Result<Option<(Vec<String>, u64)>, ()> {
     if !home
         .join("Library/Developer/CoreSimulator/Devices")
         .is_dir()
     {
-        return None;
+        return Ok(None);
     }
     let selected = Command::new("/usr/bin/xcode-select")
         .arg("-p")
@@ -321,7 +362,7 @@ fn unavailable_simulators(home: &Path) -> Option<(Vec<String>, u64)> {
         .status()
         .is_ok_and(|s| s.success());
     if !selected {
-        return None;
+        return Ok(None);
     }
     let output = crate::packages::run_manager(
         Path::new("/usr/bin/xcrun"),
@@ -329,11 +370,16 @@ fn unavailable_simulators(home: &Path) -> Option<(Vec<String>, u64)> {
         None,
         true,
         Duration::from_secs(10),
-    )?;
-    output.status.success().then_some(())?;
-    parse_simulators(&output.stdout)
+    )
+    .ok_or(())?;
+    if !output.status.success() {
+        return Err(());
+    }
+    let (items, total) = parse_simulators(&output.stdout).ok_or(())?;
+    Ok((!items.is_empty()).then_some((items, total)))
 }
 
+/// The unavailable simulators in simctl's JSON; none when it is not simctl's JSON.
 fn parse_simulators(json: &[u8]) -> Option<(Vec<String>, u64)> {
     let value: serde_json::Value = serde_json::from_slice(json).ok()?;
     let mut items = Vec::new();
@@ -355,53 +401,77 @@ fn parse_simulators(json: &[u8]) -> Option<(Vec<String>, u64)> {
             ));
         }
     }
-    (!items.is_empty()).then_some((items, total))
+    Some((items, total))
+}
+
+/// Measure the folders of one cache and list the ones that could be read.
+fn add_folders(
+    caches: &mut Vec<Cache>,
+    unmeasured: &mut Vec<Kind>,
+    kind: Kind,
+    paths: Vec<PathBuf>,
+) {
+    let (paths, bytes, complete) = measured(paths, folder_bytes);
+    if !complete {
+        unmeasured.push(kind);
+    }
+    if !paths.is_empty() {
+        caches.push(Cache {
+            kind,
+            paths,
+            bytes,
+            items: Vec::new(),
+        });
+    }
 }
 
 /// Measure every known cache that exists. Blocking: run it off the main thread.
 pub fn scan() -> Inventory {
     let mut caches = Vec::new();
+    let mut unmeasured = Vec::new();
     let Some(home) = home() else {
         return Inventory {
             caches,
+            unmeasured: vec![Kind::Homebrew, Kind::Simulators],
             scanned: Instant::now(),
         };
     };
-    let mut add = |kind: Kind, paths: Vec<PathBuf>| {
-        let sizes: Vec<u64> = paths.iter().filter_map(|p| folder_bytes(p)).collect();
-        if !sizes.is_empty() {
-            caches.push(Cache {
-                kind,
-                paths,
-                bytes: sizes.iter().sum(),
-                items: Vec::new(),
-            });
-        }
-    };
     for (kind, rel) in FIXED {
-        if let Ok(path) = validate(*kind, &home, &home.join(rel)) {
-            add(*kind, vec![path]);
+        match validate(*kind, &home, &home.join(rel)) {
+            Ok(path) => add_folders(&mut caches, &mut unmeasured, *kind, vec![path]),
+            Err(Refusal::Missing) => {}
+            Err(_) => unmeasured.push(*kind),
         }
     }
     let stores = pnpm_stores(&home);
     if !stores.is_empty() {
-        add(Kind::Pnpm, stores);
+        add_folders(&mut caches, &mut unmeasured, Kind::Pnpm, stores);
     }
-    if let Some(path) = brew_cache() {
-        add(Kind::Homebrew, vec![path]);
+    match brew_cache() {
+        Ok(Some(path)) => add_folders(&mut caches, &mut unmeasured, Kind::Homebrew, vec![path]),
+        Ok(None) => {}
+        Err(()) => unmeasured.push(Kind::Homebrew),
     }
     // The Trash is only information, and macOS may refuse to list it.
-    add(Kind::Trash, vec![home.join(".Trash")]);
-    if let Some((items, bytes)) = unavailable_simulators(&home) {
-        caches.push(Cache {
+    add_folders(
+        &mut caches,
+        &mut unmeasured,
+        Kind::Trash,
+        vec![home.join(".Trash")],
+    );
+    match unavailable_simulators(&home) {
+        Ok(Some((items, bytes))) => caches.push(Cache {
             kind: Kind::Simulators,
             paths: Vec::new(),
             bytes,
             items,
-        });
+        }),
+        Ok(None) => {}
+        Err(()) => unmeasured.push(Kind::Simulators),
     }
     Inventory {
         caches,
+        unmeasured,
         scanned: Instant::now(),
     }
 }
@@ -636,10 +706,69 @@ mod tests {
         assert_eq!(freed(1_000, 5_000), 0, "a cache that grew freed nothing");
         let inventory = Inventory {
             caches: vec![cache(Kind::Bun, 7)],
+            unmeasured: vec![Kind::Homebrew],
             scanned: Instant::now(),
         };
         assert_eq!(inventory.bytes_of(Kind::Bun), 7);
         assert_eq!(inventory.bytes_of(Kind::Npm), 0);
+    }
+
+    #[test]
+    fn a_cache_that_could_not_be_measured_is_not_reported_as_freed() {
+        let inventory = Inventory {
+            caches: vec![cache(Kind::Bun, 7)],
+            unmeasured: vec![Kind::Homebrew, Kind::Bun],
+            scanned: Instant::now(),
+        };
+        // Confirmed gone: measured as 0, so everything was freed.
+        assert_eq!(inventory.remaining(Kind::Npm), Some(0));
+        assert_eq!(
+            freed_result(3_000, inventory.remaining(Kind::Npm)),
+            Some(3_000)
+        );
+        // Still there and measured: only the difference was freed.
+        let measured = Inventory {
+            unmeasured: Vec::new(),
+            ..inventory.clone()
+        };
+        assert_eq!(measured.remaining(Kind::Bun), Some(7));
+        assert_eq!(
+            freed_result(3_000, measured.remaining(Kind::Bun)),
+            Some(2_993)
+        );
+        // The rescan could not say: no number at all, not "everything".
+        assert_eq!(inventory.remaining(Kind::Homebrew), None);
+        assert_eq!(
+            freed_result(3_000, inventory.remaining(Kind::Homebrew)),
+            None
+        );
+        assert_eq!(
+            inventory.remaining(Kind::Bun),
+            None,
+            "partly measured is unknown"
+        );
+    }
+
+    #[test]
+    fn only_measured_folders_are_kept_so_the_size_shown_is_the_size_moved() {
+        let sizes = |path: &Path| match path.to_str() {
+            Some("/a") => Some(10),
+            Some("/c") => Some(5),
+            _ => None,
+        };
+        let paths = vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/c"),
+        ];
+        let (kept, bytes, complete) = measured(paths, sizes);
+        assert_eq!(kept, [PathBuf::from("/a"), PathBuf::from("/c")]);
+        assert_eq!(bytes, 15);
+        assert!(!complete, "the unmeasured folder is reported");
+        let (kept, bytes, complete) = measured(vec![PathBuf::from("/b")], sizes);
+        assert!(kept.is_empty() && bytes == 0 && !complete);
+        let (kept, bytes, complete) = measured(vec![PathBuf::from("/a")], sizes);
+        assert_eq!((kept.len(), bytes, complete), (1, 10, true));
     }
 
     #[test]
@@ -692,7 +821,11 @@ mod tests {
         assert_eq!(total, 3500);
         assert_eq!(items.len(), 2);
         assert!(items[0].starts_with("iPhone A"));
-        assert!(parse_simulators(br#"{"devices":{}}"#).is_none());
+        let (none, zero) = parse_simulators(br#"{"devices":{}}"#).unwrap();
+        assert!(
+            none.is_empty() && zero == 0,
+            "none unavailable is a measurement"
+        );
         assert!(parse_simulators(b"not json").is_none());
     }
 
