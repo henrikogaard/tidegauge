@@ -199,6 +199,10 @@ pub struct Snapshot {
     pub proc_count: usize,
     pub app_count: usize,
     pub chip: ChipInfo,
+    /// Each logical CPU's busy share since the last sample, 0–100 %.
+    pub core_pct: Vec<f64>,
+    /// CPU (per cluster type) and GPU clock speeds, in MHz.
+    pub clocks: crate::clocks::Clocks,
     pub power_w: Option<f64>,
     pub power_hist: Hist,
     pub thermal: String,
@@ -247,6 +251,8 @@ impl Default for Snapshot {
             proc_count: 0,
             app_count: 0,
             chip: ChipInfo::default(),
+            core_pct: Vec::new(),
+            clocks: Default::default(),
             power_w: None,
             power_hist: h(),
             thermal: "—".into(),
@@ -273,6 +279,7 @@ pub struct Engine {
     pub started: Instant,
     last_at: Instant,
     last_ticks: Option<CpuTicks>,
+    last_core_ticks: Option<Vec<CpuTicks>>,
     last_net: (u64, u64),
     last_disk: (u64, u64),
     prev: HashMap<i32, PrevProc>,
@@ -295,6 +302,7 @@ impl Engine {
             started: Instant::now(),
             last_at: Instant::now(),
             last_ticks: cpu_ticks(),
+            last_core_ticks: crate::metrics::core_ticks(),
             last_net: net_counters(),
             last_disk: disk_io_totals(),
             prev: HashMap::new(),
@@ -332,6 +340,13 @@ impl Engine {
             s.cpu_pct = ((du + ds) / tot * 100.0).clamp(0.0, 100.0);
         }
         self.last_ticks = ticks;
+        let cores = crate::metrics::core_ticks();
+        s.core_pct = match (&self.last_core_ticks, &cores) {
+            (Some(a), Some(b)) if a.len() == b.len() => a.iter().zip(b).map(|(a, b)| crate::metrics::busy_pct(*a, *b)).collect(),
+            _ => Vec::new(),
+        };
+        self.last_core_ticks = cores;
+        s.clocks = crate::clocks::sample();
         s.cpu_hist.push(s.cpu_pct);
         s.load_avg = load_avg();
         s.thermal = thermal_state().unwrap_or("—").into();
@@ -570,6 +585,15 @@ pub fn fmt_signed_watts(w: f64) -> String {
 pub fn fmt_volts(v: f64) -> String {
     format!("{} V", crate::locale::number(v, 2))
 }
+/// "2.53 GHz" from 1 GHz up, "338 MHz" below.
+pub fn fmt_clock(mhz: f64) -> String {
+    if mhz >= 1000. {
+        format!("{} GHz", crate::locale::number(mhz / 1000., 2))
+    } else {
+        format!("{} MHz", crate::locale::number(mhz, 0))
+    }
+}
+
 pub fn fmt_celsius(c: f64) -> String {
     format!("{} °C", crate::locale::number(c, 1))
 }

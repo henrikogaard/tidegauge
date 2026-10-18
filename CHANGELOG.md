@@ -6,10 +6,24 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- The CPU page shows each core's use, grouped by core type with macOS's own
+  names (Super, Performance, Efficiency), and each group's clock speed. The
+  GPU page shows the GPU's core count and clock speed. Clock speeds come from
+  macOS's performance-state counters and need no special permission
+  ([#83](https://github.com/henrikogaard/tidegauge/pull/83)).
+
 ### Changed
 
 - The fan bar shows speed as a share of the fan's top speed, as Stats and
-  iStat Menus do, so a fan at its lowest speed no longer reads 0%.
+  iStat Menus do, so a fan at its lowest speed no longer reads 0%
+  ([#82](https://github.com/henrikogaard/tidegauge/pull/82)).
+
+### Fixed
+
+- The label inside Overview's power ring no longer spills over the ring's
+  edge ([#82](https://github.com/henrikogaard/tidegauge/pull/82)).
 
 ## [0.3.7](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.7) — 2026-10-17
 

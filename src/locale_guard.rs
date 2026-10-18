@@ -47,7 +47,7 @@ const ENGLISH_WITH_SEVERAL_NORWEGIAN: &[&str] = &[
 /// and unit symbols that read the same in both languages.
 const ALLOWED_BARE_WORDS: &[&str] = &[
     "APFS", "CPU", "GPU", "PID", "UID", "RPM", "SMART", "SSD", "HDD", "RAM", "USB", "Tidegauge",
-    "Apple", "NVMe", "IORegistry", "diskutil", "KiB", "MiB", "GiB", "TiB", "KB", "MB", "GB", "TB",
+    "Apple", "NVMe", "IORegistry", "diskutil", "KiB", "MiB", "GiB", "TiB", "KB", "MB", "GB", "TB", "MHz", "GHz",
     "Mbps", "mAh", "mW", "min",
 ];
 
