@@ -105,6 +105,7 @@ pub struct AlertEngine {
     /// One episode per app, keyed by its group key: CPU, then memory.
     apps: std::collections::HashMap<String, Episode>,
     app_memory: std::collections::HashMap<String, Episode>,
+    app_leaks: std::collections::HashMap<String, Episode>,
     low_disk: Episode,
     thermal: Episode,
     pressure: Episode,
@@ -120,6 +121,7 @@ impl AlertEngine {
             network: Episode::default(),
             apps: std::collections::HashMap::new(),
             app_memory: std::collections::HashMap::new(),
+            app_leaks: std::collections::HashMap::new(),
             low_disk: Episode::default(),
             thermal: Episode::default(),
             pressure: Episode::default(),
@@ -306,6 +308,26 @@ impl AlertEngine {
                     crate::locale::text("has used", "har brukt"),
                     crate::engine::fmt_bytes(value),
                     crate::locale::text("of memory for over 5 minutes", "minne i over 5 minutter")
+                )
+            },
+        ));
+
+        // The tracker has already watched the climb for hours; an app that
+        // is flagged alerts once, with the bytes it gained as the value.
+        alerts.extend(check_apps(
+            &mut self.app_leaks,
+            snapshot,
+            settings.alert_leak_enabled,
+            0.,
+            |app| snapshot.leaks.iter().find(|leak| leak.key == app.key).map_or(0., |leak| leak.growth),
+            "leak",
+            |name, growth| {
+                format!(
+                    "{name}: {} +{} {}. {}",
+                    crate::locale::text("memory keeps growing,", "minnet vokser stadig,"),
+                    crate::engine::fmt_bytes(growth),
+                    crate::locale::text("in 3 hours", "på 3 timer"),
+                    crate::locale::text("Restarting it frees the memory.", "Å starte den på nytt frigjør minnet.")
                 )
             },
         ));
@@ -505,6 +527,37 @@ mod tests {
         assert_eq!(alerts[0].metric, "appmem:com.example.busy");
         assert!(engine.check(&big(400., 3.), &settings).is_empty(), "one alert per episode");
         assert!(engine.check(&big(1000., 3.), &Settings::default()).is_empty(), "off by default");
+    }
+
+    #[test]
+    fn a_growing_app_alerts_once_per_episode_and_only_when_switched_on() {
+        let settings = Settings { alert_leak_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let growing = |at: f64, flagged: bool| {
+            let mut s = busy_app(at, 0.);
+            if flagged {
+                s.leaks = vec![crate::leaks::Leak { key: "com.example.busy".into(), name: "Busy".into(), growth: 2.3 * GIB }];
+            }
+            s
+        };
+        assert!(engine.check(&growing(0., false), &settings).is_empty(), "not flagged");
+        assert!(engine.check(&growing(10., true), &settings).is_empty());
+        assert!(engine.check(&growing(309., true), &settings).is_empty());
+        let alerts = engine.check(&growing(310., true), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "leak:com.example.busy");
+        assert!(alerts[0].message.starts_with("Busy: "), "{}", alerts[0].message);
+        assert!(alerts[0].message.contains("2.30") || alerts[0].message.contains("2,30"), "{}", alerts[0].message);
+        assert!(engine.check(&growing(400., true), &settings).is_empty(), "one alert per episode");
+        // The climb ends, then the same app is flagged again inside the cooldown.
+        assert!(engine.check(&growing(410., false), &settings).is_empty());
+        assert!(engine.check(&growing(420., true), &settings).is_empty());
+        assert!(engine.check(&growing(800., true), &settings).is_empty(), "the cooldown holds a second alert back");
+        assert_eq!(engine.check(&growing(1000., true), &settings).len(), 1, "a new episode alerts after the cooldown");
+        let mut engine = AlertEngine::new();
+        for at in [0., 310., 700., 1500.] {
+            assert!(engine.check(&growing(at, true), &Settings::default()).is_empty(), "off by default");
+        }
     }
 
     #[test]

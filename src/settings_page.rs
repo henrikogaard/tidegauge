@@ -488,6 +488,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             settings.alert_app_mem_enabled,
         ),
         (
+            "leak",
+            l("Memory keeps growing", "Minnet vokser stadig"),
+            l("An app gains 1 GB or more, steadily, over 3 hours", "En app øker jevnt med 1 GB eller mer over 3 timer").to_string(),
+            None,
+            settings.alert_leak_enabled,
+        ),
+        (
             "low-disk",
             l("Startup disk space", "Plass på oppstartsdisken"),
             l("Under 10 GB free for a minute", "Under 10 GB ledig i ett minutt").to_string(),
@@ -534,6 +541,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "disk" => s.alert_disk_enabled = value,
                             "app" => s.alert_app_enabled = value,
                             "app-memory" => s.alert_app_mem_enabled = value,
+                            "leak" => s.alert_leak_enabled = value,
                             "low-disk" => s.alert_low_disk_enabled = value,
                             "thermal" => s.alert_thermal_enabled = value,
                             "pressure" => s.alert_pressure_enabled = value,

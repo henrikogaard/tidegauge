@@ -2809,9 +2809,49 @@ fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     dark,
                 )),
         )
+        .when(!s.leaks.is_empty(), |d| d.child(growing_memory(s, dark, this.clone())))
         .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Memory", "Minne"), dark))
         .child(top_apps(rows.iter().copied(), |a| (fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64), max, m.accent(dark), false, dark, this))
         .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Pressure comes from macOS, not from these totals.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Minnepresset kommer fra macOS, ikke fra disse summene.")).text_color(t::ink_dim(dark)))
+}
+
+/// Apps whose memory has climbed steadily for hours, each with a Quit that
+/// goes through the usual confirmation. Not drawn when nothing is flagged.
+fn growing_memory(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let color = Metric::Memory.accent(dark);
+    let mut list = card(dark).child(caption(l("Growing memory", "Voksende minne"), dark));
+    for leak in &s.leaks {
+        let app = s.apps.iter().find(|a| a.key == leak.key);
+        let action = app.and_then(|a| crate::process_panel::quit_action(s, a));
+        let target = this.clone();
+        list = list.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_h(t::ROW_H)
+                .when_some(app, |d, a| d.child(app_icon(a, dark)))
+                .child(div().flex_1().min_w_0().text_size(t::TEXT_ROW).truncate().child(leak.name.clone()))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(t::TEXT_ROW)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(color)
+                        .child(format!("+{} {}", fmt_bytes(leak.growth), l("in 3 hours", "på 3 timer"))),
+                )
+                .when_some(action, |d, action| {
+                    d.child(crate::controls::button(
+                        format!("leak-quit-{}", leak.key),
+                        format!("{}…", l("Quit", "Avslutt")),
+                        false,
+                        dark,
+                        move |window, cx| crate::process_panel::request(action.clone(), target.clone(), window, cx),
+                    ))
+                }),
+        );
+    }
+    list.child(sub(l("Memory that climbs steadily for hours is usually a leak. Quitting and reopening the app frees it.", "Minne som øker jevnt i flere timer er som regel en lekkasje. Å avslutte og åpne appen på nytt frigjør det.")).text_color(t::ink_dim(dark)))
 }
 
 fn disk_tab(

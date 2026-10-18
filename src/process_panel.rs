@@ -443,12 +443,30 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
         })
 }
 
-fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
+pub(crate) fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
     let group = s.process_groups.iter().find(|g| g.bundle == app.key)?;
     match group.mains.as_slice() {
         [main] if app.pids.contains(&main.pid) => Some(main),
         _ => None,
     }
+}
+
+/// What Quit asks for on one app outside its own row: the app itself when
+/// it has one registered main process, otherwise its processes you own.
+/// Nothing when macOS owns it. The caller runs it through `request`, which
+/// confirms first.
+pub(crate) fn quit_action(s: &Snapshot, app: &AppGroup) -> Option<Action> {
+    if let Some(main) = registered_main(s, app) {
+        return control::blocked(main).is_none().then(|| Action::App {
+            main: main.clone(),
+            name: app.name.clone(),
+            helpers: app.pids.len(),
+            memory: app.mem_bytes,
+            force: Force::Quit,
+        });
+    }
+    let targets: Vec<ProcInfo> = s.procs.iter().filter(|p| app.pids.contains(&p.pid) && control::blocked(p).is_none()).cloned().collect();
+    (!targets.is_empty()).then(|| Action::Processes { name: app.name.clone(), targets, force: Force::Quit })
 }
 
 fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
