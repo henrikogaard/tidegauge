@@ -5,13 +5,24 @@
 use crate::engine::{fmt_bytes, fmt_pct, fmt_rate, Snapshot};
 use crate::locale::text as l;
 use crate::processes::AppGroup;
-use crate::theme::{self as t, Metric};
-use crate::ui::{app_icon, Destination, Tab, TideGaugeView};
+use crate::theme as t;
+use crate::ui::{app_icon, Card, Destination, Tab, TideGaugeView};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 pub const WIDTH: f32 = 340.;
-pub const HEIGHT: f32 = 600.;
+/// The panel's height with the default two rows of tiles.
+const BASE_HEIGHT: f32 = 600.;
+/// One row of two tiles, with the gap below it.
+const TILE_ROW: f32 = 108.;
+
+/// The panel grows or shrinks by a row for every two tiles beyond or short
+/// of the default four.
+pub fn height() -> f32 {
+    let tiles = crate::settings::Settings::load().panel_tiles.len().max(1);
+    let rows = tiles.div_ceil(2) as f32;
+    BASE_HEIGHT + (rows - 2.) * TILE_ROW
+}
 
 pub struct MenuPanel {
     snap: Snapshot,
@@ -50,7 +61,7 @@ fn open(main: &Entity<TideGaugeView>, to: Destination, cx: &mut App) {
 }
 
 fn tile(
-    tab: Tab,
+    card: Card,
     value: String,
     detail: String,
     points: &[f64],
@@ -58,13 +69,13 @@ fn tile(
     dark: bool,
     main: Entity<TideGaugeView>,
 ) -> impl IntoElement {
-    let metric = tab.metric().unwrap_or(Metric::Cpu);
-    let color = metric.accent(dark);
+    let color = card.color(dark);
+    let tab = card.opens();
     let keyboard = main.clone();
     div()
-        .id(SharedString::from(format!("panel-{}", tab.key())))
+        .id(SharedString::from(format!("panel-{}", card.key())))
         .role(Role::Button)
-        .aria_label(SharedString::from(format!("{}: {value}", tab.label())))
+        .aria_label(SharedString::from(format!("{}: {value}", card.label())))
         .tab_index(0)
         .min_w_0()
         .p(t::SPACE_3)
@@ -83,7 +94,7 @@ fn tile(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(div().text_size(t::TEXT_SMALL).font_weight(FontWeight::MEDIUM).text_color(color).child(tab.label()))
+                .child(div().text_size(t::TEXT_SMALL).font_weight(FontWeight::MEDIUM).text_color(color).child(card.label()))
                 .child(div().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark)).truncate().child(detail)),
         )
         .child(div().text_size(t::TEXT_TITLE).font_weight(FontWeight::BOLD).child(value))
@@ -96,6 +107,61 @@ fn tile(
                 cx.stop_propagation();
             }
         })
+}
+
+/// One tile's value, side note, curve and curve top.
+fn tile_data(card: Card, s: &Snapshot) -> (String, String, Vec<f64>, Option<f64>) {
+    let dash = || "—".to_string();
+    match card {
+        Card::Tab(Tab::Cpu) => (fmt_pct(s.cpu_pct), crate::locale::count(s.chip.cores as u64, "core", "cores", "kjerne", "kjerner"), s.cpu_hist.pts.clone(), Some(100.)),
+        Card::Tab(Tab::Memory) => {
+            let pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.;
+            (fmt_bytes(s.mem.used as f64), fmt_pct(pct), s.mem_hist.pts.clone(), Some(100.))
+        }
+        Card::Tab(Tab::Network) => (
+            fmt_rate(s.net.rate_in + s.net.rate_out),
+            format!("↓ {}", fmt_rate(s.net.rate_in)),
+            sum(&s.net_in_hist.pts, &s.net_out_hist.pts),
+            None,
+        ),
+        Card::Tab(Tab::Disk) => (
+            fmt_rate(s.disk.read_rate + s.disk.write_rate),
+            format!("{} {}", fmt_bytes(s.disk.free as f64), l("free", "ledig")),
+            sum(&s.disk_r_hist.pts, &s.disk_w_hist.pts),
+            None,
+        ),
+        Card::Tab(Tab::Gpu) => (
+            s.gpu.utilization.map(fmt_pct).unwrap_or_else(dash),
+            s.gpu.power_w.map(crate::engine::fmt_watts).unwrap_or_default(),
+            s.gpu_hist.pts.clone(),
+            Some(100.),
+        ),
+        Card::Tab(Tab::Battery) => (
+            s.battery.percent.map(fmt_pct).unwrap_or_else(dash),
+            s.battery.health.map(|h| format!("{} {}", l("health", "helse"), fmt_pct(h))).unwrap_or_default(),
+            s.batt_hist.pts.clone(),
+            Some(100.),
+        ),
+        Card::Temperature => (
+            s.temps.chip.map(crate::engine::fmt_celsius).unwrap_or_else(dash),
+            s.temps.ssd.map(|c| format!("SSD {}", crate::engine::fmt_celsius(c))).unwrap_or_default(),
+            s.temp_hist.pts.clone(),
+            None,
+        ),
+        Card::Fans => (
+            s.fans.iter().filter_map(|f| f.1).reduce(f64::max).map(fmt_pct).unwrap_or_else(dash),
+            s.fans.iter().map(|f| f.0).reduce(f64::max).map(|rpm| format!("{rpm:.0} RPM")).unwrap_or_default(),
+            s.fan_hist.pts.clone(),
+            Some(100.),
+        ),
+        Card::Power => (
+            s.power_w.map(crate::engine::fmt_watts).unwrap_or_else(dash),
+            l("whole Mac", "hele Macen").into(),
+            s.power_hist.pts.clone(),
+            None,
+        ),
+        Card::Tab(_) => (dash(), String::new(), Vec::new(), None),
+    }
 }
 
 fn sum(a: &[f64], b: &[f64]) -> Vec<f64> {
@@ -161,7 +227,6 @@ impl Render for MenuPanel {
         ));
         let s = &self.snap;
         let main = self.main.clone();
-        let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.;
         let mut busiest: Vec<&AppGroup> = s.apps.iter().filter(|a| a.cpu_pct > 0.).collect();
         busiest.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
         let now = crate::metrics::now_unix();
@@ -217,26 +282,10 @@ impl Render for MenuPanel {
                     .grid()
                     .grid_cols(2)
                     .gap(t::SPACE_2)
-                    .child(tile(Tab::Cpu, fmt_pct(s.cpu_pct), crate::locale::count(s.chip.cores as u64, "core", "cores", "kjerne", "kjerner"), &s.cpu_hist.pts, Some(100.), dark, main.clone()))
-                    .child(tile(Tab::Memory, fmt_bytes(s.mem.used as f64), fmt_pct(mem_pct), &s.mem_hist.pts, Some(100.), dark, main.clone()))
-                    .child(tile(
-                        Tab::Network,
-                        fmt_rate(s.net.rate_in + s.net.rate_out),
-                        format!("↓ {}", fmt_rate(s.net.rate_in)),
-                        &sum(&s.net_in_hist.pts, &s.net_out_hist.pts),
-                        None,
-                        dark,
-                        main.clone(),
-                    ))
-                    .child(tile(
-                        Tab::Disk,
-                        fmt_rate(s.disk.read_rate + s.disk.write_rate),
-                        format!("{} {}", fmt_bytes(s.disk.free as f64), l("free", "ledig")),
-                        &sum(&s.disk_r_hist.pts, &s.disk_w_hist.pts),
-                        None,
-                        dark,
-                        main.clone(),
-                    )),
+                    .children(crate::settings::Settings::load().panel_tiles.iter().filter_map(|key| Card::from_key(key)).map(|card| {
+                        let (value, detail, points, max) = tile_data(card, s);
+                        tile(card, value, detail, &points, max, dark, main.clone())
+                    }))
             )
             .when(!plans.is_empty(), |d| {
                 d.child(caption(l("AI plans", "AI-abonnementer"))).child(

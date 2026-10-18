@@ -1670,17 +1670,121 @@ pub(crate) fn update_preference(
     });
 }
 
-fn metric_heading(tab: Tab, dark: bool) -> Div {
-    let color = tab.metric().map(|m| m.accent(dark)).unwrap_or_else(|| t::accent(dark));
+/// A card on Overview or a tile in the panel: one of the pages, or a
+/// reading that lives on a page (temperature and fans on CPU, power on
+/// Battery).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Card {
+    Tab(Tab),
+    Temperature,
+    Fans,
+    Power,
+}
+
+impl Card {
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "temperature" => Some(Card::Temperature),
+            "fans" => Some(Card::Fans),
+            "power" => Some(Card::Power),
+            other => Tab::from_key(other).map(Card::Tab),
+        }
+    }
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Card::Tab(tab) => tab.key(),
+            Card::Temperature => "temperature",
+            Card::Fans => "fans",
+            Card::Power => "power",
+        }
+    }
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Card::Tab(tab) => tab.label(),
+            Card::Temperature => l("Temperature", "Temperatur"),
+            Card::Fans => l("Fans", "Vifter"),
+            Card::Power => l("Power", "Effekt"),
+        }
+    }
+    pub(crate) fn color(self, dark: bool) -> Hsla {
+        match self {
+            Card::Tab(tab) => tab.metric().map(|m| m.accent(dark)).unwrap_or_else(|| t::accent(dark)),
+            Card::Temperature => Metric::Projects.accent(dark),
+            Card::Fans => Metric::Bluetooth.accent(dark),
+            Card::Power => Metric::Power.accent(dark),
+        }
+    }
+    fn icon(self) -> &'static str {
+        match self {
+            Card::Tab(tab) => tab.icon(),
+            Card::Temperature => "icons/thermometer.svg",
+            Card::Fans => "icons/fan.svg",
+            Card::Power => "icons/zap.svg",
+        }
+    }
+    /// The page that holds the full reading.
+    pub(crate) fn opens(self) -> Tab {
+        match self {
+            Card::Tab(tab) => tab,
+            Card::Temperature | Card::Fans => Tab::Cpu,
+            Card::Power => Tab::Battery,
+        }
+    }
+}
+
+fn metric_heading(card: Card, dark: bool) -> Div {
+    let color = card.color(dark);
     div().flex().items_center().gap_2()
         .child(div().size(px(22.)).rounded(t::RADIUS_CONTROL).bg(color.opacity(0.14))
-            .flex().items_center().justify_center().child(icon_img(tab.icon(), 13., color)))
+            .flex().items_center().justify_center().child(icon_img(card.icon(), 13., color)))
         .child(div().text_size(t::TEXT_BODY).font_weight(FontWeight::MEDIUM)
-            .text_color(color).child(tab.label()))
+            .text_color(color).child(card.label()))
+}
+
+/// The value line and three supporting readings of the cards that are not
+/// pages of their own.
+fn reading_card(card: Card, s: &Snapshot) -> (String, String, [(&'static str, String); 3], &Hist, Option<f64>) {
+    let dash = || "—".to_string();
+    match card {
+        Card::Temperature => (
+            l("Chip · hottest", "Brikke · varmest").into(),
+            s.temps.chip.map(fmt_celsius).unwrap_or_else(dash),
+            [
+                ("SSD", s.temps.ssd.map(fmt_celsius).unwrap_or_else(dash)),
+                (l("Battery", "Batteri"), s.temps.battery.map(fmt_celsius).unwrap_or_else(dash)),
+                (l("Thermal state", "Termisk tilstand"), s.thermal.clone()),
+            ],
+            &s.temp_hist,
+            None,
+        ),
+        Card::Fans => {
+            let fastest = s.fans.iter().filter_map(|f| f.1).reduce(f64::max);
+            let rpm = |i: usize| s.fans.get(i).map(|f| format!("{:.0} RPM", f.0)).unwrap_or_default();
+            (
+                l("Fastest fan · of top speed", "Raskeste vifte · av toppfart").into(),
+                fastest.map(fmt_pct).unwrap_or_else(dash),
+                [(l("Fan 1", "Vifte 1"), rpm(0)), (l("Fan 2", "Vifte 2"), rpm(1)), (l("Fan 3", "Vifte 3"), rpm(2))],
+                &s.fan_hist,
+                Some(100.),
+            )
+        }
+        Card::Power => (
+            l("Whole Mac · measured", "Hele Macen · målt").into(),
+            s.power_w.map(crate::engine::fmt_watts).unwrap_or_else(dash),
+            [
+                ("GPU", s.gpu.power_w.map(crate::engine::fmt_watts).unwrap_or_else(dash)),
+                (l("CPU · apps", "CPU · apper"), crate::engine::fmt_watts(s.apps.iter().map(|a| a.power_w).sum())),
+                (l("Battery flow", "Batteristrøm"), s.battery.power_w.map(fmt_signed_watts).unwrap_or_default()),
+            ],
+            &s.power_hist,
+            None,
+        ),
+        Card::Tab(_) => unreachable!("pages build their own cards"),
+    }
 }
 
 fn overview_card(
-    tab: Tab,
+    card_kind: Card,
     context: String,
     value: String,
     stats: [(&str, String); 3],
@@ -1689,7 +1793,8 @@ fn overview_card(
     dark: bool,
     this: Entity<TideGaugeView>,
 ) -> impl IntoElement {
-    let color = tab.metric().unwrap().accent(dark);
+    let color = card_kind.color(dark);
+    let tab = card_kind.opens();
     let compact = crate::settings::Settings::load().compact_dashboard;
     // No reading: say so quietly instead of a big dash, and keep only the
     // supporting values that exist.
@@ -1702,15 +1807,15 @@ fn overview_card(
     let (number, unit) = value.rsplit_once(' ').unwrap_or((&value, ""));
     let keyboard_target = this.clone();
     div()
-        .id(SharedString::from(format!("overview-{}", tab.label())))
+        .id(SharedString::from(format!("overview-{}", card_kind.key())))
         .role(Role::Button)
         .aria_label(SharedString::from(format!(
             "{}: {}. {}",
-            tab.label(),
+            card_kind.label(),
             value,
             l("Open details", "Åpne detaljer")
         )))
-        .tab_index(20 + tab as isize)
+        .tab_index(20 + crate::settings::FAVORITE_METRICS.iter().position(|k| *k == card_kind.key()).unwrap_or(0) as isize)
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .focus_visible(|d| d.border_color(color))
@@ -1736,7 +1841,7 @@ fn overview_card(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(metric_heading(tab, dark))
+                .child(metric_heading(card_kind, dark))
                 .child(icon_img("icons/chevron-right.svg", 12., t::ink_dim(dark))),
         )
         .child(
@@ -1963,11 +2068,17 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         ),
     ];
     let target = this.clone();
+    let readings = [Card::Temperature, Card::Fans, Card::Power].map(|card| {
+        let (context, value, stats, hist, max) = reading_card(card, s);
+        (card, context, value, stats, hist, max)
+    });
     let cards: Vec<_> = cards
         .into_iter()
-        .filter(|(tab, ..)| favorites.iter().any(|k| k == tab.key()))
+        .map(|(tab, context, value, stats, hist, max)| (Card::Tab(tab), context, value, stats, hist, max))
+        .chain(readings)
+        .filter(|(card, ..)| favorites.iter().any(|k| k == card.key()))
         // A Mac without a battery gets no battery card.
-        .filter(|(tab, ..)| *tab != Tab::Battery || !s.battery.confirmed_absent())
+        .filter(|(card, ..)| *card != Card::Tab(Tab::Battery) || !s.battery.confirmed_absent())
         .collect();
     // A short last row takes the busiest-apps card instead of leaving a
     // hole; otherwise it sits beside the donuts below.
@@ -2006,8 +2117,8 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 .grid()
                 .grid_cols(3)
                 .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
-                .children(cards.into_iter().map(|(tab, context, value, stats, hist, max)| {
-                    overview_card(tab, context, value, stats, hist, max, dark, this.clone()).into_any_element()
+                .children(cards.into_iter().map(|(card, context, value, stats, hist, max)| {
+                    overview_card(card, context, value, stats, hist, max, dark, this.clone()).into_any_element()
                 }))
                 .when(fill_grid && !favorites.is_empty(), |d| {
                     let compact = settings.compact_dashboard;
@@ -3918,6 +4029,16 @@ pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_card_and_tile_key_names_a_card() {
+        for key in crate::settings::FAVORITE_METRICS.iter().chain(&crate::settings::PANEL_TILES) {
+            let card = super::Card::from_key(key).unwrap_or_else(|| panic!("{key} has no card"));
+            assert_eq!(card.key(), *key);
+        }
+        assert!(super::Card::from_key("fans").is_some_and(|c| c.opens() == super::Tab::Cpu));
+        assert!(super::Card::from_key("power").is_some_and(|c| c.opens() == super::Tab::Battery));
+    }
+
     #[test]
     fn battery_chart_floor_sits_a_round_step_below_the_lowest_day() {
         assert_eq!(super::health_floor(96.), 90.);

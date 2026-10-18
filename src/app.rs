@@ -142,7 +142,7 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
         return;
     };
-    let (width, height) = (crate::menu_panel::WIDTH as f64, crate::menu_panel::HEIGHT as f64);
+    let (width, height) = (crate::menu_panel::WIDTH as f64, crate::menu_panel::height() as f64);
     let left = (anchor.left + anchor.width / 2. - width / 2.).clamp(8., (anchor.display_width - width - 8.).max(8.));
     let bounds = Bounds::new(
         point(px(left as f32), px((anchor.bottom + 6.) as f32)),

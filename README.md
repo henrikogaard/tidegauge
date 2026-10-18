@@ -82,8 +82,8 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Area | Current implementation |
 |---|---|
 | Menu bar | One Tidegauge icon by default; optional labeled readings share the same native item |
-| Menu-bar panel | Live CPU, memory, network and disk with recent curves, AI plans, the busiest apps, and quick actions; optionally opened from any app with ⌃⌥⌘T or ⌃⌥⌘M (Settings → General) |
-| Overview | Favorite metric cards, busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
+| Menu-bar panel | Your choice of live tiles (CPU, memory, network, disk, GPU, battery, temperature, fans, power) with recent curves, AI plans, the busiest apps, and quick actions; optionally opened from any app with ⌃⌥⌘T or ⌃⌥⌘M (Settings → General) |
+| Overview | Favorite metric cards (including temperature, fans and power), busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Battery health | Capacity health and cycle count kept once a day beyond History's 30 days, charted per day on the Battery page |
 | Cores and clocks | Per-core use grouped by core type (Super, Performance, Efficiency), each group's clock speed, and the GPU's core count and clock |
 | Metric pages | CPU, Memory, Disk, Network, GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
