@@ -58,6 +58,112 @@ pub fn bg(dark: bool) -> Hsla {
 pub fn sidebar(dark: bool) -> Hsla {
     hex(if dark { 0x1b1b1e } else { 0xececef })
 }
+// ---------- Transparency ----------
+//
+// With transparency on, the window is a frosted-glass surface and its
+// background layers fade; text, charts and borders stay fully opaque. The
+// alpha math lives here, so the views only ask for a surface colour.
+
+/// Least alpha of the window ground and sidebar, at full amount.
+pub const MIN_GROUND_ALPHA: f32 = 0.15;
+/// Least alpha of a card, at full amount: cards carry the numbers.
+pub const MIN_CARD_ALPHA: f32 = 0.70;
+
+/// The alpha of each background surface, 1 for opaque.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Alphas {
+    /// The window's ground, behind the content.
+    pub bg: f32,
+    pub sidebar: f32,
+    pub card: f32,
+}
+
+impl Alphas {
+    pub const OPAQUE: Alphas = Alphas {
+        bg: 1.,
+        sidebar: 1.,
+        card: 1.,
+    };
+
+    /// Whether anything shows through, so the window needs the blur.
+    pub fn is_see_through(self) -> bool {
+        self != Alphas::OPAQUE
+    }
+}
+
+/// Fade from opaque towards `floor` as `amount` (a fraction) goes 0 to 1.
+fn fade(amount: f64, floor: f32) -> f32 {
+    let amount = if amount.is_nan() {
+        0.
+    } else {
+        amount.clamp(0., 1.) as f32
+    };
+    1. - (1. - floor) * amount
+}
+
+/// The dashboard's surfaces for a mode and an amount in percent. The content
+/// ground stays opaque with "Sidebar only"; with "Whole window" the ground and
+/// sidebar fade fully and cards fade less.
+pub fn window_alphas(mode: crate::settings::Transparency, amount_percent: f64) -> Alphas {
+    use crate::settings::Transparency;
+    let amount = amount_percent / 100.;
+    match mode {
+        Transparency::Off => Alphas::OPAQUE,
+        Transparency::Sidebar => Alphas {
+            sidebar: fade(amount, MIN_GROUND_ALPHA),
+            ..Alphas::OPAQUE
+        },
+        Transparency::Window => Alphas {
+            bg: fade(amount, MIN_GROUND_ALPHA),
+            sidebar: fade(amount, MIN_GROUND_ALPHA),
+            card: fade(amount, MIN_CARD_ALPHA),
+        },
+    }
+}
+
+/// The menu-bar panel's surfaces: its ground and its tiles, with the window's
+/// caps.
+pub fn panel_alphas(on: bool, amount_percent: f64) -> Alphas {
+    if !on {
+        return Alphas::OPAQUE;
+    }
+    let amount = amount_percent / 100.;
+    Alphas {
+        bg: fade(amount, MIN_GROUND_ALPHA),
+        sidebar: 1.,
+        card: fade(amount, MIN_CARD_ALPHA),
+    }
+}
+
+/// `color` with its alpha scaled to `alpha`.
+pub fn faded(color: Hsla, alpha: f32) -> Hsla {
+    color.opacity(alpha)
+}
+
+/// What the dashboard window currently shows through, set by its view each
+/// frame; the menu-bar panel passes its own `Alphas` instead.
+static WINDOW_ALPHAS: std::sync::RwLock<Alphas> = std::sync::RwLock::new(Alphas::OPAQUE);
+
+pub fn set_window_alphas(alphas: Alphas) {
+    *WINDOW_ALPHAS.write().unwrap() = alphas;
+}
+
+fn window_alphas_now() -> Alphas {
+    *WINDOW_ALPHAS.read().unwrap()
+}
+
+/// The dashboard's ground, faded by the window's transparency.
+pub fn window_bg(dark: bool) -> Hsla {
+    faded(bg(dark), window_alphas_now().bg)
+}
+pub fn window_sidebar(dark: bool) -> Hsla {
+    faded(sidebar(dark), window_alphas_now().sidebar)
+}
+/// A dashboard card's fill.
+pub fn window_card(dark: bool) -> Hsla {
+    faded(card(dark), window_alphas_now().card)
+}
+
 pub fn line(dark: bool) -> Hsla {
     hex(if dark { DARK.line } else { LIGHT.line })
 }
@@ -176,6 +282,96 @@ pub fn ok(dark: bool) -> Hsla {
 /// Track of a switch that is on: the system green of macOS switches.
 pub fn switch_on(dark: bool) -> Hsla {
     hex(if dark { 0x30d158 } else { 0x34c759 })
+}
+
+#[cfg(test)]
+mod transparency_tests {
+    use super::{
+        faded, hex, panel_alphas, window_alphas, Alphas, LIGHT, MIN_CARD_ALPHA, MIN_GROUND_ALPHA,
+    };
+    use crate::settings::Transparency::{Off, Sidebar, Window};
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn off_changes_nothing_at_any_amount() {
+        for amount in [0., 40., 100.] {
+            assert_eq!(window_alphas(Off, amount), Alphas::OPAQUE);
+        }
+        assert_eq!(panel_alphas(false, 100.), Alphas::OPAQUE);
+        assert!(!Alphas::OPAQUE.is_see_through());
+        let base = hex(LIGHT.card);
+        assert_eq!(faded(base, Alphas::OPAQUE.card), base);
+    }
+
+    #[test]
+    fn sidebar_only_fades_the_sidebar_alone() {
+        let a = window_alphas(Sidebar, 40.);
+        assert!(close(a.sidebar, 1. - 0.4 * (1. - MIN_GROUND_ALPHA)));
+        assert_eq!((a.bg, a.card), (1., 1.));
+        assert!(a.is_see_through());
+    }
+
+    #[test]
+    fn whole_window_fades_the_ground_more_than_cards() {
+        let a = window_alphas(Window, 40.);
+        assert!(close(a.bg, 1. - 0.4 * (1. - MIN_GROUND_ALPHA)));
+        assert!(close(a.sidebar, a.bg));
+        assert!(close(a.card, 1. - 0.4 * (1. - MIN_CARD_ALPHA)));
+        assert!(a.card > a.bg);
+    }
+
+    #[test]
+    fn the_caps_hold_at_and_beyond_full_amount() {
+        for amount in [100., 250., f64::INFINITY] {
+            let a = window_alphas(Window, amount);
+            assert!(close(a.bg, MIN_GROUND_ALPHA), "ground {amount}");
+            assert!(close(a.sidebar, MIN_GROUND_ALPHA));
+            assert!(close(a.card, MIN_CARD_ALPHA));
+            assert!(close(
+                window_alphas(Sidebar, amount).sidebar,
+                MIN_GROUND_ALPHA
+            ));
+        }
+        for amount in [0., -30., f64::NAN] {
+            assert_eq!(window_alphas(Window, amount), Alphas::OPAQUE, "{amount}");
+        }
+    }
+
+    #[test]
+    fn alpha_falls_as_the_amount_rises() {
+        let mut last = Alphas::OPAQUE;
+        for amount in (0..=100).step_by(10) {
+            let a = window_alphas(Window, f64::from(amount));
+            assert!(a.bg <= last.bg && a.card <= last.card);
+            last = a;
+        }
+    }
+
+    #[test]
+    fn the_panel_uses_the_window_caps_for_ground_and_tiles() {
+        let a = panel_alphas(true, 100.);
+        assert!(close(a.bg, MIN_GROUND_ALPHA));
+        assert!(close(a.card, MIN_CARD_ALPHA));
+        let a = panel_alphas(true, 40.);
+        assert_eq!(
+            a,
+            Alphas {
+                sidebar: 1.,
+                ..window_alphas(Window, 40.)
+            }
+        );
+    }
+
+    #[test]
+    fn fading_keeps_the_colour_and_scales_only_alpha() {
+        let base = hex(LIGHT.bg);
+        let f = faded(base, 0.5);
+        assert_eq!((f.h, f.s, f.l), (base.h, base.s, base.l));
+        assert!(close(f.a, 0.5));
+    }
 }
 
 #[cfg(test)]

@@ -11,6 +11,18 @@ pub struct MenuItem {
     pub style: String,  // icon|value|graph|both
 }
 
+/// How much of the dashboard window lets the desktop show through.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Transparency {
+    #[default]
+    Off,
+    /// Only the sidebar.
+    Sidebar,
+    /// The window's ground and sidebar; cards stay mostly opaque.
+    Window,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Settings {
@@ -52,6 +64,12 @@ pub struct Settings {
     pub panel_shortcut: Option<String>,
     /// "Don't ask again" on the Move to Applications prompt.
     pub move_prompt_declined: bool,
+    /// Where the dashboard window is see-through.
+    pub transparency: Transparency,
+    /// Whether the menu-bar panel is see-through.
+    pub panel_transparency: bool,
+    /// How see-through, in percent; shared by the window and the panel.
+    pub transparency_amount: f64,
 }
 
 impl Default for Settings {
@@ -83,6 +101,9 @@ impl Default for Settings {
             language: None,
             panel_shortcut: None,
             move_prompt_declined: false,
+            transparency: Transparency::Off,
+            panel_transparency: false,
+            transparency_amount: TRANSPARENCY_DEFAULT,
         }
     }
 }
@@ -141,9 +162,25 @@ impl Settings {
         self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
         self.alert_app_mem_gb = valid_app_memory_gb(self.alert_app_mem_gb);
         self.alert_temp_c = valid_chip_temp(self.alert_temp_c);
+        self.transparency_amount = valid_transparency_amount(self.transparency_amount);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
         normalize_choices(&mut self.panel_tiles, &PANEL_TILES);
+    }
+
+    /// Where the dashboard is see-through, given whether macOS has "Reduce
+    /// transparency" on, which always wins.
+    pub fn window_transparency(&self, reduce_transparency: bool) -> Transparency {
+        if reduce_transparency {
+            Transparency::Off
+        } else {
+            self.transparency
+        }
+    }
+
+    /// Whether the menu-bar panel is see-through, under the same rule.
+    pub fn panel_is_transparent(&self, reduce_transparency: bool) -> bool {
+        self.panel_transparency && !reduce_transparency
     }
 
     pub fn reset_dashboard(&mut self) {
@@ -226,6 +263,17 @@ pub fn valid_chip_temp(value: f64) -> f64 {
         value.clamp(CHIP_TEMP_RANGE.0, CHIP_TEMP_RANGE.1)
     } else {
         CHIP_TEMP_DEFAULT
+    }
+}
+
+pub const TRANSPARENCY_DEFAULT: f64 = 40.;
+pub const TRANSPARENCY_RANGE: (f64, f64) = (0., 100.);
+
+pub fn valid_transparency_amount(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(TRANSPARENCY_RANGE.0, TRANSPARENCY_RANGE.1)
+    } else {
+        TRANSPARENCY_DEFAULT
     }
 }
 
@@ -350,6 +398,47 @@ mod tests {
             assert_eq!(loaded.menu_items[0].metric, "cpu");
             assert_eq!(loaded.menu_items[0].style, "both");
         }
+    }
+
+    #[test]
+    fn transparency_defaults_off_for_old_files_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"dark":true}"#).unwrap();
+        assert_eq!(old.transparency, Transparency::Off);
+        assert!(!old.panel_transparency);
+        assert_eq!(old.transparency_amount, TRANSPARENCY_DEFAULT);
+        let saved: Settings = serde_json::from_str(
+            r#"{"transparency":"window","panel_transparency":true,"transparency_amount":70}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.transparency, Transparency::Window);
+        assert!(saved.panel_transparency);
+        assert_eq!(saved.transparency_amount, 70.);
+        let sidebar: Settings = serde_json::from_str(r#"{"transparency":"sidebar"}"#).unwrap();
+        assert_eq!(sidebar.transparency, Transparency::Sidebar);
+        let again: Settings = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(again.transparency, Transparency::Window);
+    }
+
+    #[test]
+    fn transparency_amount_is_clamped_and_reduce_transparency_turns_it_off() {
+        let mut settings = Settings {
+            transparency_amount: 250.,
+            ..Settings::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.transparency_amount, 100.);
+        settings.transparency_amount = f64::NAN;
+        settings.normalize();
+        assert_eq!(settings.transparency_amount, TRANSPARENCY_DEFAULT);
+        let on = Settings {
+            transparency: Transparency::Window,
+            panel_transparency: true,
+            ..Settings::default()
+        };
+        assert_eq!(on.window_transparency(false), Transparency::Window);
+        assert!(on.panel_is_transparent(false));
+        assert_eq!(on.window_transparency(true), Transparency::Off);
+        assert!(!on.panel_is_transparent(true));
     }
 
     #[test]

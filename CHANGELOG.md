@@ -6,6 +6,14 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings → Transparency lets the main window show the desktop through frosted
+  glass: off, sidebar only, or the whole window, and separately the menu-bar
+  panel, with one Amount slider for both. Cards fade less than the background so
+  numbers stay readable. It applies at once and turns itself off while macOS
+  Reduce transparency is on.
+
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
 ### Added

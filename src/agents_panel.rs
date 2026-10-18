@@ -181,7 +181,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                 .rounded(t::RADIUS_CONTROL)
                 .border_1()
                 .border_color(t::line(dark))
-                .bg(t::card(dark))
+                .bg(t::window_card(dark))
                 .cursor_pointer()
                 .hover(|d| d.bg(t::card_hi(dark)))
                 .focus_visible(move |d| d.border_color(t::accent(dark)))
