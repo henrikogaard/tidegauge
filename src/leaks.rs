@@ -71,10 +71,18 @@ pub fn detect(samples: &VecDeque<(f64, u64)>, now: f64) -> Option<f64> {
     if now_bytes < MIN_NOW || growth < MIN_GROWTH.max(first * MIN_RELATIVE_GROWTH) {
         return None;
     }
-    if !steady(&medians, growth) {
+    if freed(samples, growth) || !steady(&medians, growth) {
         return None;
     }
     Some(growth)
+}
+
+/// Whether the latest sample has fallen back from the peak by more than the
+/// allowed drawdown: the app has freed the memory, so it is not a leak.
+fn freed(samples: &VecDeque<(f64, u64)>, growth: f64) -> bool {
+    let peak = samples.iter().map(|&(_, bytes)| bytes).max().unwrap_or(0) as f64;
+    let now = samples.back().map_or(0., |&(_, bytes)| bytes as f64);
+    peak - now > growth * MAX_DRAWDOWN
 }
 
 fn steady(medians: &[f64], growth: f64) -> bool {
@@ -134,6 +142,7 @@ impl Tracker {
         }
         self.last_sample = now;
         let mut seen = std::collections::HashSet::new();
+        let mut relaunched = Vec::new();
         for app in apps.iter().filter(|a| a.mem_bytes >= MIN_TRACKED) {
             seen.insert(app.key.as_str());
             let series = self
@@ -150,6 +159,7 @@ impl Tracker {
             if !series.pids.is_empty() && !app.pids.iter().any(|pid| series.pids.contains(pid)) {
                 series.samples.clear();
                 series.flag = None;
+                relaunched.push(app.key.clone());
             }
             series.name.clone_from(&app.name);
             series.pids.clone_from(&app.pids);
@@ -164,6 +174,10 @@ impl Tracker {
         }
         // An app that is gone, or shrank below the floor, starts over too.
         self.series.retain(|key, _| seen.contains(key.as_str()));
+        // Take them off the published list now, not at the next judgement,
+        // so a fresh instance is never offered to quit as a leak.
+        self.flagged
+            .retain(|leak| self.series.contains_key(&leak.key) && !relaunched.contains(&leak.key));
         if now - self.last_judged >= EVALUATE_EVERY {
             self.last_judged = now;
             self.judge(now);
@@ -185,6 +199,8 @@ impl Tracker {
                 }
                 None => {
                     series.flag = match series.flag.take() {
+                        // Memory given back clears the flag at once.
+                        Some((leak, _)) if freed(&series.samples, leak.growth) => None,
                         Some((leak, misses)) if misses + 1 < MISSES_ALLOWED => {
                             Some((leak, misses + 1))
                         }
@@ -389,17 +405,50 @@ mod tests {
         let mut tracker = Tracker::default();
         climbing(&mut tracker, 0, 185, &[1]);
         assert_eq!(tracker.flagged().len(), 1);
-        // Its memory falls back to where it began: the climb is gone, but the
-        // flag holds for two more judgements and clears on the third.
+        // Its memory levels off at the top: the climb no longer passes, but
+        // the flag holds for two more judgements and clears later.
         let mut at = NOW - WINDOW + 185. * 60.;
         let mut judged_flags = Vec::new();
-        for _ in 0..20 {
+        for _ in 0..120 {
             at += 60.;
-            tracker.update(at, &[app("com.example.leaky", &[1], 1.5)]);
+            tracker.update(at, &[app("com.example.leaky", &[1], 4.05)]);
             judged_flags.push(tracker.flagged().len());
         }
         assert_eq!(judged_flags[0], 1);
         assert_eq!(*judged_flags.last().unwrap(), 0);
+    }
+
+    #[test]
+    fn memory_given_back_clears_the_flag_at_the_next_judgement() {
+        let mut tracker = Tracker::default();
+        climbing(&mut tracker, 0, 185, &[1]);
+        assert_eq!(tracker.flagged().len(), 1);
+        let mut at = NOW - WINDOW + 185. * 60.;
+        for _ in 0..5 {
+            at += 60.;
+            tracker.update(at, &[app("com.example.leaky", &[1], 1.)]);
+        }
+        assert!(tracker.flagged().is_empty());
+    }
+
+    #[test]
+    fn a_climb_that_ends_in_a_big_drop_is_not_flagged() {
+        let mut samples = series(|f| 1.5 * GIB + 2.5 * GIB * f);
+        samples.back_mut().unwrap().1 = GIB as u64;
+        assert_eq!(detect(&samples, NOW), None);
+    }
+
+    #[test]
+    fn a_relaunch_clears_the_published_flag_at_once() {
+        let mut tracker = Tracker::default();
+        climbing(&mut tracker, 0, 185, &[1, 2]);
+        assert_eq!(tracker.flagged().len(), 1);
+        // One minute later, new processes: no judgement is due yet.
+        tracker.update(
+            NOW - WINDOW + 186. * 60.,
+            &[app("com.example.leaky", &[7], 1.5)],
+        );
+        assert!(tracker.flagged().is_empty());
     }
 
     #[test]
