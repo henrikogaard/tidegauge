@@ -553,11 +553,13 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                 ),
                 _ => return None,
             };
+            let disk_free_pct =
+                (s.disk.total > 0).then(|| s.disk.free as f64 / s.disk.total as f64 * 100.);
             // What a ring or gauge fills to: free space for the disk, use for the rest.
             let fill_pct = match metric {
                 "cpu" => Some(s.cpu_pct),
                 "memory" => Some(s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.),
-                "disk" => (s.disk.total > 0).then(|| s.disk.free as f64 / s.disk.total as f64 * 100.),
+                "disk" => disk_free_pct,
                 "battery" => s.battery.percent,
                 _ => None,
             }
@@ -573,7 +575,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
                 _ if !settings.menu_colored => None,
                 "cpu" => menu_style::cpu_tint(s.cpu_pct),
                 "battery" => s.battery.percent.and_then(|p| menu_style::remaining_tint(p, charging)),
-                "disk" => fill_pct.and_then(|free| menu_style::remaining_tint(free, false)),
+                "disk" => disk_free_pct.and_then(|free| menu_style::remaining_tint(free, false)),
                 _ => None,
             };
             let cores: Vec<u8> = if style == "bars" {
