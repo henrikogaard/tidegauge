@@ -33,6 +33,8 @@ pub struct Settings {
     /// Alert when one app holds more than `alert_app_mem_gb` for five minutes.
     pub alert_app_mem_enabled: bool,
     pub alert_app_mem_gb: f64,
+    /// Alert when one app's memory has climbed steadily for three hours.
+    pub alert_leak_enabled: bool,
     /// Alert when the startup disk has less than 10 GB free.
     pub alert_low_disk_enabled: bool,
     /// Alert when macOS reports a serious or critical thermal state.
@@ -84,6 +86,7 @@ impl Default for Settings {
             alert_app_cpu_pct: APP_CPU_DEFAULT,
             alert_app_mem_enabled: false,
             alert_app_mem_gb: APP_MEMORY_DEFAULT,
+            alert_leak_enabled: false,
             alert_low_disk_enabled: false,
             alert_thermal_enabled: false,
             alert_pressure_enabled: false,

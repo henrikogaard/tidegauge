@@ -20,6 +20,7 @@ mod history_browser;
 mod gpu_power;
 mod icons;
 mod instance;
+mod leaks;
 mod keepawake;
 mod locale;
 #[cfg(test)]

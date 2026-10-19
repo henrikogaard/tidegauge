@@ -32,6 +32,7 @@ fn still_enabled(metric: &str, settings: &Settings) -> bool {
         "network" => settings.alert_network_enabled,
         app if app.starts_with("app:") => settings.alert_app_enabled,
         app if app.starts_with("appmem:") => settings.alert_app_mem_enabled,
+        app if app.starts_with("leak:") => settings.alert_leak_enabled,
         "low_disk" => settings.alert_low_disk_enabled,
         "thermal" => settings.alert_thermal_enabled,
         "pressure" => settings.alert_pressure_enabled,
@@ -212,6 +213,7 @@ mod tests {
             alert_network_enabled: true,
             alert_app_enabled: true,
             alert_app_mem_enabled: true,
+            alert_leak_enabled: true,
             alert_low_disk_enabled: true,
             alert_thermal_enabled: true,
             alert_pressure_enabled: true,
@@ -222,7 +224,7 @@ mod tests {
             alert_offline_enabled: true,
             ..Settings::default()
         };
-        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "low_disk", "thermal", "pressure", "temperature", "battery_low", "battery_full", "disk_health:disk0", "offline", "online"] {
+        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "leak:com.example.busy", "low_disk", "thermal", "pressure", "temperature", "battery_low", "battery_full", "disk_health:disk0", "offline", "online"] {
             assert!(still_enabled(metric, &on), "{metric} was dropped");
             assert!(!still_enabled(metric, &Settings::default()), "{metric} passed while off");
         }
