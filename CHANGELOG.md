@@ -6,12 +6,32 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Changed
+
+- Tidegauge itself costs less to run with the window closed. The packaged app
+  no longer keeps a full-size copy of its icon in memory (its bundle already
+  carries the icon), which took about 100 MB. The audio apps and devices,
+  clock speeds, GPU power and per-disk transfer rates are read only while a
+  window or the panel shows them (audio and the IOReport readings every 20 to
+  30 seconds otherwise, and audio at once whenever an app is held at a
+  volume); the menu-bar item updates when a new sample, a click or a saved
+  setting arrives instead of every 0.7 seconds; the sensor, disk and `nettop`
+  workers sleep until something changes instead of waking every 0.25 to 1
+  second; and the closed dashboard checks every 5 seconds instead of every
+  second. Which apps are registered with macOS is asked once per process, not
+  on every pass. Set `TIDEGAUGE_HIDDEN=1` to start with the dashboard closed,
+  for measuring ([#100](https://github.com/henrikogaard/tidegauge/pull/100)).
+
+## [0.4.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.1) — 2026-10-19
+
 ### Added
 
 - An About section at the end of Settings shows the app icon, version and
   build, Check for Updates, and links to the project, the author, Buy me a
   coffee and the license. The version and update check moved there from
-  General, and the menu-bar menu has an About Tidegauge item that opens it.
+  General, and the menu-bar menu has an About Tidegauge item that opens it
+  ([#96](https://github.com/henrikogaard/tidegauge/pull/96)).
+
 ### Changed
 
 - The history database is about a tenth of its size. App names are stored once,
@@ -26,9 +46,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Settings are read from memory for a quarter of a second at a time instead of
   from disk on every request while the window draws; a change from another
   process or a save shows at once.
-- The release binary is stripped of symbols, about 4 MB smaller.
-### Changed
-
+- The release binary is stripped of symbols, about 4 MB smaller
+  ([#97](https://github.com/henrikogaard/tidegauge/pull/97)).
 - Tidegauge samples less when nothing is watching. With no window or panel
   open, the process list, apps and agents refresh every 8 seconds instead of
   every 2, and the slow probes rest unless a page or an alert needs them:
@@ -42,20 +61,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   Claude Code session files are read once instead of every sample, and a
   hidden or minimized window no longer redraws. Alerts keep working with every
   window closed. History's busiest-by-network list is coarser while the
-  Network page is closed.
-- Tidegauge itself costs less to run with the window closed. The packaged app
-  no longer keeps a full-size copy of its icon in memory (its bundle already
-  carries the icon), which took about 100 MB. The audio apps and devices,
-  clock speeds, GPU power and per-disk transfer rates are read only while a
-  window or the panel shows them (audio and the IOReport readings every 20 to
-  30 seconds otherwise, and audio at once whenever an app is held at a
-  volume); the menu-bar item updates when a new sample, a click or a saved
-  setting arrives instead of every 0.7 seconds; the sensor, disk and `nettop`
-  workers sleep until something changes instead of waking every 0.25 to 1
-  second; and the closed dashboard checks every 5 seconds instead of every
-  second. Which apps are registered with macOS is asked once per process, not
-  on every pass. Set `TIDEGAUGE_HIDDEN=1` to start with the dashboard closed,
-  for measuring.
+  Network page is closed. A window on another Space or fully covered counts as
+  hidden ([#98](https://github.com/henrikogaard/tidegauge/pull/98)).
 
 ## [0.4.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.0) — 2026-10-19
 
