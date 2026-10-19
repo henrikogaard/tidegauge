@@ -129,6 +129,8 @@ pub struct TideGaugeView {
     /// The page whose "About this page" notes are open; any other page
     /// opens with them closed.
     pub(crate) info_for: Option<Destination>,
+    /// The answer to "Why is my Mac slow?" while Overview shows it.
+    pub(crate) slow_check: Option<Vec<crate::diagnose::Finding>>,
     pub(crate) sliders: crate::settings_page::Sliders,
     /// How long Keep awake lasts when switched on; `None` until stopped.
     pub(crate) awake_choice: Option<u64>,
@@ -224,6 +226,7 @@ impl TideGaugeView {
             agent_expanded: None,
             show_sensor_channels: false,
             info_for: None,
+            slow_check: None,
             sliders,
             awake_choice: Some(60),
             last_here: None,
@@ -1322,6 +1325,11 @@ impl TideGaugeView {
         _cx: &mut Context<TideGaugeView>,
     ) -> PageChrome {
         match here {
+            Destination::Tab(Tab::Overview) => PageChrome {
+                actions: vec![crate::slow_check::header_button(self.slow_check.is_some(), dark, this).into_any_element()],
+                notes: tab_notes(Tab::Overview),
+                ..Default::default()
+            },
             Destination::Tab(tab) => PageChrome { notes: tab_notes(tab), ..Default::default() },
             Destination::Apps => crate::process_panel::chrome(self),
             Destination::Agents => PageChrome { notes: crate::agents_panel::notes(), ..Default::default() },
@@ -1340,6 +1348,10 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "Nettverkstotaler teller siden Macen startet. Gjennomsnitt og topper gjelder denne økten.",
             ),
             shared_memory_note(),
+            l(
+                "Why is my Mac slow? reads the latest readings and the last half minute, and only reports what is measured. Free disk space is what macOS reports, which can be less than Finder shows.",
+                "Hvorfor er Macen min treg? leser de siste målingene og det siste halve minuttet, og melder bare det som er målt. Ledig diskplass er det macOS melder, og det kan være mindre enn Finder viser.",
+            ),
         ],
         Tab::Cpu => vec![
             l(
@@ -1629,7 +1641,13 @@ impl TideGaugeView {
         }
         let s = &self.snap;
         match self.tab {
-            Tab::Overview => overview(s, dark, this).into_any_element(),
+            Tab::Overview => div()
+                .flex()
+                .flex_col()
+                .gap(t::SPACE_4)
+                .when_some(self.slow_check.as_ref(), |d, findings| d.child(crate::slow_check::card_view(findings, dark, this.clone())))
+                .child(overview(s, dark, this))
+                .into_any_element(),
             Tab::Cpu => cpu_tab(s, dark, self.show_sensor_channels, this).into_any_element(),
             Tab::Memory => memory_tab(s, dark, this).into_any_element(),
             Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), this, cx).into_any_element(),
@@ -2829,7 +2847,7 @@ fn growing_memory(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div 
     let mut list = card(dark).child(caption(l("Growing memory", "Voksende minne"), dark));
     for leak in &s.leaks {
         let app = s.apps.iter().find(|a| a.key == leak.key);
-        let action = app.and_then(|a| crate::process_panel::quit_action(s, a));
+        let action = app.and_then(|a| crate::process_panel::quit_action(s, a, crate::process_control::Force::Quit));
         let target = this.clone();
         list = list.child(
             div()

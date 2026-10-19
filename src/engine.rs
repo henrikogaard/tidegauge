@@ -224,6 +224,10 @@ pub struct Snapshot {
     /// empty while the sensor reading is stale.
     pub temps: crate::named_sensors::Temps,
     pub uptime: Duration,
+    /// When the Mac last started, in Unix seconds, where macOS reports it.
+    pub boot_unix: Option<f64>,
+    /// Low Power Mode is on.
+    pub low_power: bool,
     pub alerts: Vec<Alert>,
     /// Apps whose memory has climbed steadily for hours.
     pub leaks: Vec<crate::leaks::Leak>,
@@ -276,6 +280,8 @@ impl Default for Snapshot {
             thermal_level: None,
             temps: Default::default(),
             uptime: Duration::ZERO,
+            boot_unix: None,
+            low_power: false,
             alerts: Vec::new(),
             leaks: Vec::new(),
         }
@@ -331,6 +337,7 @@ impl Engine {
             tick: 0,
         };
         e.snap.chip = chip_info();
+        e.snap.boot_unix = boot_unix();
         e.snap.disk = DiskSample {
             used: disk_stats().used,
             total: disk_stats().total,
@@ -371,6 +378,7 @@ impl Engine {
         s.load_avg = load_avg();
         s.thermal = thermal_state().unwrap_or("—").into();
         s.thermal_level = crate::metrics::thermal_level();
+        s.low_power = crate::metrics::low_power_mode();
         let sensors = crate::sensors::latest();
         s.temps = if sensors.is_fresh() { crate::named_sensors::temps(&sensors.named) } else { Default::default() };
         match s.temps.chip {

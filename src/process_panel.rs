@@ -451,22 +451,26 @@ pub(crate) fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a
     }
 }
 
-/// What Quit asks for on one app outside its own row: the app itself when
-/// it has one registered main process, otherwise its processes you own.
-/// Nothing when macOS owns it. The caller runs it through `request`, which
-/// confirms first.
-pub(crate) fn quit_action(s: &Snapshot, app: &AppGroup) -> Option<Action> {
+/// The request that quits `app` the way its row here does, or `None` when
+/// nothing of it may be quit from Tidegauge (macOS's own, another user's,
+/// or Tidegauge itself).
+pub(crate) fn quit_action(s: &Snapshot, app: &AppGroup, force: Force) -> Option<Action> {
     if let Some(main) = registered_main(s, app) {
         return control::blocked(main).is_none().then(|| Action::App {
             main: main.clone(),
             name: app.name.clone(),
             helpers: app.pids.len(),
             memory: app.mem_bytes,
-            force: Force::Quit,
+            force,
         });
     }
-    let targets: Vec<ProcInfo> = s.procs.iter().filter(|p| app.pids.contains(&p.pid) && control::blocked(p).is_none()).cloned().collect();
-    (!targets.is_empty()).then(|| Action::Processes { name: app.name.clone(), targets, force: Force::Quit })
+    let targets: Vec<ProcInfo> = s
+        .procs
+        .iter()
+        .filter(|p| app.pids.contains(&p.pid) && control::blocked(p).is_none())
+        .cloned()
+        .collect();
+    (!targets.is_empty()).then(|| Action::Processes { name: app.name.clone(), targets, force })
 }
 
 fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
