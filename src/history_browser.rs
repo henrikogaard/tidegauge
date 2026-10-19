@@ -187,16 +187,35 @@ fn empty(request: &Request) -> Data {
     }
 }
 
+/// The apps with a sample in the range. With the `apps` table this is one
+/// index probe per recently seen app; a version 1 database, not yet migrated,
+/// scans the range instead.
+fn apps_in_range(c: &Connection, start: f64, end: f64) -> rusqlite::Result<Vec<String>> {
+    let has_apps: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='apps')",
+        [],
+        |r| r.get(0),
+    )?;
+    let sql = if has_apps {
+        // `last_seen` is rewritten every few minutes, so allow it to lag.
+        "SELECT name FROM apps WHERE last_seen >= ?1 - 3600
+         AND EXISTS (SELECT 1 FROM app_sample s WHERE s.app_id = apps.id AND s.ts >= ?1 AND s.ts < ?2)
+         ORDER BY name COLLATE NOCASE, name"
+    } else {
+        "SELECT DISTINCT app FROM app_metric WHERE ts >= ?1 AND ts < ?2 ORDER BY app COLLATE NOCASE, app"
+    };
+    let mut statement = c.prepare(sql)?;
+    let apps = statement.query_map(params![start, end], |r| r.get(0))?.collect();
+    apps
+}
+
 pub fn query_connection(c: &Connection, request: &Request) -> rusqlite::Result<Data> {
     if !RANGES.iter().any(|(h, _)| *h == request.hours) || !request.end.is_finite() {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let mut data = empty(request);
     let width = (data.end - data.start) / BUCKETS as f64;
-    let mut apps = c.prepare("SELECT DISTINCT app FROM app_metric WHERE ts >= ?1 AND ts < ?2 ORDER BY app COLLATE NOCASE, app")?;
-    data.apps = apps
-        .query_map(params![data.start, data.end], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    data.apps = apps_in_range(c, data.start, data.end)?;
     let rows: Vec<(usize, f64, u64)> = if let Some(app) = &request.app {
         // Per-app energy counters have not been validated as measured watts.
         let column = match request.metric {

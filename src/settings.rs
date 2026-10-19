@@ -185,35 +185,65 @@ fn path() -> PathBuf {
 /// parsed settings can be reused. Drawing the window asks for settings many
 /// times a frame, so this saves a read and a parse each time.
 type Stamp = (Option<std::time::SystemTime>, u64);
-static CACHE: std::sync::Mutex<Option<(Stamp, Settings)>> = std::sync::Mutex::new(None);
+
+/// How long a read is trusted without even looking at the file again. A frame
+/// asks many times within a millisecond; a change made by another process is
+/// picked up within this long.
+const TRUST: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[derive(Default)]
+struct Cache {
+    entry: Option<(Stamp, std::time::Instant, Settings)>,
+}
+
+static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(Cache { entry: None });
 
 fn stamp(path: &std::path::Path) -> Option<Stamp> {
     let metadata = std::fs::metadata(path).ok()?;
     Some((metadata.modified().ok(), metadata.len()))
 }
 
-impl Settings {
-    pub fn load() -> Self {
-        let path = path();
-        let current = stamp(&path);
-        let mut cache = CACHE.lock().unwrap();
-        if let (Some(current), Some((cached, settings))) = (current, cache.as_ref()) {
-            if *cached == current {
+impl Cache {
+    /// The settings in `path`. With `trust_recent` a read from the last
+    /// moments is returned without looking at the file; otherwise the file's
+    /// identity is checked and the file is parsed again only if it changed.
+    fn load(&mut self, path: &std::path::Path, trust_recent: bool) -> Settings {
+        if let Some((_, at, settings)) = &self.entry {
+            if trust_recent && at.elapsed() < TRUST {
                 return settings.clone();
             }
         }
-        let mut settings: Self = std::fs::read(&path)
+        let current = stamp(path);
+        if let (Some(current), Some((cached, at, settings))) = (current, self.entry.as_mut()) {
+            if *cached == current {
+                *at = std::time::Instant::now();
+                return settings.clone();
+            }
+        }
+        let mut settings: Settings = std::fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         settings.normalize();
-        *cache = current.map(|current| (current, settings.clone()));
+        self.entry = current.map(|current| (current, std::time::Instant::now(), settings.clone()));
         settings
+    }
+}
+
+impl Settings {
+    /// The saved settings, reused for a quarter of a second at a time.
+    pub fn load() -> Self {
+        CACHE.lock().unwrap().load(&path(), true)
+    }
+    /// The saved settings as the file holds them now, for a read that is
+    /// followed by a write.
+    fn load_fresh() -> Self {
+        CACHE.lock().unwrap().load(&path(), false)
     }
     pub fn save(&self) -> std::io::Result<()> {
         let result = self.write_to(&path());
         // Read the saved file afresh next time, whatever its timestamp says.
-        *CACHE.lock().unwrap() = None;
+        CACHE.lock().unwrap().entry = None;
         result
     }
 
@@ -428,7 +458,7 @@ pub fn localized_style_label(style: &str) -> Option<&'static str> {
 
 /// Read the latest file before changing one setting, preserving other preferences.
 pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
-    let mut settings = Settings::load();
+    let mut settings = Settings::load_fresh();
     f(&mut settings);
     settings.normalize();
     settings.save()
@@ -666,5 +696,28 @@ mod tests {
             .any(|item| item.metric == "gpu" && item.style == "graph"));
         assert!(!destination.with_extension("json.tmp").exists());
         std::fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn cached_settings_follow_saves_and_changes_by_other_processes() {
+        let path = std::env::temp_dir().join(format!("tidegauge-settings-cache-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut cache = Cache::default();
+        assert_eq!(cache.load(&path, true).alert_cpu_pct, 90., "no file: defaults");
+        Settings { alert_cpu_pct: 70., ..Settings::default() }.write_to(&path).unwrap();
+        // A missing file was not cached, so the new one is read at once.
+        assert_eq!(cache.load(&path, true).alert_cpu_pct, 70.);
+        // Another process rewrites it: the recent read is trusted for a moment...
+        std::fs::write(&path, br#"{"alert_cpu_pct": 60.5, "padding": "different length"}"#).unwrap();
+        assert_eq!(cache.load(&path, true).alert_cpu_pct, 70., "trusted without touching the file");
+        // ...but a read that precedes a write, or a read after the trust runs out, sees it.
+        assert_eq!(cache.load(&path, false).alert_cpu_pct, 60.5);
+        std::fs::write(&path, br#"{"alert_cpu_pct": 55}"#).unwrap();
+        std::thread::sleep(TRUST + std::time::Duration::from_millis(50));
+        assert_eq!(cache.load(&path, true).alert_cpu_pct, 55.);
+        // Saving drops the entry whatever the clock says.
+        cache.entry = None;
+        assert_eq!(cache.load(&path, true).alert_cpu_pct, 55.);
+        std::fs::remove_file(&path).unwrap();
     }
 }
