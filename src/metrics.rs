@@ -7,8 +7,8 @@ use crate::ffi::*;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::mem::{size_of, zeroed};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_unix() -> f64 {
     SystemTime::now()
@@ -532,35 +532,6 @@ pub fn net_counters() -> (u64, u64) {
     }
 }
 
-static DEFAULT_IFACE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
-
-pub fn default_interface() -> String {
-    {
-        let g = DEFAULT_IFACE.lock().unwrap();
-        if let Some((t, name)) = g.as_ref() {
-            if !name.is_empty() && t.elapsed() < Duration::from_secs(30) {
-                return name.clone();
-            }
-        }
-    }
-    let mut iface = String::from("en0");
-    if let Ok(out) = std::process::Command::new("/sbin/route")
-        .args(["-n", "get", "default"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            let l = line.trim();
-            if l.starts_with("interface:") {
-                iface = l.trim_start_matches("interface:").trim().to_string();
-            }
-        }
-    }
-    let mut g = DEFAULT_IFACE.lock().unwrap();
-    *g = Some((Instant::now(), iface.clone()));
-    iface
-}
-
 // ---- Chip / CPU info ----
 #[derive(Clone, Default)]
 pub struct ChipInfo {
@@ -660,6 +631,22 @@ pub fn chip_info() -> ChipInfo {
 pub fn thermal_level() -> Option<u8> {
     let level = objc2_foundation::NSProcessInfo::processInfo().thermalState().0;
     (0..=3).contains(&level).then_some(level as u8)
+}
+
+/// Whether Low Power Mode is on.
+pub fn low_power_mode() -> bool {
+    objc2_foundation::NSProcessInfo::processInfo().isLowPowerModeEnabled()
+}
+
+/// When the Mac last started (`kern.boottime`), in Unix seconds.
+pub fn boot_unix() -> Option<f64> {
+    let name = CString::new("kern.boottime").ok()?;
+    let mut boot = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    let mut size = size_of::<libc::timeval>();
+    let status = unsafe {
+        libc::sysctlbyname(name.as_ptr(), &mut boot as *mut libc::timeval as *mut c_void, &mut size, std::ptr::null_mut(), 0)
+    };
+    (status == 0 && boot.tv_sec > 0).then(|| boot.tv_sec as f64 + boot.tv_usec as f64 / 1e6)
 }
 
 pub fn thermal_state() -> Option<&'static str> {

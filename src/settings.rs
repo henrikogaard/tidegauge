@@ -8,7 +8,19 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct MenuItem {
     pub metric: String, // cpu|memory|disk|network|battery|gpu|power
-    pub style: String,  // icon|value|graph|both
+    pub style: String,  // icon|value|graph|both|bars|pie|gauge, see `style_fits`
+}
+
+/// How much of the dashboard window lets the desktop show through.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Transparency {
+    #[default]
+    Off,
+    /// Only the sidebar.
+    Sidebar,
+    /// The window's ground and sidebar; cards stay mostly opaque.
+    Window,
 }
 
 /// Where metric colours come from (Settings → Colors). The transform lives in
@@ -42,6 +54,9 @@ pub struct Settings {
     pub colors: ColorMode,
     pub charts: ChartStyle,
     pub show_app_icon: bool,
+    /// Menu-bar readings in each metric's accent colours, turning orange and
+    /// red at warning levels. Off: the menu bar's own ink.
+    pub menu_colored: bool,
     pub menu_items: Vec<MenuItem>,
     pub alert_cpu_pct: f64,
     pub alert_mem_pct: f64,
@@ -56,6 +71,8 @@ pub struct Settings {
     /// Alert when one app holds more than `alert_app_mem_gb` for five minutes.
     pub alert_app_mem_enabled: bool,
     pub alert_app_mem_gb: f64,
+    /// Alert when one app's memory has climbed steadily for three hours.
+    pub alert_leak_enabled: bool,
     /// Alert when the startup disk has less than 10 GB free.
     pub alert_low_disk_enabled: bool,
     /// Alert when macOS reports a serious or critical thermal state.
@@ -65,11 +82,29 @@ pub struct Settings {
     /// Alert when the chip's hottest sensor stays above `alert_temp_c`.
     pub alert_temp_enabled: bool,
     pub alert_temp_c: f64,
+    /// Alert when the charge falls to `alert_battery_low_pct` on battery.
+    pub alert_battery_low_enabled: bool,
+    pub alert_battery_low_pct: f64,
+    /// Alert once when the battery reaches full on the adapter.
+    pub alert_battery_full_enabled: bool,
+    /// Alert when an internal disk reports failing health.
+    pub alert_disk_health_enabled: bool,
+    /// Alert when the Mac has had no usable network path for ten seconds, and
+    /// again when it is back.
+    pub alert_offline_enabled: bool,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
     /// The tiles in the menu-bar panel, in order; any of `PANEL_TILES`.
     pub panel_tiles: Vec<String>,
+    /// Show the AI plans section in the menu-bar panel. Plans that are not
+    /// updating are left out whatever this says.
+    pub panel_show_plans: bool,
+    /// Show the Busiest apps section in the menu-bar panel.
+    pub panel_show_apps: bool,
+    /// App CPU as a share of one core (100 % is one full core, like Activity
+    /// Monitor) instead of a share of the whole Mac.
+    pub app_cpu_per_core: bool,
     pub compact_dashboard: bool,
     /// The app's language: "en", "nb", or `None` to follow macOS.
     pub language: Option<String>,
@@ -78,6 +113,12 @@ pub struct Settings {
     pub panel_shortcut: Option<String>,
     /// "Don't ask again" on the Move to Applications prompt.
     pub move_prompt_declined: bool,
+    /// Where the dashboard window is see-through.
+    pub transparency: Transparency,
+    /// Whether the menu-bar panel is see-through.
+    pub panel_transparency: bool,
+    /// How see-through, in percent; shared by the window and the panel.
+    pub transparency_amount: f64,
 }
 
 impl Default for Settings {
@@ -87,6 +128,7 @@ impl Default for Settings {
             colors: ColorMode::default(),
             charts: ChartStyle::default(),
             show_app_icon: true,
+            menu_colored: false,
             menu_items: Vec::new(),
             alert_cpu_pct: 90.0,
             alert_mem_pct: 92.0,
@@ -98,19 +140,31 @@ impl Default for Settings {
             alert_app_cpu_pct: APP_CPU_DEFAULT,
             alert_app_mem_enabled: false,
             alert_app_mem_gb: APP_MEMORY_DEFAULT,
+            alert_leak_enabled: false,
             alert_low_disk_enabled: false,
             alert_thermal_enabled: false,
             alert_pressure_enabled: false,
             alert_temp_enabled: false,
             alert_temp_c: CHIP_TEMP_DEFAULT,
+            alert_battery_low_enabled: false,
+            alert_battery_low_pct: BATTERY_LOW_DEFAULT,
+            alert_battery_full_enabled: false,
+            alert_disk_health_enabled: false,
+            alert_offline_enabled: false,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
             panel_tiles: DEFAULT_PANEL_TILES.iter().map(|s| (*s).into()).collect(),
+            panel_show_plans: true,
+            panel_show_apps: true,
+            app_cpu_per_core: false,
             compact_dashboard: false,
             language: None,
             panel_shortcut: None,
             move_prompt_declined: false,
+            transparency: Transparency::Off,
+            panel_transparency: false,
+            transparency_amount: TRANSPARENCY_DEFAULT,
         }
     }
 }
@@ -169,9 +223,26 @@ impl Settings {
         self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
         self.alert_app_mem_gb = valid_app_memory_gb(self.alert_app_mem_gb);
         self.alert_temp_c = valid_chip_temp(self.alert_temp_c);
+        self.alert_battery_low_pct = valid_battery_low(self.alert_battery_low_pct);
+        self.transparency_amount = valid_transparency_amount(self.transparency_amount);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
         normalize_choices(&mut self.panel_tiles, &PANEL_TILES);
+    }
+
+    /// Where the dashboard is see-through, given whether macOS has "Reduce
+    /// transparency" on, which always wins.
+    pub fn window_transparency(&self, reduce_transparency: bool) -> Transparency {
+        if reduce_transparency {
+            Transparency::Off
+        } else {
+            self.transparency
+        }
+    }
+
+    /// Whether the menu-bar panel is see-through, under the same rule.
+    pub fn panel_is_transparent(&self, reduce_transparency: bool) -> bool {
+        self.panel_transparency && !reduce_transparency
     }
 
     pub fn reset_dashboard(&mut self) {
@@ -191,7 +262,7 @@ impl Settings {
         if !MENU_METRICS.iter().any(|(key, _)| *key == metric) {
             return;
         }
-        if style.is_some_and(|style| !MENU_STYLES.iter().any(|(key, _)| *key == style)) {
+        if style.is_some_and(|style| !style_fits(metric, style)) {
             return;
         }
         self.menu_items.retain(|item| item.metric != metric);
@@ -257,6 +328,28 @@ pub fn valid_chip_temp(value: f64) -> f64 {
     }
 }
 
+pub const BATTERY_LOW_DEFAULT: f64 = 20.;
+pub const BATTERY_LOW_RANGE: (f64, f64) = (5., 50.);
+
+pub fn valid_battery_low(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(BATTERY_LOW_RANGE.0, BATTERY_LOW_RANGE.1)
+    } else {
+        BATTERY_LOW_DEFAULT
+    }
+}
+
+pub const TRANSPARENCY_DEFAULT: f64 = 40.;
+pub const TRANSPARENCY_RANGE: (f64, f64) = (0., 100.);
+
+pub fn valid_transparency_amount(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(TRANSPARENCY_RANGE.0, TRANSPARENCY_RANGE.1)
+    } else {
+        TRANSPARENCY_DEFAULT
+    }
+}
+
 pub const APP_MEMORY_DEFAULT: f64 = 4.;
 pub const APP_MEMORY_RANGE: (f64, f64) = (1., 64.);
 
@@ -282,12 +375,28 @@ pub const MENU_METRICS: [(&str, &str); 7] = [
     ("battery", "Battery"),
     ("power", "Power"),
 ];
-pub const MENU_STYLES: [(&str, &str); 4] = [
+pub const MENU_STYLES: [(&str, &str); 7] = [
     ("icon", "Icon"),
     ("value", "Value"),
     ("graph", "Graph"),
     ("both", "Value + graph"),
+    ("bars", "Bars"),
+    ("pie", "Ring"),
+    ("gauge", "Gauge"),
 ];
+
+/// Whether a style suits a metric: bars show each CPU core, a ring shows one
+/// percentage (CPU, memory, free disk space, battery) and the gauge is a
+/// battery.
+pub fn style_fits(metric: &str, style: &str) -> bool {
+    match style {
+        "icon" | "value" | "graph" | "both" => true,
+        "bars" => metric == "cpu",
+        "pie" => matches!(metric, "cpu" | "memory" | "disk" | "battery"),
+        "gauge" => metric == "battery",
+        _ => false,
+    }
+}
 
 pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
     use crate::locale::text as l;
@@ -310,6 +419,9 @@ pub fn localized_style_label(style: &str) -> Option<&'static str> {
         "value" => l("Value", "Verdi"),
         "graph" => l("Graph", "Graf"),
         "both" => l("Value + graph", "Verdi + graf"),
+        "bars" => l("Bars", "Søyler"),
+        "pie" => l("Ring", "Ring"),
+        "gauge" => l("Gauge", "Måler"),
         _ => return None,
     })
 }
@@ -333,6 +445,10 @@ mod tests {
         )
         .unwrap();
         assert!(!settings.alert_cpu_enabled);
+        assert!(!settings.alert_battery_low_enabled, "older files get the new alerts off");
+        assert!(!settings.alert_battery_full_enabled);
+        assert!(!settings.alert_disk_health_enabled);
+        assert_eq!(settings.alert_battery_low_pct, 20.);
         assert_eq!(settings.dashboard_tabs.len(), 10);
         settings.dashboard_tabs = vec![
             "history".into(),
@@ -362,6 +478,17 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_files_get_the_panel_section_and_app_cpu_defaults() {
+        let settings: Settings = serde_json::from_str(r#"{"panel_tiles":["cpu"],"dark":false}"#).unwrap();
+        assert!(settings.panel_show_plans);
+        assert!(settings.panel_show_apps);
+        assert!(!settings.app_cpu_per_core, "a share of the whole Mac unless chosen otherwise");
+        assert_eq!(settings.panel_tiles, ["cpu"]);
+        let off: Settings = serde_json::from_str(r#"{"panel_show_plans":false,"app_cpu_per_core":true}"#).unwrap();
+        assert!(!off.panel_show_plans && off.panel_show_apps && off.app_cpu_per_core);
+    }
+
+    #[test]
     fn appearance_round_trip_preserves_menu_items_and_login_preference() {
         for dark in [None, Some(false), Some(true)] {
             let mut settings = Settings {
@@ -378,6 +505,47 @@ mod tests {
             assert_eq!(loaded.menu_items[0].metric, "cpu");
             assert_eq!(loaded.menu_items[0].style, "both");
         }
+    }
+
+    #[test]
+    fn transparency_defaults_off_for_old_files_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"dark":true}"#).unwrap();
+        assert_eq!(old.transparency, Transparency::Off);
+        assert!(!old.panel_transparency);
+        assert_eq!(old.transparency_amount, TRANSPARENCY_DEFAULT);
+        let saved: Settings = serde_json::from_str(
+            r#"{"transparency":"window","panel_transparency":true,"transparency_amount":70}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.transparency, Transparency::Window);
+        assert!(saved.panel_transparency);
+        assert_eq!(saved.transparency_amount, 70.);
+        let sidebar: Settings = serde_json::from_str(r#"{"transparency":"sidebar"}"#).unwrap();
+        assert_eq!(sidebar.transparency, Transparency::Sidebar);
+        let again: Settings = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(again.transparency, Transparency::Window);
+    }
+
+    #[test]
+    fn transparency_amount_is_clamped_and_reduce_transparency_turns_it_off() {
+        let mut settings = Settings {
+            transparency_amount: 250.,
+            ..Settings::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.transparency_amount, 100.);
+        settings.transparency_amount = f64::NAN;
+        settings.normalize();
+        assert_eq!(settings.transparency_amount, TRANSPARENCY_DEFAULT);
+        let on = Settings {
+            transparency: Transparency::Window,
+            panel_transparency: true,
+            ..Settings::default()
+        };
+        assert_eq!(on.window_transparency(false), Transparency::Window);
+        assert!(on.panel_is_transparent(false));
+        assert_eq!(on.window_transparency(true), Transparency::Off);
+        assert!(!on.panel_is_transparent(true));
     }
 
     #[test]
@@ -435,6 +603,46 @@ mod tests {
         assert_eq!(settings.menu_items[0].style, "both");
         settings.set_menu_style("cpu", None);
         assert!(settings.menu_items.is_empty());
+    }
+
+    #[test]
+    fn new_styles_fit_only_the_metrics_they_suit() {
+        for (metric, _) in MENU_METRICS {
+            for style in ["icon", "value", "graph", "both"] {
+                assert!(style_fits(metric, style));
+            }
+        }
+        assert!(style_fits("cpu", "bars") && !style_fits("memory", "bars"));
+        for metric in ["cpu", "memory", "disk", "battery"] {
+            assert!(style_fits(metric, "pie"));
+        }
+        assert!(!style_fits("network", "pie") && !style_fits("gpu", "pie") && !style_fits("power", "pie"));
+        assert!(style_fits("battery", "gauge") && !style_fits("cpu", "gauge"));
+        assert!(!style_fits("cpu", "sparkles"));
+        let mut settings = Settings::default();
+        settings.set_menu_style("memory", Some("bars"));
+        assert!(settings.menu_items.is_empty(), "a style that doesn't fit is refused");
+        settings.set_menu_style("cpu", Some("bars"));
+        settings.set_menu_style("battery", Some("gauge"));
+        assert_eq!(settings.menu_items.len(), 2);
+        for (style, _) in MENU_STYLES {
+            assert!(localized_style_label(style).is_some(), "{style}");
+        }
+    }
+
+    #[test]
+    fn old_settings_files_load_uncolored_and_new_ones_round_trip() {
+        let old: Settings =
+            serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"graph"}]}"#).unwrap();
+        assert!(!old.menu_colored, "monochrome stays the default");
+        assert_eq!(old.menu_items[0].style, "graph");
+        let new = Settings { menu_colored: true, ..Settings::default() };
+        let loaded: Settings = serde_json::from_slice(&serde_json::to_vec(&new).unwrap()).unwrap();
+        assert!(loaded.menu_colored);
+        // A style a later version wrote still loads; the menu bar draws it as a value.
+        let future: Settings =
+            serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"hologram"}]}"#).unwrap();
+        assert_eq!(future.menu_items[0].style, "hologram");
     }
 
     #[test]
