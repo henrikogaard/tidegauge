@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.4.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.2) — 2026-10-19
+
 ### Changed
 
 - Tidegauge itself costs less to run with the window closed. The packaged app
