@@ -13,6 +13,10 @@ hardware acceptance checks. A merge and a published release are separate events.
   about 200 MB for the first two seconds and 57 MB afterwards. The app now
   starts and stays near 26 MB until the dashboard or the menu-bar panel is first
   opened. A normal launch is unchanged.
+- The dashboard shows current numbers the moment it is brought forward. A window
+  that had been hidden or behind other windows kept showing what it last drew
+  (zeros, on a first launch) for up to five seconds, and a page chosen with
+  `TIDEGAUGE_START` could stay unpainted the same way.
 
 ## [0.5.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.0) — 2026-10-19
 

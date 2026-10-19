@@ -293,6 +293,19 @@ impl TideGaugeView {
             scroll_to_alerts: false,
             blurred: false,
         };
+        // Brought forward after sitting hidden or behind other windows: macOS
+        // stops drawing such a window, so what it last showed (nothing at all
+        // on a first launch) would stay until the loop's next look, up to
+        // five seconds on. Take the newest sample and draw at once, and wake
+        // the loop so it leaves its slow pace.
+        cx.observe_window_activation(window, |v: &mut TideGaugeView, window, cx| {
+            if window.is_window_active() {
+                v.snap = latest();
+                crate::app::REFRESH.notify();
+                cx.notify();
+            }
+        })
+        .detach();
         // 1s refresh loop. A hidden or minimized window does no work, and a
         // page that only draws the snapshot redraws when there is a new one.
         // While the window is not on screen the loop looks every five
