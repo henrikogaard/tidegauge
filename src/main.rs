@@ -58,6 +58,7 @@ mod statusbar;
 mod theme;
 mod ui;
 pub mod updater;
+mod widget_export;
 
 use gpui_kit::*;
 use std::time::Duration;

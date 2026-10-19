@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="${1:?app bundle path is required}"
 IDENTITY="${2:?code-signing identity is required}"
 
@@ -12,9 +13,13 @@ fi
 sign() {
     local path="$1"
     local preserve_entitlements="${2:-no}"
+    local entitlements_file="${3:-}"
     local sign_args=(--force)
     if [ "$IDENTITY" != "-" ]; then
         sign_args+=(--options runtime --timestamp)
+    fi
+    if [ -n "$entitlements_file" ]; then
+        sign_args+=(--entitlements "$entitlements_file")
     fi
     if [ "$preserve_entitlements" = "yes" ]; then
         sign_args+=(--preserve-metadata=entitlements)
@@ -42,4 +47,13 @@ sign "$DOWNLOADER_XPC" yes
 sign "$AUTOUPDATE"
 sign "$UPDATER_APP"
 sign "$FRAMEWORK"
-sign "$APP"
+
+# The widget extension is sandboxed and shares an app group with the app, so it
+# is signed inside-out before the app, which then carries the group too.
+APPEX="$APP/Contents/PlugIns/TidegaugeWidgets.appex"
+if [ -d "$APPEX" ]; then
+    sign "$APPEX" no "$ROOT/widgets/TidegaugeWidgets.entitlements"
+    sign "$APP" no "$ROOT/packaging/app.entitlements"
+else
+    sign "$APP"
+fi

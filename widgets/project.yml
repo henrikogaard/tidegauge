@@ -1,0 +1,31 @@
+# Source of truth for TidegaugeWidgets.xcodeproj. Regenerate with:
+#   xcodegen generate --spec widgets/project.yml --project widgets
+# The project is committed so building needs only Xcode, not XcodeGen.
+name: TidegaugeWidgets
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "0"
+targets:
+  TidegaugeWidgets:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Sources
+        excludes:
+          - Info.plist
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: no.ogard.tidegauge.widgets
+        INFOPLIST_FILE: Sources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: TidegaugeWidgets.entitlements
+        SKIP_INSTALL: YES
+        ENABLE_APP_SANDBOX: YES
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks @executable_path/../../../../Frameworks"
+        APPLICATION_EXTENSION_API_ONLY: YES

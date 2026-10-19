@@ -143,6 +143,25 @@ else
     plutil -insert SUEnableAutomaticChecks -bool NO "$PLIST"
 fi
 
+# Desktop widgets: the WidgetKit extension goes in Contents/PlugIns. Set
+# TIDEGAUGE_SKIP_WIDGETS=1 to leave it out (no Xcode on the machine).
+# Preview and QA builds continue without it when xcodebuild is missing;
+# a production build does not.
+if [ "${TIDEGAUGE_SKIP_WIDGETS:-0}" != "1" ]; then
+    if xcodebuild -version >/dev/null 2>&1; then
+        WIDGET_ARCH="$(lipo -archs "$BINARY" | awk '{ print $1 }')"
+        WIDGET_APPEX="$("$ROOT/scripts/build-widgets.sh" \
+            "$OUTPUT_ROOT/.widgets-$MODE" "$VERSION" "$BUILD_VERSION" "$WIDGET_ARCH")"
+        mkdir -p "$APP/Contents/PlugIns"
+        ditto "$WIDGET_APPEX" "$APP/Contents/PlugIns/TidegaugeWidgets.appex"
+    elif [ "$MODE" = "production" ]; then
+        printf '%s\n' "Production packaging needs Xcode (xcodebuild) for the widgets." >&2
+        exit 1
+    else
+        printf '%s\n' "warning: xcodebuild not available; packaging without widgets." >&2
+    fi
+fi
+
 "$ROOT/scripts/sign-bundle.sh" "$APP" "$SIGNING_IDENTITY"
 codesign --verify --deep --strict "$APP"
 printf '%s\n' "$APP"

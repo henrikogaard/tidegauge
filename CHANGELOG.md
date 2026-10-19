@@ -6,6 +6,19 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Desktop and Notification Center widgets (macOS 14 or later). **Tidegauge
+  Reading** is a small widget with a ring and one reading, chosen when you edit
+  the widget: CPU, memory, GPU, battery, network or disk. **Tidegauge
+  Overview** is a medium widget with four readings and their sparklines and a
+  large one with all six. They follow light and dark and Tidegauge's colours,
+  read English or Norwegian strings, and show "Open Tidegauge to start" when
+  Tidegauge has not written readings for 2 minutes. Tidegauge writes the
+  readings to a shared app group folder every 12 seconds, and only while a
+  widget exists; nothing leaves the Mac. macOS decides how often a widget is
+  redrawn, typically every few minutes.
+
 ## [0.4.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.2) — 2026-10-19
 
 ### Changed
