@@ -3,7 +3,7 @@
 //! sampler and the probe threads read it to pick a cadence. Alerts keep the
 //! probes they need running whatever is on screen.
 
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// The dashboard pages that need a probe of their own.
@@ -41,6 +41,13 @@ const HIDDEN_PERIOD: Duration = Duration::from_secs(8);
 /// A pass this much early still counts as due, so tick jitter never skips a
 /// whole period.
 const JITTER: Duration = Duration::from_secs(1);
+/// How often the IOReport readings (clock speeds, GPU power) are taken while
+/// nothing shows them, and the longest gap whose reading still counts as
+/// current: a longer one is an average of the gap, so it is only a baseline.
+const HIDDEN_RATES_PERIOD: Duration = Duration::from_secs(20);
+const RATES_MAX_GAP: Duration = Duration::from_secs(30);
+/// How old the audio list may get while nothing shows it.
+const HIDDEN_AUDIO_PERIOD: Duration = Duration::from_secs(30);
 
 struct State {
     window: Option<Page>,
@@ -56,19 +63,59 @@ static STATE: Mutex<State> = Mutex::new(State {
     disk_health_alert: false,
 });
 
+/// Counts the changes to the demand, so a worker that rests between probes
+/// can sleep until one instead of waking to look.
+static CHANGES: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
+
+fn changed() {
+    *CHANGES.0.lock().unwrap() += 1;
+    CHANGES.1.notify_all();
+}
+
+/// The number of changes so far. Read it before reading the demand, then pass
+/// it to [`wait_for_change`]: a change in between is not missed.
+pub fn generation() -> u64 {
+    *CHANGES.0.lock().unwrap()
+}
+
+/// Sleep until the demand changes after `seen`, or `timeout` passes.
+pub fn wait_for_change(seen: u64, timeout: Duration) {
+    let guard = CHANGES.0.lock().unwrap();
+    let _ = CHANGES
+        .1
+        .wait_timeout_while(guard, timeout, |now| *now == seen);
+}
+
 pub fn set_window(page: Option<Page>) {
-    STATE.lock().unwrap().window = page;
+    let mut state = STATE.lock().unwrap();
+    if state.window != page {
+        state.window = page;
+        drop(state);
+        changed();
+    }
 }
 
 /// The panel is open right now.
 pub fn panel_seen() {
-    STATE.lock().unwrap().panel_seen = Some(Instant::now());
+    let mut state = STATE.lock().unwrap();
+    let was_open = state
+        .panel_seen
+        .is_some_and(|at| at.elapsed() < PANEL_SEEN_FOR);
+    state.panel_seen = Some(Instant::now());
+    if !was_open {
+        drop(state);
+        changed();
+    }
 }
 
 pub fn set_alerts(network: bool, disk_health: bool) {
     let mut state = STATE.lock().unwrap();
-    state.network_alert = network;
-    state.disk_health_alert = disk_health;
+    if (state.network_alert, state.disk_health_alert) != (network, disk_health) {
+        state.network_alert = network;
+        state.disk_health_alert = disk_health;
+        drop(state);
+        changed();
+    }
 }
 
 pub fn current() -> Demand {
@@ -152,6 +199,34 @@ impl Demand {
         }
     }
 
+    /// Per-disk transfer rates are drawn on the dashboard's Disk page, with
+    /// the last two minutes behind them, so they are kept while a window is
+    /// open.
+    pub fn disk_io_wanted(&self) -> bool {
+        self.window.is_some()
+    }
+
+    /// Whether the IOReport readings are due, `since_last` after the previous
+    /// one. Each costs a few milliseconds of CPU, and only the dashboard
+    /// shows them, so with nothing on screen they are taken now and then.
+    pub fn rates_due(&self, since_last: Duration) -> bool {
+        self.watched() || since_last + JITTER >= HIDDEN_RATES_PERIOD
+    }
+
+    /// Whether a reading taken `since_last` after the previous one describes
+    /// now, or is the average of a long gap that is better left unshown.
+    pub fn rates_current(since_last: Duration) -> bool {
+        since_last <= RATES_MAX_GAP
+    }
+
+    /// Whether the audio apps and devices are due, `since_last` after the
+    /// previous pass. Something on screen shows them, and a tap on an app
+    /// must follow it and the default output; otherwise a slow look keeps
+    /// them from being long out of date.
+    pub fn audio_due(&self, since_last: Duration, taps: bool) -> bool {
+        self.watched() || taps || since_last >= HIDDEN_AUDIO_PERIOD
+    }
+
     /// The raw AppleSMC temperature channels are listed on the CPU page only.
     pub fn raw_sensors(&self) -> bool {
         self.page(Page::Cpu)
@@ -176,6 +251,68 @@ mod tests {
             window: Some(page),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn audio_rests_while_nothing_shows_it_and_no_app_is_tapped() {
+        let hidden = Demand::default();
+        assert!(!hidden.audio_due(Duration::from_secs(2), false));
+        assert!(!hidden.audio_due(Duration::from_secs(29), false));
+        assert!(hidden.audio_due(Duration::from_secs(30), false));
+        assert!(
+            hidden.audio_due(Duration::from_secs(2), true),
+            "taps follow their app"
+        );
+        assert!(window(Page::Other).audio_due(Duration::ZERO, false));
+        let panel = Demand {
+            panel: true,
+            ..Default::default()
+        };
+        assert!(panel.audio_due(Duration::ZERO, false));
+    }
+
+    #[test]
+    fn iokit_readings_rest_while_nothing_shows_them() {
+        let hidden = Demand::default();
+        assert!(!hidden.rates_due(Duration::from_secs(2)));
+        assert!(!hidden.rates_due(Duration::from_secs(18)));
+        assert!(hidden.rates_due(Duration::from_secs(19)));
+        assert!(window(Page::Cpu).rates_due(Duration::from_secs(2)));
+        assert!(Demand {
+            panel: true,
+            ..Default::default()
+        }
+        .rates_due(Duration::ZERO));
+        assert!(Demand::rates_current(Duration::from_secs(22)));
+        assert!(!Demand::rates_current(Duration::from_secs(31)));
+    }
+
+    #[test]
+    fn disk_rates_are_kept_only_for_an_open_window() {
+        assert!(!Demand::default().disk_io_wanted());
+        assert!(!Demand {
+            panel: true,
+            ..Default::default()
+        }
+        .disk_io_wanted());
+        assert!(window(Page::Other).disk_io_wanted());
+    }
+
+    #[test]
+    fn a_waiting_worker_wakes_on_a_change_not_on_the_timeout() {
+        let seen = generation();
+        let waiter = std::thread::spawn(move || {
+            let start = Instant::now();
+            wait_for_change(seen, Duration::from_secs(30));
+            start.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        changed();
+        assert!(waiter.join().unwrap() < Duration::from_secs(5));
+        // A change made before the wait began is not slept through.
+        let start = Instant::now();
+        wait_for_change(seen, Duration::from_secs(30));
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

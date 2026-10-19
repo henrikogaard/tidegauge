@@ -171,11 +171,16 @@ pub fn start() {
 /// page has just opened and wants the raw channels.
 fn wait_for_next_sample(raw: bool) {
     let until = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(250));
+    loop {
+        let seen = crate::demand::generation();
         if !raw && crate::demand::current().raw_sensors() {
             return;
         }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        crate::demand::wait_for_change(seen, left);
     }
 }
 

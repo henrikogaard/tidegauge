@@ -62,11 +62,47 @@ impl ProcessGroup {
 #[derive(Default)]
 pub struct Tracker {
     origins: HashMap<Identity, Origin>,
+    /// The bundle macOS registers for each running app. Fixed for the life of
+    /// a process, so each is asked for once: every lookup is a round trip to
+    /// LaunchServices.
+    bundles: BundleCache,
+}
+
+/// What was learned about each process, keyed by pid and start time, with the
+/// executable it was learned for: a process can exec another program.
+#[derive(Default)]
+struct BundleCache(HashMap<Identity, (String, String)>);
+
+impl BundleCache {
+    /// The cached bundle for `id`, else `lookup()`, which is then kept. No
+    /// answer is not kept: an app may not be registered yet.
+    /// A kept bundle is used only for the executable it was found for.
+    fn resolve(
+        &mut self,
+        id: Identity,
+        exe: &str,
+        lookup: impl FnOnce() -> Option<String>,
+    ) -> Option<String> {
+        if let Some((kept_exe, bundle)) = self.0.get(&id) {
+            if kept_exe == exe {
+                return Some(bundle.clone());
+            }
+        }
+        self.0.remove(&id);
+        let bundle = lookup()?;
+        self.0.insert(id, (exe.to_string(), bundle.clone()));
+        Some(bundle)
+    }
+
+    /// Forget processes that are no longer running.
+    fn retain(&mut self, live: &HashSet<Identity>) {
+        self.0.retain(|id, _| live.contains(id));
+    }
 }
 
 impl Tracker {
     pub fn sample(&mut self, procs: &[ProcInfo], enumerated: &HashSet<i32>) -> Vec<ProcessGroup> {
-        let apps = registered_apps(procs);
+        let apps = registered_apps(procs, &mut self.bundles);
         let exited: HashSet<Identity> = self
             .origins
             .values()
@@ -215,22 +251,24 @@ impl Tracker {
     }
 }
 
-fn registered_apps(procs: &[ProcInfo]) -> Vec<RegisteredApp> {
+fn registered_apps(procs: &[ProcInfo], cache: &mut BundleCache) -> Vec<RegisteredApp> {
     use objc2_app_kit::NSWorkspace;
     let by_pid: HashMap<_, _> = procs.iter().map(|p| (p.pid, p)).collect();
+    cache.retain(&procs.iter().map(Identity::of).collect());
     NSWorkspace::sharedWorkspace()
         .runningApplications()
         .iter()
         .filter_map(|app| {
-            if app.isTerminated() {
-                return None;
-            }
             let p = *by_pid.get(&app.processIdentifier())?;
-            let bundle = app.bundleURL()?.path()?.to_string();
-            let executable = app.executableURL()?.path()?.to_string();
-            if executable != p.exe_path || bundle_root(&executable).as_deref() != Some(&bundle) {
-                return None;
-            }
+            let bundle = cache.resolve(Identity::of(p), &p.exe_path, || {
+                if app.isTerminated() {
+                    return None;
+                }
+                let bundle = app.bundleURL()?.path()?.to_string();
+                let executable = app.executableURL()?.path()?.to_string();
+                (executable == p.exe_path && bundle_root(&executable).as_deref() == Some(&bundle))
+                    .then_some(bundle)
+            })?;
             Some(RegisteredApp {
                 process: p.clone(),
                 bundle,
@@ -254,6 +292,84 @@ pub(crate) fn confirmed_exit(id: Identity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_process_is_looked_up_once_for_as_long_as_it_runs() {
+        let mut cache = BundleCache::default();
+        let (a, b) = (
+            Identity {
+                pid: 1,
+                started: 10,
+            },
+            Identity {
+                pid: 2,
+                started: 20,
+            },
+        );
+        let mut lookups = 0;
+        for _ in 0..3 {
+            assert_eq!(
+                cache.resolve(a, "/exe", || {
+                    lookups += 1;
+                    Some("/A.app".into())
+                }),
+                Some("/A.app".into())
+            );
+            assert_eq!(
+                cache.resolve(b, "/exe", || {
+                    lookups += 1;
+                    None
+                }),
+                None
+            );
+        }
+        // A: once. B has no bundle, so it is asked every time.
+        assert_eq!(lookups, 4);
+        // The pid comes back for another process: it is asked again.
+        cache.retain(&HashSet::from([b]));
+        let reused = Identity {
+            pid: 1,
+            started: 99,
+        };
+        assert_eq!(
+            cache.resolve(reused, "/exe", || {
+                lookups += 1;
+                Some("/B.app".into())
+            }),
+            Some("/B.app".into())
+        );
+        assert_eq!(
+            cache.resolve(a, "/exe", || {
+                lookups += 1;
+                None
+            }),
+            None
+        );
+        assert_eq!(lookups, 6);
+    }
+
+    #[test]
+    fn a_process_that_runs_another_program_is_looked_up_again() {
+        let mut cache = BundleCache::default();
+        let id = Identity {
+            pid: 7,
+            started: 70,
+        };
+        let found = |cache: &mut BundleCache, exe: &str, bundle: Option<&str>| {
+            cache.resolve(id, exe, || bundle.map(String::from))
+        };
+        assert_eq!(
+            found(&mut cache, "/A.app/x", Some("/A.app")),
+            Some("/A.app".into())
+        );
+        assert_eq!(found(&mut cache, "/A.app/x", None), Some("/A.app".into()));
+        // Same pid and start time, new executable: the old bundle is not used.
+        assert_eq!(found(&mut cache, "/opt/tool", None), None);
+        assert_eq!(
+            found(&mut cache, "/B.app/y", Some("/B.app")),
+            Some("/B.app".into())
+        );
+    }
     fn proc(pid: i32, ppid: i32, path: &str) -> ProcInfo {
         ProcInfo {
             pid,

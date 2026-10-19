@@ -288,14 +288,25 @@ impl TideGaugeView {
         };
         // 1s refresh loop. A hidden or minimized window does no work, and a
         // page that only draws the snapshot redraws when there is a new one.
+        // While the window is not on screen the loop looks every five
+        // seconds, and at once when the menu-bar item brings it forward.
         let handle = window.window_handle();
+        let off_screen = std::sync::atomic::AtomicBool::new(false);
         cx.spawn(
             async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| loop {
-                smol::Timer::after(std::time::Duration::from_millis(1000)).await;
+                let pause = if off_screen.load(std::sync::atomic::Ordering::Relaxed) {
+                    5
+                } else {
+                    1
+                };
+                crate::app::REFRESH
+                    .wait(std::time::Duration::from_secs(pause))
+                    .await;
                 let _ = cx.update(|cx: &mut App| {
                     let visible = handle
                         .update(cx, |_, window, _| crate::appearance::is_visible(window))
                         .unwrap_or(false);
+                    off_screen.store(!visible, std::sync::atomic::Ordering::Relaxed);
                     let mut app_history_due = None;
                     let history_due = this
                         .update(cx, |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {

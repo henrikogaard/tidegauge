@@ -41,7 +41,7 @@ define_class!(
             _response: &UNNotificationResponse,
             completion: &DynBlock<dyn Fn()>,
         ) {
-            crate::statusbar::TOGGLE_PANEL.store(true, Ordering::SeqCst);
+            crate::statusbar::raise(&crate::statusbar::TOGGLE_PANEL);
             completion.call(());
         }
     }

@@ -993,7 +993,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                 .justify_end()
                 .gap(t::SPACE_3)
                 .child(button_indexed("settings-app-menu", l("App menu", "Appmeny"), false, dark, 0, |_, _| {
-                    crate::statusbar::SHOW_CONTEXT_MENU.store(true, std::sync::atomic::Ordering::SeqCst)
+                    crate::statusbar::raise(&crate::statusbar::SHOW_CONTEXT_MENU)
                 }))
                 .child(button_indexed("settings-quit", l("Quit Tidegauge", "Avslutt Tidegauge"), false, dark, 0, |_, cx| cx.quit())),
         )

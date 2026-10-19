@@ -322,6 +322,10 @@ pub struct Engine {
     resource_tracker: crate::resource_activity::Tracker,
     leaks: crate::leaks::Tracker,
     tick: u64,
+    /// How many audio passes have run; the device lists are read every tenth.
+    audio_passes: u64,
+    /// When the IOReport readings were last taken.
+    last_rates: Option<Instant>,
     /// When the process pass last ran; its rates are per this interval.
     last_heavy: Instant,
 }
@@ -348,6 +352,8 @@ impl Engine {
             resource_tracker: crate::resource_activity::Tracker::default(),
             leaks: crate::leaks::Tracker::default(),
             tick: 0,
+            audio_passes: 0,
+            last_rates: None,
             last_heavy: Instant::now(),
         };
         e.snap.chip = chip_info();
@@ -363,8 +369,14 @@ impl Engine {
     }
 
     /// One sampling pass. dt is measured so rates are exact.
-    pub fn sample(&mut self, audio_apps: Vec<AudioApp>, bt: BtInfo) {
+    pub fn sample(&mut self, audio_apps: Option<Vec<AudioApp>>, bt: BtInfo) {
         let now = Instant::now();
+        let demand = crate::demand::current();
+        // Clock speeds and GPU power come from IOReport, which is costly; with
+        // nothing on screen they are read every few seconds.
+        let rates_gap = self.last_rates.map(|at| now.duration_since(at));
+        let read_rates = rates_gap.is_none_or(|gap| demand.rates_due(gap));
+        let rates_current = rates_gap.is_none_or(crate::demand::Demand::rates_current);
         let dt = now.duration_since(self.last_at).as_secs_f64().max(0.1);
         self.last_at = now;
         self.tick += 1;
@@ -387,7 +399,12 @@ impl Engine {
             _ => Vec::new(),
         };
         self.last_core_ticks = cores;
-        s.clocks = crate::clocks::sample();
+        if read_rates {
+            let clocks = crate::clocks::sample();
+            if rates_current {
+                s.clocks = clocks;
+            }
+        }
         s.cpu_hist.push(s.cpu_pct);
         s.load_avg = load_avg();
         s.thermal = thermal_state().unwrap_or("—").into();
@@ -465,8 +482,21 @@ impl Engine {
         s.net.peak_out = s.net.peak_out.max(s.net.rate_out);
 
         // GPU
+        let last_gpu_power = s.gpu.power_w;
         s.gpu = gpu_stats();
-        s.gpu.power_w = crate::gpu_power::sample();
+        s.gpu.power_w = if read_rates {
+            let power = crate::gpu_power::sample();
+            if rates_current {
+                power
+            } else {
+                last_gpu_power
+            }
+        } else {
+            last_gpu_power
+        };
+        if read_rates {
+            self.last_rates = Some(now);
+        }
         if let Some(utilization) = s.gpu.utilization {
             s.gpu_hist.push(utilization);
         }
@@ -481,7 +511,6 @@ impl Engine {
 
         // Processes. Hidden, this pass runs every few seconds; the rest of
         // the sample is light and runs every tick.
-        let demand = crate::demand::current();
         let since_heavy = now.duration_since(self.last_heavy);
         let heavy = self.tick == 1 || demand.heavy_due(since_heavy);
         if heavy {
@@ -581,24 +610,28 @@ impl Engine {
             None => s.power_hist.pts.clear(),
         }
 
-        // Taps follow their apps and the default output.
-        crate::app_volume::follow(&audio_apps.iter().map(|a| a.object).collect::<Vec<_>>());
-        s.audio = AudioInfo {
-            apps: audio_apps,
-            levels: crate::app_volume::levels(),
-            ..s.audio.clone()
-        };
-        let output = crate::audio::output_state();
-        s.audio.output_id = output.id;
-        s.audio.device_name = output.name;
-        s.audio.device_volume = output.volume;
-        s.audio.device_muted = output.muted;
-        s.audio.can_volume = output.can_volume;
-        s.audio.can_mute = output.can_mute;
-        s.audio.input = crate::audio::device_state(crate::audio::Direction::Input);
-        if self.tick % 10 == 0 {
-            s.audio.outputs = crate::audio::devices(crate::audio::Direction::Output);
-            s.audio.inputs = crate::audio::devices(crate::audio::Direction::Input);
+        // Taps follow their apps and the default output. Hidden, the audio
+        // pass is skipped most ticks and the last answer stands.
+        if let Some(audio_apps) = audio_apps {
+            self.audio_passes += 1;
+            crate::app_volume::follow(&audio_apps.iter().map(|a| a.object).collect::<Vec<_>>());
+            s.audio = AudioInfo {
+                apps: audio_apps,
+                levels: crate::app_volume::levels(),
+                ..s.audio.clone()
+            };
+            let output = crate::audio::output_state();
+            s.audio.output_id = output.id;
+            s.audio.device_name = output.name;
+            s.audio.device_volume = output.volume;
+            s.audio.device_muted = output.muted;
+            s.audio.can_volume = output.can_volume;
+            s.audio.can_mute = output.can_mute;
+            s.audio.input = crate::audio::device_state(crate::audio::Direction::Input);
+            if self.audio_passes.is_multiple_of(10) {
+                s.audio.outputs = crate::audio::devices(crate::audio::Direction::Output);
+                s.audio.inputs = crate::audio::devices(crate::audio::Direction::Input);
+            }
         }
         s.bt = bt;
         if heavy {
@@ -817,7 +850,7 @@ mod tests {
         let port: u16 = port.trim().parse().unwrap();
         std::thread::sleep(Duration::from_millis(700));
         let mut sampler = Engine::new();
-        sampler.sample(Vec::new(), BtInfo::default());
+        sampler.sample(Some(Vec::new()), BtInfo::default());
         let (project, process) = sampler
             .snap
             .projects
@@ -924,7 +957,7 @@ mod tests {
         // is not what idle costs.
         for _ in 0..10 {
             let bt = crate::bluetooth::bt_info(crate::demand::current().bluetooth_period());
-            engine.sample(Vec::new(), bt);
+            engine.sample(Some(Vec::new()), bt);
             std::thread::sleep(Duration::from_secs(2));
         }
         for (label, page) in [
@@ -941,7 +974,7 @@ mod tests {
             for _ in 0..ticks {
                 let started = Instant::now();
                 let bt = crate::bluetooth::bt_info(crate::demand::current().bluetooth_period());
-                engine.sample(Vec::new(), bt);
+                engine.sample(Some(Vec::new()), bt);
                 publish(&engine.snap);
                 busy += started.elapsed();
                 std::thread::sleep(Duration::from_secs(2).saturating_sub(started.elapsed()));
