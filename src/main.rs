@@ -126,7 +126,9 @@ fn main() {
             notifications::initialize();
             updater::initialize();
             // Before any window: on yes, the copy in Applications takes over.
-            move_to_applications::offer();
+            if login::startup_prompts_allowed(at_login) {
+                move_to_applications::offer();
+            }
         }
 
         let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);

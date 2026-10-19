@@ -246,6 +246,12 @@ fn native_launched_as_login_item() -> bool {
     false
 }
 
+/// Whether the app may show a modal prompt while starting. A login launch
+/// stays quiet: nobody asked for the app, so nothing interrupts the login.
+pub fn startup_prompts_allowed(at_login: bool) -> bool {
+    !at_login
+}
+
 /// Whether the dashboard window should open at launch: not when the app was
 /// started by the login item, and not when asked to start hidden.
 pub fn opens_dashboard(at_login: bool, hidden_requested: bool) -> bool {
@@ -301,6 +307,12 @@ mod tests {
     #[test]
     fn the_argument_settles_it_without_asking_the_event() {
         assert!(launched_at_login_by(["--login".to_string()], || panic!("not asked")));
+    }
+
+    #[test]
+    fn a_login_launch_skips_startup_prompts() {
+        assert!(startup_prompts_allowed(false));
+        assert!(!startup_prompts_allowed(true));
     }
 
     #[test]

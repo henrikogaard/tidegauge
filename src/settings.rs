@@ -214,6 +214,18 @@ fn stamp(path: &std::path::Path) -> Option<Stamp> {
     Some((metadata.modified().ok(), metadata.len()))
 }
 
+/// The settings in `path`. Only a missing file gives the first-run defaults;
+/// a file that exists but cannot be read or parsed belongs to an existing
+/// user, so it falls back to defaults that do not show the welcome.
+fn read_file(path: &std::path::Path) -> Settings {
+    let fallback = || Settings { welcomed: true, ..Settings::default() };
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| fallback()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+        Err(_) => fallback(),
+    }
+}
+
 impl Cache {
     /// The settings in `path`. With `trust_recent` a read from the last
     /// moments is returned without looking at the file; otherwise the file's
@@ -231,10 +243,7 @@ impl Cache {
                 return settings.clone();
             }
         }
-        let mut settings: Settings = std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let mut settings = read_file(path);
         settings.normalize();
         self.entry = current.map(|current| (current, std::time::Instant::now(), settings.clone()));
         settings
@@ -485,6 +494,22 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_file_is_a_first_run() {
+        let dir = std::env::temp_dir().join(format!("tidegauge-welcome-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        let _ = std::fs::remove_file(&file);
+        assert!(read_file(&file).show_welcome(), "no file is a first run");
+        std::fs::write(&file, b"{ not json").unwrap();
+        assert!(!read_file(&file).show_welcome(), "a malformed file is an existing user");
+        std::fs::remove_file(&file).unwrap();
+        // Unreadable: a directory where the file should be.
+        std::fs::create_dir(&file).unwrap();
+        assert!(!read_file(&file).show_welcome(), "an unreadable file is an existing user");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn only_a_first_launch_without_a_settings_file_is_welcomed() {
