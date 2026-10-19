@@ -6,6 +6,13 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- An About section at the end of Settings shows the app icon, version and
+  build, Check for Updates, and links to the project, the author, Buy me a
+  coffee and the license. The version and update check moved there from
+  General, and the menu-bar menu has an About Tidegauge item that opens it.
+
 ## [0.4.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.0) — 2026-10-19
 
 ### Added
