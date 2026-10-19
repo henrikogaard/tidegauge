@@ -48,7 +48,7 @@ const ENGLISH_WITH_SEVERAL_NORWEGIAN: &[&str] = &[
 const ALLOWED_BARE_WORDS: &[&str] = &[
     "APFS", "CPU", "GPU", "PID", "UID", "RPM", "SMART", "SSD", "HDD", "RAM", "USB", "Tidegauge",
     "Apple", "NVMe", "IORegistry", "diskutil", "KiB", "MiB", "GiB", "TiB", "KB", "MB", "GB", "TB", "MHz", "GHz",
-    "Mbps", "mAh", "mW", "min",
+    "Mbps", "dBm", "mAh", "mW", "min",
 ];
 
 /// Multi-word proper nouns that may appear in bare UI literals.

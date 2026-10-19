@@ -32,6 +32,11 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSGeometry", "NSProcessInfo", "NSURL", "NSBundle", "NSError", "NSLocale", "NSFileManager",
 ] }
 objc2-core-foundation = "0.3"
+# Wi-Fi signal, channel and rate. SSID and BSSID are left out on purpose:
+# macOS asks for Location permission to read them.
+objc2-core-wlan = { version = "0.3.2", default-features = false, features = [
+    "std", "CWWiFiClient", "CWInterface", "CWChannel", "CoreWLANTypes",
+] }
 block2 = "0.6"
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = [
     "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse",

@@ -49,6 +49,9 @@ pub struct Settings {
     pub alert_battery_full_enabled: bool,
     /// Alert when an internal disk reports failing health.
     pub alert_disk_health_enabled: bool,
+    /// Alert when the Mac has had no usable network path for ten seconds, and
+    /// again when it is back.
+    pub alert_offline_enabled: bool,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
@@ -90,6 +93,7 @@ impl Default for Settings {
             alert_battery_low_pct: BATTERY_LOW_DEFAULT,
             alert_battery_full_enabled: false,
             alert_disk_health_enabled: false,
+            alert_offline_enabled: false,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),

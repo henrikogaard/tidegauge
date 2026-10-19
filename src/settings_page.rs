@@ -480,6 +480,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             settings.alert_network_enabled,
         ),
         (
+            "offline",
+            l("Network lost", "Nettverk borte"),
+            l("No connection for 10 seconds, and again when it is back", "Ingen tilkobling i 10 sekunder, og igjen når den er tilbake").to_string(),
+            None,
+            settings.alert_offline_enabled,
+        ),
+        (
             "app",
             l("Any one app", "Én enkelt app"),
             format!("{} {} {}", l("CPU above", "CPU over"), pct(settings.alert_app_cpu_pct), l("for 5 minutes", "i 5 minutter")),
@@ -570,6 +577,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "disk-health" => s.alert_disk_health_enabled = value,
                             "battery-low" => s.alert_battery_low_enabled = value,
                             "battery-full" => s.alert_battery_full_enabled = value,
+                            "offline" => s.alert_offline_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));

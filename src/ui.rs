@@ -1366,10 +1366,16 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore, og kan overstige 100 %. Manglende SMART-data betyr aldri frisk.",
             ),
         ],
-        Tab::Network => vec![l(
-            "Received and sent count since the Mac started.",
-            "Mottatt og sendt teller siden Macen startet.",
-        )],
+        Tab::Network => vec![
+            l(
+                "Received and sent count since the Mac started.",
+                "Mottatt og sendt teller siden Macen startet.",
+            ),
+            l(
+                "Online means macOS reports a usable network path; Tidegauge sends nothing to check. Wi-Fi signal, noise and rate refresh every few seconds, and the network's name is never read. A value macOS does not report is left out.",
+                "På nett betyr at macOS melder en brukbar nettverkssti; Tidegauge sender ingenting for å sjekke. Wi-Fi-signal, støy og hastighet oppdateres med noen sekunders mellomrom, og nettverkets navn leses aldri. En verdi macOS ikke melder, utelates.",
+            ),
+        ],
         Tab::Gpu => vec![
             l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
             l("GPU power is measured: the change in macOS's GPU energy counter between samples.", "GPU-effekten er målt: endringen i GPU-energitelleren i macOS mellom målingene."),
@@ -2031,7 +2037,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         ),
         (
             Tab::Network,
-            l("Downloading", "Laster ned").into(),
+            if s.net.online == Some(false) { l("Offline", "Uten nett") } else { l("Downloading", "Laster ned") }.into(),
             fmt_rate(s.net.rate_in),
             [
                 (l("Uploading", "Laster opp"), fmt_rate(s.net.rate_out)),
@@ -3173,7 +3179,11 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .child(hero(
             l("Network · combined traffic", "Nettverk · samlet trafikk"),
             fmt_rate(s.net.rate_in + s.net.rate_out),
-            format!("{} · {}", s.net.kind, s.net.primary),
+            match (s.net.online, s.net.primary.is_empty()) {
+                (Some(false), _) => l("Offline", "Uten nett").into(),
+                (_, true) => s.net.kind.label().into(),
+                (_, false) => format!("{} · {}", s.net.kind.label(), s.net.primary),
+            },
             &hist,
             m.accent(dark),
             dark,
@@ -3197,6 +3207,8 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             dark,
         ))
         .child(top_apps(rows.iter().copied(), |a| { let r = a.net_in_rate + a.net_out_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
+        .child(section_header(l("Connection", "Tilkobling"), "", dark))
+        .child(connection_card(s, dark))
         .child(
             sub(format!(
                 "{}: {} / {}",
@@ -3209,6 +3221,82 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ))
             .text_color(t::ink_dim(dark)),
         )
+}
+
+/// The connection's details as captioned values in rows of four, like a
+/// hero's footer. A value macOS does not give is left out, never shown as 0.
+fn connection_card(s: &Snapshot, dark: bool) -> Div {
+    use crate::network::Quality;
+    let n = &s.net;
+    let mut cells: Vec<(String, String, Option<Hsla>)> = Vec::new();
+    if let Some(online) = n.online {
+        cells.push((
+            l("State", "Tilstand").into(),
+            if online { l("Online", "På nett") } else { l("Offline", "Uten nett") }.into(),
+            Some(if online { t::ok(dark) } else { t::warn(dark) }),
+        ));
+    }
+    if !n.primary.is_empty() {
+        cells.push((l("Connection type", "Tilkoblingstype").into(), n.kind.label().into(), None));
+        cells.push((l("Interface", "Grensesnitt").into(), n.primary.clone(), None));
+    }
+    if let Some(ip) = &n.ipv4 {
+        cells.push(("IPv4".into(), ip.clone(), None));
+    }
+    if let Some(ip) = &n.ipv6 {
+        cells.push(("IPv6".into(), ip.clone(), None));
+    }
+    if let Some(w) = &n.wifi {
+        let quality = crate::network::quality(w.rssi);
+        let tone = match quality {
+            Quality::Excellent | Quality::Good => None,
+            Quality::Fair => Some(t::caution(dark)),
+            Quality::Weak => Some(t::warn(dark)),
+        };
+        cells.push((
+            l("Signal strength", "Signalstyrke").into(),
+            format!("{} dBm · {}", w.rssi, quality.label()),
+            tone,
+        ));
+        if let Some(noise) = w.noise {
+            cells.push((l("Noise", "Støy").into(), format!("{noise} dBm"), None));
+        }
+        if let Some(channel) = w.channel {
+            let value = match w.band {
+                Some(band) => format!("{channel} · {}", band.label()),
+                None => channel.to_string(),
+            };
+            cells.push((l("Channel", "Kanal").into(), value, None));
+        }
+        if let Some(rate) = w.rate_mbps {
+            cells.push((l("Transmit rate", "Overføringshastighet").into(), format!("{} Mbps", crate::locale::number(rate, 0)), None));
+        }
+        if let Some(standard) = w.standard {
+            cells.push((l("Wi-Fi standard", "Wi-Fi-standard").into(), standard.into(), None));
+        }
+    }
+    let mut rows = Vec::new();
+    for chunk in cells.chunks(4) {
+        let mut row = div().flex().gap_6();
+        for i in 0..4 {
+            row = row.child(match chunk.get(i) {
+                Some((label, value, tone)) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label.clone()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when_some(*tone, |d, color| d.text_color(color))
+                            .child(value.clone()),
+                    ),
+                None => div().flex_1().min_w_0(),
+            });
+        }
+        rows.push(row);
+    }
+    card(dark).children(rows)
 }
 
 /// Empty-state card per the detail-page template: a metric-tinted icon tile,

@@ -30,6 +30,7 @@ mod menu_style;
 mod metrics;
 mod move_to_applications;
 mod named_sensors;
+mod network;
 mod notifications;
 mod packages;
 mod processes;

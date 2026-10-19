@@ -7,8 +7,8 @@ use crate::ffi::*;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::mem::{size_of, zeroed};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_unix() -> f64 {
     SystemTime::now()
@@ -530,35 +530,6 @@ pub fn net_counters() -> (u64, u64) {
         freeifaddrs(ifas);
         (rx, tx)
     }
-}
-
-static DEFAULT_IFACE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
-
-pub fn default_interface() -> String {
-    {
-        let g = DEFAULT_IFACE.lock().unwrap();
-        if let Some((t, name)) = g.as_ref() {
-            if !name.is_empty() && t.elapsed() < Duration::from_secs(30) {
-                return name.clone();
-            }
-        }
-    }
-    let mut iface = String::from("en0");
-    if let Ok(out) = std::process::Command::new("/sbin/route")
-        .args(["-n", "get", "default"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            let l = line.trim();
-            if l.starts_with("interface:") {
-                iface = l.trim_start_matches("interface:").trim().to_string();
-            }
-        }
-    }
-    let mut g = DEFAULT_IFACE.lock().unwrap();
-    *g = Some((Instant::now(), iface.clone()));
-    iface
 }
 
 // ---- Chip / CPU info ----

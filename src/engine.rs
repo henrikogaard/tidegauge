@@ -36,7 +36,13 @@ pub struct NetSample {
     pub total_in: u64,
     pub total_out: u64,
     pub primary: String,
-    pub kind: String,
+    pub kind: crate::network::LinkKind,
+    /// Whether macOS reports a usable network path; `None` before the first
+    /// sample.
+    pub online: Option<bool>,
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub wifi: Option<crate::network::Wifi>,
     pub peak_in: f64,
     pub peak_out: f64,
 }
@@ -419,8 +425,13 @@ impl Engine {
         s.net.total_in = rx;
         s.net.total_out = tx;
         self.last_net = (rx, tx);
-        s.net.primary = default_interface();
-        s.net.kind = "Wi-Fi".into();
+        let link = crate::network::details();
+        s.net.primary = link.interface;
+        s.net.kind = link.kind;
+        s.net.online = Some(link.online);
+        s.net.ipv4 = link.ipv4;
+        s.net.ipv6 = link.ipv6;
+        s.net.wifi = link.wifi;
         s.net_in_hist.push(s.net.rate_in);
         s.net_out_hist.push(s.net.rate_out);
         s.net.peak_in = s.net.peak_in.max(s.net.rate_in);

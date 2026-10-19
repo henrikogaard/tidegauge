@@ -25,6 +25,8 @@ const PRESSURE_LEVEL: f64 = 1.5;
 const PRESSURE_DURATION: f64 = 20.0;
 /// Long enough that a burst while compiling does not count.
 const TEMPERATURE_DURATION: f64 = 30.0;
+/// Long enough that a Wi-Fi roam or a wake from sleep does not count.
+const OFFLINE_DURATION: f64 = 10.0;
 
 #[derive(Default)]
 struct Episode {
@@ -114,6 +116,9 @@ pub struct AlertEngine {
     low_battery: LowBattery,
     charged_battery: ChargedBattery,
     disk_health: DiskHealth,
+    offline: Episode,
+    /// "Network lost" went out, so "Network back" is owed.
+    offline_alerted: bool,
 }
 
 impl AlertEngine {
@@ -132,6 +137,8 @@ impl AlertEngine {
             low_battery: LowBattery::default(),
             charged_battery: ChargedBattery::default(),
             disk_health: DiskHealth::default(),
+            offline: Episode::default(),
+            offline_alerted: false,
         }
     }
 
@@ -379,6 +386,39 @@ impl AlertEngine {
             },
         ) {
             alerts.push(alert);
+        }
+
+        // Offline is an episode like the others: 1 for no network path, 0 for
+        // one, nothing before the first reading. "Back" follows only a "lost"
+        // that was sent, and is not held back by the cooldown.
+        let offline = snapshot.net.online.map(|online| if online { 0. } else { 1. });
+        if let Some(alert) = self.offline.check(
+            at,
+            settings.alert_offline_enabled,
+            0.5,
+            offline,
+            OFFLINE_DURATION,
+            |_| Alert {
+                metric: "offline".into(),
+                message: crate::locale::text(
+                    "Network lost: no connection for over 10 seconds",
+                    "Nettverk borte: ingen tilkobling i over 10 sekunder",
+                )
+                .into(),
+                at,
+            },
+        ) {
+            self.offline_alerted = true;
+            alerts.push(alert);
+        } else if self.offline_alerted && !settings.alert_offline_enabled {
+            self.offline_alerted = false;
+        } else if self.offline_alerted && snapshot.net.online == Some(true) {
+            self.offline_alerted = false;
+            alerts.push(Alert {
+                metric: "online".into(),
+                message: crate::locale::text("Network back", "Nettverket er tilbake").into(),
+                at,
+            });
         }
 
         alerts.extend(self.check_power_and_disks(snapshot, settings));
@@ -1307,6 +1347,70 @@ mod tests {
         engine.check(&s, &settings);
         s.at = 1020.;
         assert!(!engine.check(&s, &settings)[0].message.contains(top_label));
+    }
+
+    #[test]
+    fn network_loss_alerts_after_ten_seconds_and_again_when_back() {
+        let settings = Settings { alert_offline_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let at = |t: f64, online: Option<bool>| {
+            let mut s = snapshot(t);
+            s.net.online = online;
+            s
+        };
+        assert!(engine.check(&at(0., Some(true)), &settings).is_empty());
+        assert!(engine.check(&at(2., Some(false)), &settings).is_empty());
+        assert!(engine.check(&at(11., Some(false)), &settings).is_empty(), "nine seconds is a blip");
+        let lost = engine.check(&at(12., Some(false)), &settings);
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].metric, "offline");
+        assert!(engine.check(&at(60., Some(false)), &settings).is_empty(), "one alert per episode");
+        let back = engine.check(&at(70., Some(true)), &settings);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].metric, "online");
+        assert!(engine.check(&at(72., Some(true)), &settings).is_empty(), "back is said once");
+    }
+
+    #[test]
+    fn a_short_outage_says_nothing_and_neither_does_an_unknown_state() {
+        let settings = Settings { alert_offline_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let at = |t: f64, online: Option<bool>| {
+            let mut s = snapshot(t);
+            s.net.online = online;
+            s
+        };
+        assert!(engine.check(&at(0., Some(false)), &settings).is_empty());
+        assert!(engine.check(&at(8., Some(false)), &settings).is_empty());
+        assert!(engine.check(&at(9., Some(true)), &settings).is_empty(), "no lost alert, so no back alert");
+        for t in [100., 200.] {
+            assert!(engine.check(&at(t, None), &settings).is_empty(), "an unknown state never alerts");
+        }
+        assert!(engine.check(&at(300., Some(false)), &Settings::default()).is_empty());
+        assert!(engine.check(&at(400., Some(false)), &Settings::default()).is_empty(), "off by default");
+    }
+
+    #[test]
+    fn network_loss_respects_the_cooldown_and_the_switch() {
+        let settings = Settings { alert_offline_enabled: true, ..Settings::default() };
+        let mut engine = AlertEngine::new();
+        let at = |t: f64, online: bool| {
+            let mut s = snapshot(t);
+            s.net.online = Some(online);
+            s
+        };
+        engine.check(&at(0., false), &settings);
+        assert_eq!(engine.check(&at(10., false), &settings).len(), 1);
+        assert_eq!(engine.check(&at(20., true), &settings)[0].metric, "online");
+        engine.check(&at(30., false), &settings);
+        assert!(engine.check(&at(45., false), &settings).is_empty(), "inside the ten-minute cooldown");
+        assert!(engine.check(&at(50., true), &settings).is_empty(), "nothing was said, so no back alert");
+        // Switching it off between "lost" and "back" owes nothing.
+        let mut engine = AlertEngine::new();
+        engine.check(&at(0., false), &settings);
+        assert_eq!(engine.check(&at(10., false), &settings).len(), 1);
+        assert!(engine.check(&at(20., false), &Settings::default()).is_empty());
+        assert!(engine.check(&at(30., true), &settings).is_empty());
     }
 
     #[test]
