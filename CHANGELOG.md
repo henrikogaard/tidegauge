@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.5.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.0) — 2026-10-19
+
 ### Added
 
 - Desktop and Notification Center widgets (macOS 14 or later). **Tidegauge
@@ -17,14 +19,16 @@ hardware acceptance checks. A merge and a published release are separate events.
   Tidegauge has not written readings for 2 minutes. Tidegauge writes the
   readings to a shared app group folder every 12 seconds, and only while a
   widget exists; nothing leaves the Mac. macOS decides how often a widget is
-  redrawn, typically every few minutes.
+  redrawn, typically every few minutes
+  ([#102](https://github.com/henrikogaard/tidegauge/pull/102)).
 - Started by the login item, Tidegauge opens only its menu-bar item and leaves
   the dashboard closed; opening it yourself still shows the window. The
   launch is recognised from the "launched as login item" Apple event macOS
   sends, or a `--login` argument. Existing login items keep working as they
-  are. Rendered and at-login checks are pending.
+  are. A login launch also skips the move-to-Applications offer
+  ([#103](https://github.com/henrikogaard/tidegauge/pull/103)).
 - A welcome card on Overview, shown once on the first launch ever (never when
-  a settings file already exists): show CPU and memory in the menu bar, open
+  a settings file already exists, even an unreadable one): show CPU and memory in the menu bar, open
   at login, pick alerts (opens Settings at Alerts), and Done to dismiss it for
   good.
 - Hover tips explain memory pressure, wired, compressed, cached, swap, the
