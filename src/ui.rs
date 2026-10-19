@@ -1682,6 +1682,13 @@ impl Render for TideGaugeView {
     }
 }
 
+impl TideGaugeView {
+    /// About is the last group in Settings; the menu item scrolls to it.
+    pub fn scroll_settings_to_about(&self) {
+        self.settings_scroll.scroll_to_bottom();
+    }
+}
+
 fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
         view.show_tools = false;
