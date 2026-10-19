@@ -237,14 +237,16 @@ pub fn write_atomic(dir: &Path, export: &Export) -> std::io::Result<()> {
     result
 }
 
-/// Whether a widget has asked for a timeline recently.
-pub fn widget_present(dir: &Path, now: SystemTime) -> bool {
-    std::fs::metadata(dir.join(MARKER_FILE))
-        .and_then(|m| m.modified())
-        .is_ok_and(|touched| {
-            now.duration_since(touched)
-                .map_or(true, |age| age <= MARKER_MAX_AGE)
-        })
+/// Whether a widget has asked for a timeline recently, or why that cannot be
+/// told (no marker yet, no access to the folder).
+fn marker_state(dir: &Path, now: SystemTime) -> std::io::Result<bool> {
+    let touched = std::fs::metadata(dir.join(MARKER_FILE))?.modified()?;
+    Ok(now.duration_since(touched).map_or(true, |age| age <= MARKER_MAX_AGE))
+}
+
+#[cfg(test)]
+fn widget_present(dir: &Path, now: SystemTime) -> bool {
+    marker_state(dir, now).unwrap_or(false)
 }
 
 /// Whether a snapshot sampled at `sample_at` is too old for a widget to show
@@ -253,29 +255,84 @@ pub fn is_stale(sample_at: f64, now: f64, stale_after_secs: u32) -> bool {
     now - sample_at > f64::from(stale_after_secs)
 }
 
+/// The app group's folder. macOS refuses a process any write there until it
+/// has asked for the folder through `containerURLForSecurityApplicationGroup
+/// Identifier:` (the plain path fails with "Operation not permitted"), so the
+/// path is only used once that call has returned it. The call also creates the
+/// folder, so it waits until a widget has created it.
 fn container() -> Option<PathBuf> {
-    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        directories::BaseDirs::new()
-            .map(|d| d.home_dir().join("Library/Group Containers").join(GROUP_ID))
-    })
-    .clone()
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(dir) = DIR.get() {
+        return Some(dir.clone());
+    }
+    let plain = directories::BaseDirs::new()?
+        .home_dir()
+        .join("Library/Group Containers")
+        .join(GROUP_ID);
+    if !plain.is_dir() {
+        return None;
+    }
+    let granted = granted_container()?;
+    Some(DIR.get_or_init(|| granted).clone())
+}
+
+fn granted_container() -> Option<PathBuf> {
+    use objc2_foundation::{NSFileManager, NSString};
+    let id = NSString::from_str(GROUP_ID);
+    let url = NSFileManager::defaultManager().containerURLForSecurityApplicationGroupIdentifier(&id)?;
+    Some(PathBuf::from(url.path()?.to_string()))
+}
+
+/// What one publish attempt did, as one line for the log.
+fn attempt(dir: &Path, snap: &Snapshot, now: SystemTime) -> String {
+    let seconds = now.duration_since(UNIX_EPOCH).map_or(0., |d| d.as_secs_f64());
+    match marker_state(dir, now) {
+        Ok(true) => {}
+        Ok(false) => return "marker too old; widget not on the desktop".into(),
+        Err(error) => return ["no marker: ", &error.to_string(), "; waiting for a widget"].concat(),
+    }
+    // A sample that is already old is not worth presenting as the latest.
+    if is_stale(snap.at, seconds, STALE_AFTER_SECS) {
+        return "sample is stale; not written".into();
+    }
+    match write_atomic(dir, &build(snap, seconds)) {
+        Ok(()) => "wrote the snapshot".into(),
+        Err(error) => ["write failed: ", &error.to_string()].concat(),
+    }
+}
+
+/// Appends `outcome` to `~/Library/Logs/Tidegauge/widget-export.log` when it
+/// differs from the last one, so a steady state is logged once.
+fn note(dir: &Path, outcome: &str) {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == outcome {
+        return;
+    }
+    *last = outcome.to_string();
+    let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) else {
+        return;
+    };
+    let folder = home.join("Library/Logs/Tidegauge");
+    let file = folder.join("widget-export.log");
+    let _ = std::fs::create_dir_all(&folder);
+    if std::fs::metadata(&file).is_ok_and(|m| m.len() > 64 * 1024) {
+        let _ = std::fs::rename(&file, folder.join("widget-export.log.1"));
+    }
+    if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(&file) {
+        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let _ = writeln!(out, "{at} {} :: {outcome}", dir.display());
+    }
 }
 
 /// Writes the readings for the widgets, if one is on the desktop. Cheap when
 /// none is: one `stat`. Called by the sampler every few passes.
 pub fn publish(snap: &Snapshot) {
-    let Some(dir) = container() else { return };
-    let now = SystemTime::now();
-    if !widget_present(&dir, now) {
+    let Some(dir) = container() else {
+        note(Path::new(GROUP_ID), "no group folder yet; waiting for a widget or access");
         return;
-    }
-    let seconds = now.duration_since(UNIX_EPOCH).map_or(0., |d| d.as_secs_f64());
-    // A sample that is already old is not worth presenting as the latest.
-    if is_stale(snap.at, seconds, STALE_AFTER_SECS) {
-        return;
-    }
-    let _ = write_atomic(&dir, &build(snap, seconds));
+    };
+    note(&dir, &attempt(&dir, snap, SystemTime::now()));
 }
 
 #[cfg(test)]

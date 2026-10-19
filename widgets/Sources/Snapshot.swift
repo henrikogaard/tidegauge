@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+let log = Logger(subsystem: "no.ogard.tidegauge.widgets", category: "data")
 
 /// The app group Tidegauge and this extension share. Keep in step with
 /// `GROUP_ID` in src/widget_export.rs and the entitlements files.
@@ -44,25 +47,50 @@ struct Snapshot: Codable, Hashable {
 
 enum SnapshotStore {
     static var container: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: tidegaugeGroupID)
+        let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: tidegaugeGroupID)
+        log.info("container: \(url?.path ?? "nil", privacy: .public)")
+        return url
     }
 
     /// Tells Tidegauge a widget exists, so it starts writing readings.
     static func touchMarker() {
         guard let marker = container?.appendingPathComponent(markerFile) else { return }
         if FileManager.default.fileExists(atPath: marker.path) {
-            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: marker.path)
+            do {
+                try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: marker.path)
+                log.info("marker touched")
+            } catch {
+                log.error("marker touch failed: \(error.localizedDescription, privacy: .public)")
+            }
         } else {
-            FileManager.default.createFile(atPath: marker.path, contents: Data())
+            let made = FileManager.default.createFile(atPath: marker.path, contents: Data())
+            log.info("marker created: \(made, privacy: .public)")
         }
     }
 
     static func load() -> Snapshot? {
-        guard let file = container?.appendingPathComponent(snapshotFile),
-              let data = try? Data(contentsOf: file) else { return nil }
+        guard let file = container?.appendingPathComponent(snapshotFile) else { return nil }
+        let data: Data
+        do {
+            data = try Data(contentsOf: file)
+        } catch {
+            log.info("no snapshot: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        guard let snapshot = try? decoder.decode(Snapshot.self, from: data), snapshot.schema == 1 else { return nil }
-        return snapshot
+        do {
+            let snapshot = try decoder.decode(Snapshot.self, from: data)
+            guard snapshot.schema == 1 else {
+                log.error("unknown schema \(snapshot.schema, privacy: .public)")
+                return nil
+            }
+            let age = Date().timeIntervalSince1970 - snapshot.sampleAt
+            log.info("snapshot decoded: \(snapshot.metrics.count, privacy: .public) metrics, sample age \(age, privacy: .public) s")
+            return snapshot
+        } catch {
+            log.error("snapshot decode failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 }

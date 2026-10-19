@@ -6,7 +6,9 @@ struct MetricWidget: Widget {
 
     var body: some WidgetConfiguration {
         AppIntentConfiguration(kind: kind, intent: SelectMetricIntent.self, provider: MetricProvider()) { entry in
-            SmallView(entry: entry)
+            // The gallery may ask for a placeholder with no intent; show the
+            // sample readings instead of redacted blocks.
+            SmallView(entry: entry).unredacted()
         }
         .configurationDisplayName("Tidegauge Reading")
         .description("One reading with a ring: CPU, memory, GPU, battery, network or disk.")
