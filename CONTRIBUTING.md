@@ -124,6 +124,13 @@ It validates layout only, not native battery readings.
 
 Record the commit, commands, results, and any hardware-dependent checks that could not run. A build pass, a rendered check, and verification on physical hardware are separate results.
 
+The desktop widgets live in `widgets/` (Swift, WidgetKit). `scripts/build-widgets.sh`
+builds the extension with `xcodebuild`, and `packaging/package-app.sh` embeds and signs it.
+`widgets/project.yml` is the source of the committed Xcode project; after editing it run
+`xcodegen generate --spec widgets/project.yml --project widgets`. The JSON the widgets read
+is written by `src/widget_export.rs`; change its schema there and in `widgets/Sources/Snapshot.swift`
+together, and bump `SCHEMA`.
+
 For notification branding checks, run `cargo build`, then package the debug binary with
 `TIDEGAUGE_BINARY="$PWD/target/debug/tidegauge" packaging/package-app.sh preview`.
 Install the bundle in Applications and quit any existing Tidegauge process. Run its

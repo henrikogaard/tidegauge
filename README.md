@@ -77,6 +77,23 @@ The image contains only `Tidegauge.app`, an `Applications` shortcut, and the
 committed Finder layout. Only the release pipeline notarizes and staples its
 DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 
+## Desktop widgets
+
+The packaged app carries a WidgetKit extension (`Contents/PlugIns/TidegaugeWidgets.appex`,
+sources in `widgets/`). Add it with Edit Widgets on the desktop or in Notification Center:
+**Tidegauge Reading** (small; right-click, Edit Widget, to pick CPU, Memory, GPU, Battery,
+Network or Disk) and **Tidegauge Overview** (medium and large). Tidegauge stays local-only: it
+writes a small JSON file of the latest readings into an app group container
+(`~/Library/Group Containers/45AD7E7G5G.no.ogard.tidegauge/`) every 12 seconds, and
+only while a widget exists. The widget reads that file; neither side uses the network.
+
+macOS decides when a widget is redrawn, so the figures lag the menu bar by minutes, not
+seconds. Without recent readings (Tidegauge not running for more than 2 minutes) a widget
+shows "Open Tidegauge to start". Widgets work in builds signed with the Developer ID
+identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its widgets.
+`TIDEGAUGE_SKIP_WIDGETS=1 packaging/package-app.sh preview` leaves the extension out
+(it needs Xcode).
+
 ## What the app contains
 
 | Area | Current implementation |
@@ -98,6 +115,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
 | Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
+| Desktop widgets | Small (one reading, chosen when you edit the widget), medium (four readings with sparklines) and large (all six) WidgetKit widgets for the desktop and Notification Center; macOS 14 or later, packaged builds only |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
 | Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
 | Tools · Startup | Bounded legacy registration inventory, explicit override evidence, Tidegauge login preference and System Settings handoff |
