@@ -68,19 +68,29 @@ pub struct Tracker {
     bundles: BundleCache,
 }
 
-/// What was learned about each process, keyed by pid and start time.
+/// What was learned about each process, keyed by pid and start time, with the
+/// executable it was learned for: a process can exec another program.
 #[derive(Default)]
-struct BundleCache(HashMap<Identity, String>);
+struct BundleCache(HashMap<Identity, (String, String)>);
 
 impl BundleCache {
     /// The cached bundle for `id`, else `lookup()`, which is then kept. No
     /// answer is not kept: an app may not be registered yet.
-    fn resolve(&mut self, id: Identity, lookup: impl FnOnce() -> Option<String>) -> Option<String> {
-        if let Some(bundle) = self.0.get(&id) {
-            return Some(bundle.clone());
+    /// A kept bundle is used only for the executable it was found for.
+    fn resolve(
+        &mut self,
+        id: Identity,
+        exe: &str,
+        lookup: impl FnOnce() -> Option<String>,
+    ) -> Option<String> {
+        if let Some((kept_exe, bundle)) = self.0.get(&id) {
+            if kept_exe == exe {
+                return Some(bundle.clone());
+            }
         }
+        self.0.remove(&id);
         let bundle = lookup()?;
-        self.0.insert(id, bundle.clone());
+        self.0.insert(id, (exe.to_string(), bundle.clone()));
         Some(bundle)
     }
 
@@ -250,7 +260,7 @@ fn registered_apps(procs: &[ProcInfo], cache: &mut BundleCache) -> Vec<Registere
         .iter()
         .filter_map(|app| {
             let p = *by_pid.get(&app.processIdentifier())?;
-            let bundle = cache.resolve(Identity::of(p), || {
+            let bundle = cache.resolve(Identity::of(p), &p.exe_path, || {
                 if app.isTerminated() {
                     return None;
                 }
@@ -299,14 +309,14 @@ mod tests {
         let mut lookups = 0;
         for _ in 0..3 {
             assert_eq!(
-                cache.resolve(a, || {
+                cache.resolve(a, "/exe", || {
                     lookups += 1;
                     Some("/A.app".into())
                 }),
                 Some("/A.app".into())
             );
             assert_eq!(
-                cache.resolve(b, || {
+                cache.resolve(b, "/exe", || {
                     lookups += 1;
                     None
                 }),
@@ -322,20 +332,43 @@ mod tests {
             started: 99,
         };
         assert_eq!(
-            cache.resolve(reused, || {
+            cache.resolve(reused, "/exe", || {
                 lookups += 1;
                 Some("/B.app".into())
             }),
             Some("/B.app".into())
         );
         assert_eq!(
-            cache.resolve(a, || {
+            cache.resolve(a, "/exe", || {
                 lookups += 1;
                 None
             }),
             None
         );
         assert_eq!(lookups, 6);
+    }
+
+    #[test]
+    fn a_process_that_runs_another_program_is_looked_up_again() {
+        let mut cache = BundleCache::default();
+        let id = Identity {
+            pid: 7,
+            started: 70,
+        };
+        let found = |cache: &mut BundleCache, exe: &str, bundle: Option<&str>| {
+            cache.resolve(id, exe, || bundle.map(String::from))
+        };
+        assert_eq!(
+            found(&mut cache, "/A.app/x", Some("/A.app")),
+            Some("/A.app".into())
+        );
+        assert_eq!(found(&mut cache, "/A.app/x", None), Some("/A.app".into()));
+        // Same pid and start time, new executable: the old bundle is not used.
+        assert_eq!(found(&mut cache, "/opt/tool", None), None);
+        assert_eq!(
+            found(&mut cache, "/B.app/y", Some("/B.app")),
+            Some("/B.app".into())
+        );
     }
     fn proc(pid: i32, ppid: i32, path: &str) -> ProcInfo {
         ProcInfo {
