@@ -38,12 +38,16 @@ enum Timelines {
     /// Plausible readings for the widget gallery.
     static var sample: Snapshot {
         func reading(_ id: String, _ value: Double, unit: String = "percent", detail: Double? = nil,
-                     state: String? = nil, max: Double = 100, light: String, dark: String) -> Reading {
-            let series = (0..<30).map { i in
-                max * 0.15 + max * 0.5 * (0.5 + 0.5 * sin(Double(i) / 4 + value))
+                     state: String? = nil, max top: Double = 100, light: String, dark: String) -> Reading {
+            var series: [Double] = []
+            for i in 0..<30 {
+                let wave: Double = 0.5 + 0.5 * sin(Double(i) / 4.0 + value)
+                let point: Double = top * 0.15 + top * 0.5 * wave
+                series.append(point)
             }
-            return Reading(id: id, available: true, value: value, unit: unit, fraction: min(1, value / max),
-                           detail: detail, state: state, series: series, seriesMax: max, light: light, dark: dark)
+            let fraction: Double = Swift.min(1.0, value / top)
+            return Reading(id: id, available: true, value: value, unit: unit, fraction: fraction,
+                           detail: detail, state: state, series: series, seriesMax: top, light: light, dark: dark)
         }
         return Snapshot(schema: 1, writtenAt: 0, sampleAt: Date().timeIntervalSince1970, staleAfterSecs: 120, metrics: [
             reading("cpu", 34, light: "#246fc7", dark: "#5a9cf0"),
