@@ -287,7 +287,9 @@ fn footer_control(
 
 impl Render for MenuPanel {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let dark = crate::settings::Settings::load().dark.unwrap_or(matches!(
+        let preferences = crate::settings::Settings::load();
+        t::sync(&preferences);
+        let dark = preferences.dark.unwrap_or(matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
@@ -333,6 +335,7 @@ impl Render for MenuPanel {
             .bg(ground)
             .text_color(t::ink(dark))
             .font_family(".AppleSystemUIFont")
+            .font_features(t::tabular())
             .child(
                 div()
                     .flex()

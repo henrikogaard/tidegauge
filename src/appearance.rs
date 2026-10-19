@@ -1,7 +1,7 @@
 use gpui_kit::{Window, WindowBackgroundAppearance};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor,
+    NSColorSpace, NSView,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -55,4 +55,15 @@ pub fn round_corners(window: &Window, radius: f64) {
             let _: () = msg_send![&*layer, setMasksToBounds: true];
         }
     }
+}
+
+/// The accent colour chosen in System Settings, as 0xRRGGBB in sRGB.
+pub fn system_accent() -> Option<u32> {
+    let color =
+        NSColor::controlAccentColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
+    let (mut r, mut g, mut b, mut a) = (0., 0., 0., 0.);
+    // The four pointers are locals that live for the call.
+    unsafe { color.getRed_green_blue_alpha(&mut r, &mut g, &mut b, &mut a) };
+    let byte = |v: f64| (v.clamp(0., 1.) * 255.).round() as u32;
+    Some(byte(r) << 16 | byte(g) << 8 | byte(b))
 }

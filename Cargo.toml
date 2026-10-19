@@ -26,6 +26,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSGraphicsContext", "NSScreen", "NSWindow", "NSView", "NSColor", "NSFont",
     "NSAttributedString", "NSEvent", "NSRunningApplication", "NSBezierPath",
     "NSPasteboard", "NSAccessibility", "NSStringDrawing", "NSGraphics", "NSAppearance", "NSAlert", "NSPanel", "block2",
+    "NSColorSpace", "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSData", "NSDictionary", "NSObject", "NSString", "NSArray", "NSValue",
