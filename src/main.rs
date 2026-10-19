@@ -131,47 +131,15 @@ fn main() {
             }
         }
 
-        let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);
-        let (window, view) = gpui_kit::open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                kind: WindowKind::Normal,
-                focus: true,
-                show: true,
-                is_movable: true,
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Tidegauge".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(16.), px(26.))),
-                }),
-                window_min_size: Some(size(px(1050.), px(650.))),
-                ..Default::default()
-            },
-            cx,
-            |window, cx| {
-                // Closing the dashboard hides it; the menu-bar item reopens it.
-                window.on_window_should_close(cx, |_, cx| {
-                    cx.hide();
-                    false
-                });
-                cx.new(|cx| {
-                    let mut v = ui::TideGaugeView::new(window, cx);
-                    v.snap = engine::latest();
-                    v
-                })
-            },
-        )
-        .expect("open panel");
-        app::set_panel_handle(window);
-        // TIDEGAUGE_HIDDEN=1 starts with the dashboard hidden, as after it is
-        // closed, so the app's idle cost can be measured.
-        // Started by the login item, the dashboard stays closed too: only
-        // the menu-bar item shows.
-        if !login::opens_dashboard(
+        // TIDEGAUGE_HIDDEN=1 starts with the dashboard closed, as after it is
+        // closed, so the app's idle cost can be measured. Started by the
+        // login item, the dashboard stays closed too: only the menu-bar item
+        // shows. The window is not made until it is first wanted.
+        if login::opens_dashboard(
             at_login,
             std::env::var_os("TIDEGAUGE_HIDDEN").is_some_and(|v| v == "1"),
         ) {
-            cx.hide();
+            app::dashboard(cx, true);
         }
 
         #[cfg(target_os = "macos")]
@@ -186,7 +154,7 @@ fn main() {
             cx.spawn(async move |cx: &mut AsyncApp| {
                 smol::Timer::after(Duration::from_millis(700)).await;
                 loop {
-                    let _ = cx.update(|cx: &mut App| app::pump_status_bar(&mut bar, &view, cx));
+                    let _ = cx.update(|cx: &mut App| app::pump_status_bar(&mut bar, cx));
                     // Native menu tracking runs a nested event loop. Release the
                     // GPUI App borrow before allowing other UI tasks to run.
                     if statusbar::SHOW_CONTEXT_MENU.swap(false, std::sync::atomic::Ordering::SeqCst)
