@@ -88,6 +88,14 @@ pub fn app_version() -> Option<String> {
         .map(|value| value.to_string())
 }
 
+/// The installed app's build number, as its bundle states it.
+pub fn app_build() -> Option<String> {
+    NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("CFBundleVersion"))
+        .and_then(|value| value.downcast::<NSString>().ok())
+        .map(|value| value.to_string())
+}
+
 /// Return the localized title used by the native menu item.
 pub fn check_for_updates_title() -> &'static str {
     crate::locale::text(CHECK_FOR_UPDATES, CHECK_FOR_UPDATES_NO)

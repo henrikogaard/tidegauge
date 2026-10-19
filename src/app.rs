@@ -120,8 +120,18 @@ pub fn pump_status_bar(
     if SHOW_SETTINGS.swap(false, Ordering::SeqCst) {
         view.update(cx, |view, cx| {
             view.show_settings = true;
+            view.reset_settings_scroll();
             view.scroll = gpui_kit::ScrollHandle::new();
             view.settings_error = None;
+            cx.notify();
+        });
+        toggle_panel(cx);
+    }
+    if SHOW_ABOUT.swap(false, Ordering::SeqCst) {
+        view.update(cx, |view, cx| {
+            view.show_settings = true;
+            view.settings_error = None;
+            view.scroll_settings_to_about();
             cx.notify();
         });
         toggle_panel(cx);

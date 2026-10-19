@@ -6,6 +6,27 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- An About section at the end of Settings shows the app icon, version and
+  build, Check for Updates, and links to the project, the author, Buy me a
+  coffee and the license. The version and update check moved there from
+  General, and the menu-bar menu has an About Tidegauge item that opens it.
+### Changed
+
+- The history database is about a tenth of its size. App names are stored once,
+  duplicate indexes are gone, each tick records about 40 apps (the largest and
+  busiest, plus any app a running app alert is watching) instead of up to 100,
+  and samples older than 24 hours are averaged into five-minute rows. An
+  existing history is migrated on first launch and keeps all its apps and
+  ranges; the 1 h, 12 h and 24 h views keep full resolution, and exports of data
+  older than a day hold the five-minute averages. The file is compacted once
+  after the migration and shrinks as old rows go. History no longer scans the
+  whole range to list its apps.
+- Settings are read from memory for a quarter of a second at a time instead of
+  from disk on every request while the window draws; a change from another
+  process or a save shows at once.
+- The release binary is stripped of symbols, about 4 MB smaller.
 ### Changed
 
 - Tidegauge samples less when nothing is watching. With no window or panel

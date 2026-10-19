@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
 pub static SHOW_SETTINGS: AtomicBool = AtomicBool::new(false);
+pub static SHOW_ABOUT: AtomicBool = AtomicBool::new(false);
 pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);
 /// A left click on the item: open or close the menu-bar panel.
@@ -176,6 +177,10 @@ define_class!(
         fn _settings(&self, _sender: Option<&NSObject>) {
             SHOW_SETTINGS.store(true, Ordering::SeqCst);
         }
+        #[unsafe(method(about:))]
+        fn _about(&self, _sender: Option<&NSObject>) {
+            SHOW_ABOUT.store(true, Ordering::SeqCst);
+        }
         #[unsafe(method(toggle:))]
         fn _toggle(&self, _sender: Option<&NSObject>) {
             TOGGLE_PANEL.store(true, Ordering::SeqCst);
@@ -211,6 +216,7 @@ fn context_menu(target: &TideGaugeTarget) -> Retained<NSMenu> {
     for (title, action, key) in [
         (l("Open Dashboard", "Åpne oversikten"), sel!(toggle:), ""),
         (l("Settings…", "Innstillinger…"), sel!(settings:), ","),
+        (l("About Tidegauge", "Om Tidegauge"), sel!(about:), ""),
         (l("Quit Tidegauge", "Avslutt Tidegauge"), sel!(quit:), "q"),
     ] {
         if key == "q" {
