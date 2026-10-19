@@ -2847,7 +2847,7 @@ fn growing_memory(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div 
     let mut list = card(dark).child(caption(l("Growing memory", "Voksende minne"), dark));
     for leak in &s.leaks {
         let app = s.apps.iter().find(|a| a.key == leak.key);
-        let action = app.and_then(|a| crate::process_panel::quit_action(s, a));
+        let action = app.and_then(|a| crate::process_panel::quit_action(s, a, crate::process_control::Force::Quit));
         let target = this.clone();
         list = list.child(
             div()
