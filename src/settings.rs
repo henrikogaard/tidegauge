@@ -113,6 +113,11 @@ pub struct Settings {
     pub panel_shortcut: Option<String>,
     /// "Don't ask again" on the Move to Applications prompt.
     pub move_prompt_declined: bool,
+    /// The first-run welcome on Overview has been dismissed. A settings file
+    /// from before the welcome existed lacks this key and counts as
+    /// dismissed: only a first launch, with no file, shows it.
+    #[serde(default = "already_welcomed")]
+    pub welcomed: bool,
     /// Where the dashboard window is see-through.
     pub transparency: Transparency,
     /// Whether the menu-bar panel is see-through.
@@ -162,11 +167,17 @@ impl Default for Settings {
             language: None,
             panel_shortcut: None,
             move_prompt_declined: false,
+            welcomed: false,
             transparency: Transparency::Off,
             panel_transparency: false,
             transparency_amount: TRANSPARENCY_DEFAULT,
         }
     }
+}
+
+/// What a settings file without the `welcomed` key means: an existing user.
+fn already_welcomed() -> bool {
+    true
 }
 
 fn path() -> PathBuf {
@@ -275,6 +286,11 @@ impl Settings {
     /// Whether the menu-bar panel is see-through, under the same rule.
     pub fn panel_is_transparent(&self, reduce_transparency: bool) -> bool {
         self.panel_transparency && !reduce_transparency
+    }
+
+    /// Whether Overview shows the first-run welcome.
+    pub fn show_welcome(&self) -> bool {
+        !self.welcomed
     }
 
     pub fn reset_dashboard(&mut self) {
@@ -469,6 +485,24 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_first_launch_without_a_settings_file_is_welcomed() {
+        // No file: the defaults, which have not welcomed anyone.
+        assert!(Settings::default().show_welcome());
+        // A file from before the welcome existed: an existing user.
+        let existing: Settings = serde_json::from_str(r#"{"dark":true}"#).unwrap();
+        assert!(!existing.show_welcome());
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.show_welcome());
+        // A first run that saved something before dismissing still sees it,
+        // and dismissing is remembered.
+        let mut saved: Settings = serde_json::from_str(&serde_json::to_string(&Settings::default()).unwrap()).unwrap();
+        assert!(saved.show_welcome());
+        saved.welcomed = true;
+        let again: Settings = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(!again.show_welcome());
+    }
 
     #[test]
     fn roadmap_settings_migrate_normalize_and_reset_independently() {

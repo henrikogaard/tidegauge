@@ -252,7 +252,7 @@ fn set_panel_shortcut(this: &Entity<TideGaugeView>, value: Option<&'static str>,
     });
 }
 
-fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
+pub(crate) fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, cx: &mut App) {
     let error = match crate::login::set_enabled(enabled) {
         Ok(status) => crate::settings::mutate(|settings| settings.launch_at_login = status.is_registered())
             .err()
@@ -980,7 +980,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         })
         .child(general(view, &settings, dark, this.clone()))
         .child(transparency(view, &settings, dark, this.clone()))
-        .child(alerts(view, &settings, dark, this.clone()))
+        .child(
+            alerts(view, &settings, dark, this.clone())
+                .id("settings-alerts")
+                .anchor_scroll(Some(view.alerts_anchor.clone())),
+        )
         .child(menu_bar(&settings, dark, this.clone()))
         .child(panel_tiles(&settings, dark, this.clone()))
         .child(div().grid().grid_cols(2).gap(t::SPACE_4).items_start()

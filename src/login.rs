@@ -190,6 +190,68 @@ fn main_bundle_path() -> Option<PathBuf> {
 #[link(name = "ServiceManagement", kind = "framework")]
 unsafe extern "C" {}
 
+/// Whether macOS started this process because the user logged in (the login
+/// item), rather than the user opening the app. The registration is
+/// `SMAppService.mainApp`, which cannot carry an argument, so the answer
+/// comes from the "open application" Apple event macOS sends at launch: it
+/// says "launched as login item". A `--login` argument counts too, for a
+/// login item registered by hand. Call it while the app is starting.
+pub fn launched_at_login() -> bool {
+    launched_at_login_by(std::env::args().skip(1), native_launched_as_login_item)
+}
+
+fn launched_at_login_by(
+    arguments: impl IntoIterator<Item = String>,
+    from_event: impl FnOnce() -> bool,
+) -> bool {
+    arguments.into_iter().any(|argument| argument == "--login") || from_event()
+}
+
+#[cfg(target_os = "macos")]
+fn native_launched_as_login_item() -> bool {
+    use objc2::runtime::{AnyClass, AnyObject};
+    // Four-character codes of the Apple event: the "open application" event
+    // ('oapp'), its property-data parameter ('prdt'), and the value saying
+    // the app was launched as a login item ('lgit').
+    const OPEN_APPLICATION: u32 = u32::from_be_bytes(*b"oapp");
+    const PROPERTY_DATA: u32 = u32::from_be_bytes(*b"prdt");
+    const LOGIN_ITEM: u32 = u32::from_be_bytes(*b"lgit");
+    let Some(class) = AnyClass::get(c"NSAppleEventManager") else {
+        return false;
+    };
+    unsafe {
+        let manager: *mut AnyObject = objc2::msg_send![class, sharedAppleEventManager];
+        if manager.is_null() {
+            return false;
+        }
+        let event: *mut AnyObject = objc2::msg_send![manager, currentAppleEvent];
+        if event.is_null() {
+            return false;
+        }
+        let id: u32 = objc2::msg_send![event, eventID];
+        if id != OPEN_APPLICATION {
+            return false;
+        }
+        let property: *mut AnyObject = objc2::msg_send![event, paramDescriptorForKeyword: PROPERTY_DATA];
+        if property.is_null() {
+            return false;
+        }
+        let value: u32 = objc2::msg_send![property, enumCodeValue];
+        value == LOGIN_ITEM
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_launched_as_login_item() -> bool {
+    false
+}
+
+/// Whether the dashboard window should open at launch: not when the app was
+/// started by the login item, and not when asked to start hidden.
+pub fn opens_dashboard(at_login: bool, hidden_requested: bool) -> bool {
+    !at_login && !hidden_requested
+}
+
 /// Whether the bundle at `path` is in /Applications or ~/Applications.
 pub fn installed_here(path: &Path) -> bool {
     installed_bundle_path(path)
@@ -226,6 +288,28 @@ fn bundle_path_is_eligible(bundle: &Path, roots: &[PathBuf]) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_login_argument_or_the_login_event_marks_a_login_launch() {
+        let none: [String; 0] = [];
+        assert!(!launched_at_login_by(none.clone(), || false));
+        assert!(launched_at_login_by(none, || true));
+        assert!(launched_at_login_by(["--login".to_string()], || false));
+        assert!(!launched_at_login_by(["--other".to_string()], || false));
+    }
+
+    #[test]
+    fn the_argument_settles_it_without_asking_the_event() {
+        assert!(launched_at_login_by(["--login".to_string()], || panic!("not asked")));
+    }
+
+    #[test]
+    fn only_a_manual_launch_opens_the_dashboard() {
+        assert!(opens_dashboard(false, false));
+        assert!(!opens_dashboard(true, false));
+        assert!(!opens_dashboard(false, true));
+        assert!(!opens_dashboard(true, true));
+    }
 
     #[test]
     fn registered_states_are_truthful_and_changeable() {

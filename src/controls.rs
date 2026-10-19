@@ -35,6 +35,144 @@ fn control_with(
     content: impl IntoElement,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    control_tipped(spec, content, None, action)
+}
+
+/// A hover tip in the app's own style: a small card with plain text.
+struct Tip {
+    text: SharedString,
+    dark: bool,
+}
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(280.))
+            .px(t::SPACE_2)
+            .py(t::SPACE_1)
+            .rounded(t::RADIUS_CONTROL)
+            .border_1()
+            .border_color(t::line(self.dark))
+            .bg(t::card_hi(self.dark))
+            .text_size(t::TEXT_SMALL)
+            .text_color(t::ink(self.dark))
+            .child(self.text.clone())
+    }
+}
+
+/// The builder for `.tooltip(..)`: shows `text` after the usual hover delay.
+pub(crate) fn tip(
+    text: impl Into<SharedString>,
+    dark: bool,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| {
+        let text = text.clone();
+        cx.new(|_| Tip { text, dark }).into()
+    }
+}
+
+/// The technical terms that carry a hover tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Term {
+    Pressure,
+    Wired,
+    Compressed,
+    Cached,
+    Swap,
+    Load,
+    Thermal,
+    Peak,
+}
+
+impl Term {
+    /// The term a visible label names, in either language, or `None` for a
+    /// plain label. Matches the start of the label (so "Load · 1 min" and
+    /// "Memory pressure · from macOS" both count), apart from the thermal
+    /// state, which sits inside "macOS thermal state".
+    pub(crate) fn of(label: &str) -> Option<Term> {
+        let lower = label.trim_start_matches(['-', ' ']).to_lowercase();
+        const STARTS: [(&str, Term); 13] = [
+            ("pressure", Term::Pressure),
+            ("memory pressure", Term::Pressure),
+            ("minnepress", Term::Pressure),
+            ("wired", Term::Wired),
+            ("bundet", Term::Wired),
+            ("compressed", Term::Compressed),
+            ("komprimert", Term::Compressed),
+            ("cached", Term::Cached),
+            ("hurtigbufret", Term::Cached),
+            ("swap", Term::Swap),
+            ("brukt vekselminne", Term::Swap),
+            ("load ·", Term::Load),
+            ("last ·", Term::Load),
+        ];
+        if let Some((_, term)) = STARTS.iter().find(|(start, _)| lower.starts_with(start)) {
+            return Some(*term);
+        }
+        if lower.contains("thermal state") || lower.contains("termisk tilstand") {
+            return Some(Term::Thermal);
+        }
+        (lower.starts_with("peak") || lower.starts_with("topp")).then_some(Term::Peak)
+    }
+
+    /// One plain sentence about it.
+    pub(crate) fn tip(self) -> &'static str {
+        match self {
+            Term::Pressure => l(
+                "How hard macOS is working to find free memory. Green is fine; amber and red mean it is squeezing or swapping.",
+                "Hvor hardt macOS må jobbe for å finne ledig minne. Grønt er greit; gult og rødt betyr at det presser eller bruker vekselminne.",
+            ),
+            Term::Wired => l(
+                "Memory macOS keeps for itself and cannot move to disk.",
+                "Minne macOS holder av til seg selv og ikke kan flytte til disk.",
+            ),
+            Term::Compressed => l(
+                "Idle memory squeezed to take less room, so the disk is not needed.",
+                "Inaktivt minne som er presset sammen for å ta mindre plass, så disken slipper å brukes.",
+            ),
+            Term::Cached => l(
+                "Files kept in memory for speed. macOS frees it at once when an app needs room.",
+                "Filer som holdes i minnet for fart. macOS frigjør det med en gang en app trenger plass.",
+            ),
+            Term::Swap => l(
+                "Memory parked on the disk when RAM is full. A lot of it makes the Mac slower.",
+                "Minne som er lagt på disken når RAM er full. Mye av det gjør Macen tregere.",
+            ),
+            Term::Load => l(
+                "Programs running or waiting for a turn, averaged over 1, 5 and 15 minutes. Above the core count means a queue.",
+                "Programmer som kjører eller venter på tur, som snitt over 1, 5 og 15 minutter. Over antall kjerner betyr kø.",
+            ),
+            Term::Thermal => l(
+                "How hot macOS says the Mac is. Nominal is normal; serious and critical make it slow itself down.",
+                "Hvor varm macOS sier at Macen er. Nominell er normalt; alvorlig og kritisk får den til å bremse seg selv.",
+            ),
+            Term::Peak => l(
+                "The highest value seen in this view.",
+                "Den høyeste verdien som er sett i denne visningen.",
+            ),
+        }
+    }
+}
+
+/// `element` with the hover tip for `label`, if the label is a technical term.
+pub(crate) fn tipped(label: &str, dark: bool, element: Div) -> AnyElement {
+    match Term::of(label) {
+        Some(term) => element
+            .id(SharedString::from(format!("tip-{label}")))
+            .tooltip(tip(term.tip(), dark))
+            .into_any_element(),
+        None => element.into_any_element(),
+    }
+}
+
+fn control_tipped(
+    spec: ControlSpec,
+    content: impl IntoElement,
+    tooltip: Option<SharedString>,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let dark = spec.dark;
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
     let toggled = matches!(spec.role, Role::RadioButton | Role::Switch);
@@ -85,6 +223,9 @@ fn control_with(
     }
     if spec.selected {
         base = base.bg(spec.accent.opacity(0.12));
+    }
+    if let Some(text) = tooltip {
+        base = base.tooltip(tip(text, dark));
     }
     base.child(content)
         .on_click(move |_, window, cx| action(window, cx))
@@ -257,9 +398,10 @@ pub(crate) fn icon_toggle(
 ) -> impl IntoElement {
     let color = if selected { t::accent(dark) } else { t::ink_dim(dark) };
     let content = svg().path(icon).size(px(14.)).text_color(color);
-    let mut s = spec(id, aria, selected, dark, t::accent(dark));
+    let aria: String = aria.into();
+    let mut s = spec(id, aria.clone(), selected, dark, t::accent(dark));
     s.role = Role::Button;
-    control_with(s, content, action)
+    control_tipped(s, content, Some(aria.into()), action)
 }
 
 /// While Keep awake is on, Overview says so in one line with a way to stop.
@@ -563,12 +705,13 @@ pub fn history_panel(
                     None => 1.,
                 });
             let samples = data.counts.iter().sum::<u64>();
-            let format_value = |v| match metric.unit(app) {
+            let unit = metric.unit(app);
+            let format_value: std::rc::Rc<dyn Fn(f64) -> String> = std::rc::Rc::new(move |v| match unit {
                 "B" => crate::engine::fmt_bytes(v),
                 "B/s" => crate::engine::fmt_rate(v),
                 "%" => crate::locale::percent(v, 1),
                 unit => format!("{} {unit}", crate::locale::number(v, 1)),
-            };
+            });
             let mut plot = card(dark)
                 .child(
                     div()
@@ -578,7 +721,18 @@ pub fn history_panel(
                         .child(sub(crate::locale::count(samples, "sample", "samples", "måling", "målinger")))
                         .child(sub(format_value(max))),
                 )
-                .child(history_chart(&shown, max, accent, 180.))
+                .child(HistoryPlot {
+                    id: "history-plot".into(),
+                    values: shown.clone(),
+                    max,
+                    color: accent,
+                    height: 180.,
+                    start: data.start,
+                    end: data.end,
+                    hours: view.history_request.hours,
+                    format: format_value.clone(),
+                    dark,
+                })
                 .child(sub(format_value(0.)))
                 .child(
                     div()
@@ -627,43 +781,172 @@ pub(crate) fn history_chart(values: &[Option<f64>], max: f64, color: Hsla, heigh
     let values = values.to_vec();
     canvas(
         move |_, _, _| (),
-        move |bounds, _, window, _| {
-            let width: f32 = bounds.size.width.into();
-            let height: f32 = bounds.size.height.into();
-            let ox: f32 = bounds.origin.x.into();
-            let oy: f32 = bounds.origin.y.into();
-            let step = width / values.len().max(1) as f32;
-            for (index, value) in values.iter().enumerate() {
-                let left = ox + index as f32 * step;
-                let right = left + (step - 1.).max(1.);
-                let bottom = oy + height;
-                match value {
-                    Some(value) => {
-                        let top =
-                            bottom - ((*value / max).clamp(0., 1.) as f32 * (height - 2.)).max(1.);
-                        let mut bar = Path::new(point(px(left), px(bottom)));
-                        bar.line_to(point(px(left), px(top)));
-                        bar.line_to(point(px(right), px(top)));
-                        bar.line_to(point(px(right), px(bottom)));
-                        bar.line_to(point(px(left), px(bottom)));
-                        window.paint_path(bar, color.opacity(0.8));
-                    }
-                    None => {
-                        // A faint baseline tick marks the empty slot so missing
-                        // data reads as intentional, not as a layout bug.
-                        let mut tick = Path::new(point(px(left), px(bottom)));
-                        tick.line_to(point(px(left), px(bottom - 2.)));
-                        tick.line_to(point(px(right), px(bottom - 2.)));
-                        tick.line_to(point(px(right), px(bottom)));
-                        tick.line_to(point(px(left), px(bottom)));
-                        window.paint_path(tick, color.opacity(0.12));
-                    }
-                }
-            }
-        },
+        move |bounds, _, window, _| paint_bars(window, bounds, &values, max, color),
     )
     .w_full()
     .h(px(height))
+}
+
+/// One bar per bucket; an empty bucket gets a faint baseline tick, so missing
+/// data reads as intentional, not as a layout bug.
+fn paint_bars(window: &mut Window, bounds: Bounds<Pixels>, values: &[Option<f64>], max: f64, color: Hsla) {
+    let width: f32 = bounds.size.width.into();
+    let height: f32 = bounds.size.height.into();
+    let ox: f32 = bounds.origin.x.into();
+    let oy: f32 = bounds.origin.y.into();
+    let step = width / values.len().max(1) as f32;
+    for (index, value) in values.iter().enumerate() {
+        let left = ox + index as f32 * step;
+        let right = left + (step - 1.).max(1.);
+        let bottom = oy + height;
+        match value {
+            Some(value) => {
+                let top = bottom - ((*value / max).clamp(0., 1.) as f32 * (height - 2.)).max(1.);
+                let mut bar = Path::new(point(px(left), px(bottom)));
+                bar.line_to(point(px(left), px(top)));
+                bar.line_to(point(px(right), px(top)));
+                bar.line_to(point(px(right), px(bottom)));
+                bar.line_to(point(px(left), px(bottom)));
+                window.paint_path(bar, color.opacity(0.8));
+            }
+            None => {
+                let mut tick = Path::new(point(px(left), px(bottom)));
+                tick.line_to(point(px(left), px(bottom - 2.)));
+                tick.line_to(point(px(right), px(bottom - 2.)));
+                tick.line_to(point(px(right), px(bottom)));
+                tick.line_to(point(px(left), px(bottom)));
+                window.paint_path(tick, color.opacity(0.12));
+            }
+        }
+    }
+}
+
+fn paint_rule(window: &mut Window, x: f32, y: f32, w: f32, h: f32, color: Hsla) {
+    window.paint_quad(fill(Bounds::new(point(px(x), px(y)), size(px(w), px(h))), color));
+}
+
+/// Which bucket of a history plot the pointer is over, kept between frames.
+struct PlotHover {
+    index: Option<usize>,
+}
+
+/// A history plot: the bars of `history_chart` over light gridlines, with a
+/// day tick at each local midnight on 7- and 30-day ranges, and a line with
+/// the value and time under the pointer while it is over the plot.
+#[derive(IntoElement)]
+pub(crate) struct HistoryPlot {
+    pub id: String,
+    pub values: Vec<Option<f64>>,
+    pub max: f64,
+    pub color: Hsla,
+    pub height: f32,
+    /// The range the buckets cover, in Unix seconds.
+    pub start: f64,
+    pub end: f64,
+    pub hours: u32,
+    pub format: std::rc::Rc<dyn Fn(f64) -> String>,
+    pub dark: bool,
+}
+
+impl RenderOnce for HistoryPlot {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let HistoryPlot { id, values, max, color, height, start, end, hours, format, dark } = self;
+        let hover = window.use_keyed_state(SharedString::from(format!("{id}-hover")), cx, |_, _| PlotHover { index: None });
+        let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
+        let len = values.len();
+        let shown = hover.read(cx).index.filter(|i| *i < len);
+        let ticks = if hours >= 168 { crate::history_browser::day_ticks(start, end) } else { Vec::new() };
+        let readout = shown.map(|index| {
+            let value = values[index].map(|v| (*format)(v)).unwrap_or_else(|| l("No data", "Ingen data").into());
+            let time = crate::history_browser::local_time(crate::history_browser::bucket_start(start, end, len, index));
+            let fraction = (index as f32 + 0.5) / len.max(1) as f32;
+            (value, time, fraction)
+        });
+        let paint_bounds = bounds.clone();
+        let move_bounds = bounds.clone();
+        let move_hover = hover.clone();
+        let leave_hover = hover;
+        div()
+            .id(SharedString::from(id))
+            .relative()
+            .w_full()
+            .h(px(height))
+            .child(
+                canvas(
+                    move |_, _, _| (),
+                    move |area, _, window, _| {
+                        paint_bounds.set(area);
+                        let width: f32 = area.size.width.into();
+                        let h: f32 = area.size.height.into();
+                        let ox: f32 = area.origin.x.into();
+                        let oy: f32 = area.origin.y.into();
+                        let line = t::line(dark);
+                        // Quarter lines first, under the bars.
+                        for quarter in 1..4 {
+                            paint_rule(window, ox, oy + h * quarter as f32 / 4., width, 1., line.opacity(0.5));
+                        }
+                        paint_bars(window, area, &values, max, color);
+                        for fraction in &ticks {
+                            let x = ox + width * fraction;
+                            paint_rule(window, x, oy, 1., h, line.opacity(0.4));
+                            paint_rule(window, x, oy + h - 6., 1., 6., line);
+                        }
+                    },
+                )
+                .size_full(),
+            )
+            .when_some(readout, |d, (value, time, fraction)| {
+                let label = div()
+                    .absolute()
+                    .top(px(2.))
+                    .px(t::SPACE_2)
+                    .py(t::SPACE_1)
+                    .rounded(t::RADIUS_CONTROL)
+                    .border_1()
+                    .border_color(t::line(dark))
+                    .bg(t::card_hi(dark))
+                    .text_size(t::TEXT_SMALL)
+                    .whitespace_nowrap()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t::ink(dark)).child(value))
+                    .child(div().text_color(t::ink_dim(dark)).child(time));
+                // The label sits on the side with room.
+                let label = if fraction <= 0.5 {
+                    label.left(relative(fraction)).ml(t::SPACE_2)
+                } else {
+                    label.right(relative(1. - fraction)).mr(t::SPACE_2)
+                };
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(fraction))
+                        .w(px(1.))
+                        .bg(t::ink_dim(dark)),
+                )
+                .child(label)
+            })
+            .on_mouse_move(move |event, _, cx| {
+                let area = move_bounds.get();
+                let x: f32 = (event.position.x - area.origin.x).into();
+                let index = crate::history_browser::bucket_at(x, area.size.width.into(), len);
+                move_hover.update(cx, |state, cx| {
+                    if state.index != index {
+                        state.index = index;
+                        cx.notify();
+                    }
+                });
+            })
+            .on_hover(move |hovered, _, cx| {
+                if !*hovered {
+                    leave_hover.update(cx, |state, cx| {
+                        if state.index.take().is_some() {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+    }
 }
 
 pub fn audio_output(
@@ -922,6 +1205,47 @@ mod tests {
         ] {
             let stroke = Keystroke::parse(key).unwrap();
             assert!(!is_activation_key(&stroke), "{key} must not activate");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tip_tests {
+    use super::Term;
+
+    #[test]
+    fn technical_labels_in_both_languages_have_a_tip() {
+        for (label, term) in [
+            ("Memory pressure · from macOS", Term::Pressure),
+            ("Pressure", Term::Pressure),
+            ("Minnepress · fra macOS", Term::Pressure),
+            ("Wired", Term::Wired),
+            ("Bundet", Term::Wired),
+            ("Compressed", Term::Compressed),
+            ("Komprimert", Term::Compressed),
+            ("Cached", Term::Cached),
+            ("Hurtigbufret", Term::Cached),
+            ("Swap used", Term::Swap),
+            ("Brukt vekselminne", Term::Swap),
+            ("Load · 1 min", Term::Load),
+            ("Last · 1 / 5 / 15 min", Term::Load),
+            ("Thermal state", Term::Thermal),
+            ("macOS thermal state: Nominal", Term::Thermal),
+            ("Termisk tilstand fra macOS", Term::Thermal),
+            ("Peak", Term::Peak),
+            ("Topp", Term::Peak),
+            ("- - peak in view", Term::Peak),
+            ("- - topp i visningen", Term::Peak),
+        ] {
+            assert_eq!(Term::of(label), Some(term), "{label}");
+            assert!(!term.tip().is_empty());
+        }
+    }
+
+    #[test]
+    fn plain_labels_have_no_tip() {
+        for label in ["App", "Free", "Ledig", "Cores", "Loading local history…", "Average", "Used"] {
+            assert_eq!(Term::of(label), None, "{label}");
         }
     }
 }

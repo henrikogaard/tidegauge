@@ -464,6 +464,62 @@ fn file_name(request: &Request) -> String {
     parts.join(" ") + ".csv"
 }
 
+/// Which of `len` equal buckets lies `x` pixels from the left edge of a plot
+/// `width` pixels wide, or `None` outside it.
+pub fn bucket_at(x: f32, width: f32, len: usize) -> Option<usize> {
+    if len == 0 || !x.is_finite() || !width.is_finite() || width <= 0. || x < 0. || x >= width {
+        return None;
+    }
+    Some(((x / width * len as f32) as usize).min(len - 1))
+}
+
+/// When bucket `index` of `len` begins, for a range from `start` to `end`.
+pub fn bucket_start(start: f64, end: f64, len: usize, index: usize) -> f64 {
+    start + (end - start) * index as f64 / len.max(1) as f64
+}
+
+/// Seconds the local clock is ahead of UTC at `ts`.
+fn local_offset(ts: f64) -> f64 {
+    let time = ts as libc::time_t;
+    let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
+    unsafe {
+        if libc::localtime_r(&time, &mut date).is_null() {
+            return 0.;
+        }
+    }
+    date.tm_gmtoff as f64
+}
+
+/// Where each local midnight falls inside `start..end`, as a fraction of the
+/// range from the left, for the day ticks of a 7- or 30-day plot.
+pub fn day_ticks(start: f64, end: f64) -> Vec<f32> {
+    day_ticks_with(start, end, local_offset)
+}
+
+fn day_ticks_with(start: f64, end: f64, offset: impl Fn(f64) -> f64) -> Vec<f32> {
+    let span = end - start;
+    if span.is_nan() || span <= 0. || !span.is_finite() {
+        return Vec::new();
+    }
+    let mut ticks = Vec::new();
+    let mut day = ((start + offset(start)) / 86400.).floor() + 1.;
+    // Never more than a year of ticks, whatever the range.
+    while ticks.len() < 366 {
+        // The offset can change at a daylight-saving switch: ask where the
+        // midnight lands, then ask again there.
+        let guess = day * 86400. - offset(start);
+        let at = day * 86400. - offset(guess);
+        if at >= end {
+            break;
+        }
+        if at > start {
+            ticks.push(((at - start) / span) as f32);
+        }
+        day += 1.;
+    }
+    ticks
+}
+
 pub fn local_time(ts: f64) -> String {
     format_time(ts, c"%Y-%m-%d %H:%M")
 }
@@ -489,6 +545,55 @@ fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_position_picks_the_bucket_under_it() {
+        assert_eq!(bucket_at(0., 180., 180), Some(0));
+        assert_eq!(bucket_at(0.9, 180., 180), Some(0));
+        assert_eq!(bucket_at(1., 180., 180), Some(1));
+        assert_eq!(bucket_at(90., 180., 180), Some(90));
+        assert_eq!(bucket_at(179.9, 180., 180), Some(179));
+        assert_eq!(bucket_at(50., 100., 4), Some(2));
+        // Outside the plot, or nothing to point at.
+        assert_eq!(bucket_at(-1., 180., 180), None);
+        assert_eq!(bucket_at(180., 180., 180), None);
+        assert_eq!(bucket_at(5., 0., 180), None);
+        assert_eq!(bucket_at(5., 100., 0), None);
+        assert_eq!(bucket_at(f32::NAN, 100., 4), None);
+    }
+
+    #[test]
+    fn a_bucket_begins_where_its_share_of_the_range_does() {
+        assert_eq!(bucket_start(1000., 2000., 10, 0), 1000.);
+        assert_eq!(bucket_start(1000., 2000., 10, 5), 1500.);
+        assert_eq!(bucket_start(1000., 2000., 10, 10), 2000.);
+    }
+
+    #[test]
+    fn day_ticks_fall_on_local_midnights() {
+        // UTC+2: local midnight is 22:00 UTC. Range: 3 days from 1970-01-02 12:00 UTC.
+        let offset = |_| 7200.;
+        let start = 86400. + 12. * 3600.;
+        let end = start + 3. * 86400.;
+        let ticks = day_ticks_with(start, end, offset);
+        assert_eq!(ticks.len(), 3);
+        // First midnight (local) is 1970-01-02 22:00 UTC, 10 h in.
+        let span = end - start;
+        assert!((f64::from(ticks[0]) - 10. * 3600. / span).abs() < 1e-6);
+        assert!((f64::from(ticks[1]) - (10. * 3600. + 86400.) / span).abs() < 1e-6);
+        assert!(ticks.iter().all(|t| *t > 0. && *t < 1.));
+    }
+
+    #[test]
+    fn day_ticks_of_a_short_or_empty_range_are_few() {
+        assert!(day_ticks_with(0., 0., |_| 0.).is_empty());
+        assert!(day_ticks_with(10., 5., |_| 0.).is_empty());
+        // A range starting exactly at midnight does not tick on its own edge.
+        let ticks = day_ticks_with(86400., 3. * 86400., |_| 0.);
+        assert_eq!(ticks, vec![0.5]);
+        // Thirty days gives thirty ticks at most.
+        assert!(day_ticks_with(0., 30. * 86400., |_| 0.).len() <= 30);
+    }
 
     #[test]
     fn corruption_is_not_reported_as_a_refreshable_error() {
