@@ -70,7 +70,7 @@ fn original_path(running: &Path) -> PathBuf {
     }
 }
 
-fn trash(path: &Path) -> Result<(), String> {
+pub(crate) fn trash(path: &Path) -> Result<(), String> {
     let url = objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(&path.to_string_lossy()));
     objc2_foundation::NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, None)
