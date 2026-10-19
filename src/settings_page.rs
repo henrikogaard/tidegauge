@@ -5,7 +5,7 @@
 use crate::controls::{button_indexed, segment, segment_group, switch};
 use crate::locale::text as l;
 use crate::settings::{
-    localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
+    localized_metric_label, localized_style_label, style_fits, Settings, MENU_METRICS, MENU_STYLES,
 };
 use crate::theme as t;
 use crate::ui::{caption, card, update_preference, Tab, TideGaugeView};
@@ -23,6 +23,8 @@ pub struct Sliders {
     pub app_memory: Entity<SliderState>,
     /// The chip temperature alert's level, in °C.
     pub chip_temp: Entity<SliderState>,
+    /// The low-battery alert's charge level, in %.
+    pub battery_low: Entity<SliderState>,
     /// How see-through the window and the menu-bar panel are, in percent.
     pub transparency: Entity<SliderState>,
     pub volume: Entity<SliderState>,
@@ -48,14 +50,17 @@ impl Sliders {
         let input_volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
         let (low, high) = crate::settings::CHIP_TEMP_RANGE;
         let chip_temp = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_temp_c as f32));
+        let (low, high) = crate::settings::BATTERY_LOW_RANGE;
+        let battery_low = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.alert_battery_low_pct as f32));
         let (low, high) = crate::settings::TRANSPARENCY_RANGE;
         let transparency = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.transparency_amount as f32));
-        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 6] = [
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 7] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
             (&app, |s, v| s.alert_app_cpu_pct = v),
             (&app_memory, |s, v| s.alert_app_mem_gb = v),
             (&chip_temp, |s, v| s.alert_temp_c = v),
+            (&battery_low, |s, v| s.alert_battery_low_pct = v),
             (&transparency, |s, v| s.transparency_amount = v),
         ];
         for (state, set) in setters {
@@ -93,7 +98,7 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, app_memory, chip_temp, transparency, volume, volume_touched: None, input_volume, input_touched: None }
+        Self { cpu, mem, app, app_memory, chip_temp, battery_low, transparency, volume, volume_touched: None, input_volume, input_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
@@ -106,6 +111,7 @@ impl Sliders {
             (&self.app, settings.alert_app_cpu_pct as f32),
             (&self.app_memory, settings.alert_app_mem_gb as f32),
             (&self.chip_temp, settings.alert_temp_c as f32),
+            (&self.battery_low, settings.alert_battery_low_pct as f32),
             (&self.transparency, settings.transparency_amount as f32),
         ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
@@ -296,6 +302,22 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             move |window, cx| set_language(&target, value, window, cx),
         ));
     }
+    let app_cpu = segment_group("app-cpu-options", l("App CPU shown as", "App-CPU vises som"), dark).children(
+        [(false, crate::app_cpu::AppCpu::new(1, false).unit()), (true, crate::app_cpu::AppCpu::new(1, true).unit())]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (per_core, label))| {
+                choice(
+                    format!("app-cpu-{i}"),
+                    label,
+                    format!("{}: {label}", l("App CPU shown as", "App-CPU vises som")),
+                    settings.app_cpu_per_core == per_core,
+                    dark,
+                    this.clone(),
+                    move |settings| settings.app_cpu_per_core = per_core,
+                )
+            }),
+    );
     let mut shortcut = segment_group("shortcut-options", l("Open the panel", "Åpne panelet"), dark);
     let choices = std::iter::once((None, l("Off", "Av"))).chain(crate::shortcut::CHOICES.iter().map(|c| (Some(c.0), c.1)));
     for (i, (value, label)) in choices.enumerate() {
@@ -330,6 +352,13 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
             row(l("Language", "Språk"), None, language, false, dark),
+            row(
+                l("App CPU shown as", "App-CPU vises som"),
+                Some(l("In every list of apps and processes. 100% of one core is what Activity Monitor shows.", "I alle lister over apper og prosesser. 100 % av én kjerne er det Aktivitetsmonitor viser.").to_string()),
+                app_cpu,
+                false,
+                dark,
+            ),
             row(
                 l("Open the panel", "Åpne panelet"),
                 Some(match crate::shortcut::label(settings.panel_shortcut.as_deref()) {
@@ -541,6 +570,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             settings.alert_network_enabled,
         ),
         (
+            "offline",
+            l("Network lost", "Nettverk borte"),
+            l("No connection for 10 seconds, and again when it is back", "Ingen tilkobling i 10 sekunder, og igjen når den er tilbake").to_string(),
+            None,
+            settings.alert_offline_enabled,
+        ),
+        (
             "app",
             l("Any one app", "Én enkelt app"),
             format!("{} {} {}", l("CPU above", "CPU over"), pct(settings.alert_app_cpu_pct), l("for 5 minutes", "i 5 minutter")),
@@ -553,6 +589,13 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             format!("{} {} GB {}", l("Above", "Over"), crate::locale::number(settings.alert_app_mem_gb, 0), l("for 5 minutes", "i 5 minutter")),
             Some(&view.sliders.app_memory),
             settings.alert_app_mem_enabled,
+        ),
+        (
+            "leak",
+            l("Memory keeps growing", "Minnet vokser stadig"),
+            l("An app gains 1 GB or more, steadily, over 3 hours", "En app øker jevnt med 1 GB eller mer over 3 timer").to_string(),
+            None,
+            settings.alert_leak_enabled,
         ),
         (
             "low-disk",
@@ -575,11 +618,34 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             None,
             settings.alert_thermal_enabled,
         ),
+        (
+            "disk-health",
+            l("Disk health", "Diskhelse"),
+            l("An internal disk reports failing health", "En intern disk melder dårlig helse").to_string(),
+            None,
+            settings.alert_disk_health_enabled,
+        ),
+        (
+            "battery-low",
+            l("Low battery", "Lavt batteri"),
+            format!("{} {}", l("On battery at or below", "På batteri ved eller under"), pct(settings.alert_battery_low_pct)),
+            Some(&view.sliders.battery_low),
+            settings.alert_battery_low_enabled,
+        ),
+        (
+            "battery-full",
+            l("Battery charged", "Batteriet er ladet"),
+            l("Once when charging reaches 100%", "Én gang når ladingen når 100 %").to_string(),
+            None,
+            settings.alert_battery_full_enabled,
+        ),
     ];
+    // A Mac that has no battery has nothing to alert about.
+    let no_battery = view.snap.battery.confirmed_absent();
+    let rows = rows.into_iter().filter(|(key, ..)| !(no_battery && key.starts_with("battery-")));
     group(
         l("Alerts", "Varsler"),
-        rows.into_iter()
-            .enumerate()
+        rows.enumerate()
             .map(|(i, (key, name, detail, threshold, on))| {
                 let control = div()
                     .flex()
@@ -601,10 +667,15 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "disk" => s.alert_disk_enabled = value,
                             "app" => s.alert_app_enabled = value,
                             "app-memory" => s.alert_app_mem_enabled = value,
+                            "leak" => s.alert_leak_enabled = value,
                             "low-disk" => s.alert_low_disk_enabled = value,
                             "thermal" => s.alert_thermal_enabled = value,
                             "pressure" => s.alert_pressure_enabled = value,
                             "chip-temp" => s.alert_temp_enabled = value,
+                            "disk-health" => s.alert_disk_health_enabled = value,
+                            "battery-low" => s.alert_battery_low_enabled = value,
+                            "battery-full" => s.alert_battery_full_enabled = value,
+                            "offline" => s.alert_offline_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));
@@ -637,6 +708,7 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         let choices = std::iter::once(("off", l("Off", "Av"))).chain(
             MENU_STYLES
                 .iter()
+                .filter(|(style, _)| style_fits(key, style))
                 .map(|(style, _)| (*style, localized_style_label(style).expect("menu style has a localized label"))),
         );
         let group = segment_group(format!("settings-{key}"), name, dark).children(choices.enumerate().map(
@@ -654,6 +726,26 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         ));
         rows.push(row(name, None, group, false, dark));
     }
+    let colors = segment_group("settings-menu-colors", l("Colors", "Farger"), dark).children(
+        [(false, l("Monochrome", "Ensfarget")), (true, l("Colored", "Farget"))].into_iter().map(|(colored, label)| {
+            choice(
+                format!("menu-colors-{colored}"),
+                label,
+                format!("{}: {label}", l("Colors", "Farger")),
+                settings.menu_colored == colored,
+                dark,
+                this.clone(),
+                move |settings| settings.menu_colored = colored,
+            )
+        }),
+    );
+    rows.push(row(
+        l("Colors", "Farger"),
+        Some(l("Colored readings turn orange or red at warning levels.", "Farget visning blir oransje eller rød ved advarsler.").into()),
+        colors,
+        false,
+        dark,
+    ));
     let target = this.clone();
     rows.push(row(
         l("Readings", "Målinger"),
@@ -706,6 +798,30 @@ fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> 
             };
             row(label, None, control, i == 0, dark)
         })
+        .collect::<Vec<_>>();
+    // The two sections below the tiles. A plan that is not updating stays
+    // hidden whatever the first switch says.
+    let sections = [
+        (
+            "plans",
+            l("AI plans", "AI-abonnementer"),
+            Some(l("A plan that is not updating is left out", "Et abonnement som ikke oppdateres, skjules").to_string()),
+            settings.panel_show_plans,
+        ),
+        ("apps", l("Busiest apps", "Mest aktive apper"), None, settings.panel_show_apps),
+    ];
+    let rows = rows
+        .into_iter()
+        .chain(sections.into_iter().map(|(key, label, detail, on)| {
+            let control = preference_switch(format!("panel-section-{key}"), format!("{} {label}", l("Show in the panel:", "Vis i panelet:")), on, dark, this.clone(), move |s, on| {
+                if key == "plans" {
+                    s.panel_show_plans = on;
+                } else {
+                    s.panel_show_apps = on;
+                }
+            });
+            row(label, detail, control, false, dark)
+        }))
         .collect();
     group(l("Menu-bar panel", "Menylinjepanel"), rows, dark)
 }

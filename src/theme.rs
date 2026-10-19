@@ -390,6 +390,7 @@ mod design_tokens_tests {
         "history_browser.rs",
         "settings_page.rs",
         "menu_panel.rs",
+        "slow_check.rs",
     ];
 
     /// Builder calls whose literal argument must come from a token.

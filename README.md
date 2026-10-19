@@ -40,7 +40,7 @@ Requirements:
 
 - macOS. The app uses Mach, libproc, IOKit, CoreAudio, and AppKit directly.
 - A Rust toolchain with Cargo and the macOS developer tools installed.
-- The macOS utilities `lsof`, `nettop`, `system_profiler`, `route`, and `osascript` available to the process.
+- The macOS utilities `lsof`, `nettop`, `system_profiler`, and `osascript` available to the process.
 
 Run a development build from the repository root:
 
@@ -86,7 +86,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Overview | Favorite metric cards (including temperature, fans and power), busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Battery health | Capacity health and cycle count kept once a day beyond History's 30 days, charted per day on the Battery page |
 | Cores and clocks | Per-core use grouped by core type (Super, Performance, Efficiency), each group's clock speed, and the GPU's core count and clock |
-| Metric pages | CPU, Memory, Disk, Network, GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal and whether the Mac is online), GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
 | Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
 | Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
@@ -95,7 +95,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
 | Development servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
 | History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends (including chip, SSD and battery temperatures) with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour; Export CSV saves the samples to Downloads |
-| Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
+| Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
 | Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
@@ -112,7 +112,7 @@ DMG; the helper optionally signs with `DEVELOPER_ID_APPLICATION`.
 - Process signing metadata is fetched only on request and is not signature validation or a safety verdict. It never changes Quit/Stop eligibility. See [process semantics](docs/PROCESSES.md).
 - Device controls apply to the default **media output** and **input**. Per-app volume passes that app's sound through Tidegauge (macOS 14.2+, one audio-capture permission); nothing is recorded or saved, and at 100% or when Tidegauge quits the app plays on its own. See [audio capabilities](docs/AUDIO.md).
 - The Neural Engine is not shown: on a Mac17,7 (M5 Max, macOS 27.0.1) neither macOS's energy counters nor `powermetrics` (even as root) report it. GPU and battery detail depend on hardware and available system properties. GPU power is measured from macOS's GPU energy counter; system power comes from the power controller and is reported only on Macs with a battery. Per-app watts are the processor energy macOS accounts to each process (Apple silicon), from its energy model rather than a meter. GPU, display, radio and work done by system processes on an app's behalf are not included, so graphics-heavy apps read low.
-- Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds; one app's CPU (100% is one core, up to 400%) for 5 minutes, each app with its own cooldown; one app's memory above the chosen 1–64 GB for 5 minutes; startup-disk space must stay under 10 GB free for a minute; overheating fires when macOS reports a serious or critical thermal state for 10 seconds; memory pressure when macOS reports warning or critical for 20 seconds. While pressure is warning or critical, the menu-bar memory reading turns orange or red. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
+- Alerts default to **off**, including when older settings are migrated. Enable each category in Settings. CPU/memory must exceed the chosen threshold for 20 seconds; disk/network for 30 seconds; one app's CPU (100% is one core, up to 400%) for 5 minutes, each app with its own cooldown; one app's memory above the chosen 1–64 GB for 5 minutes; startup-disk space must stay under 10 GB free for a minute; overheating fires when macOS reports a serious or critical thermal state for 10 seconds; network lost fires when macOS reports no usable network path for 10 seconds, and "back" follows when it returns (macOS's path monitor is read; nothing is sent over the network); memory pressure when macOS reports warning or critical for 20 seconds. While pressure is warning or critical, the menu-bar memory reading turns orange or red. An episode alerts only once until recovery, with a separate ten-minute cooldown for each category. Notification permission, Focus, and macOS notification settings still govern delivery.
 - Launch at login is
   available on macOS 13+ only for a bundle installed in `/Applications` or
   `~/Applications`; approval may be required in System Settings > General >

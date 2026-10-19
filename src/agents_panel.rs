@@ -2,6 +2,7 @@
 //! coding agents running now, with what each one started.
 
 use crate::agents::{Activity, Pace, Plan, Plans, Role, Session, Window};
+use crate::app_cpu::AppCpu;
 use crate::controls::button;
 use crate::engine::fmt_bytes;
 use crate::locale::text as l;
@@ -110,6 +111,13 @@ fn plan_not_updating(plan: &Plan, now: f64) -> bool {
     plan.stale || plan.failed || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS)
 }
 
+/// The plans worth showing at a glance (the Overview strip and the menu-bar
+/// panel): exactly those not labelled "not updating". The Agents page still
+/// lists every plan with its age.
+pub(crate) fn current_plans(plans: &[Plan], now: f64) -> Vec<&Plan> {
+    plans.iter().filter(|plan| !plan_not_updating(plan, now)).collect()
+}
+
 /// Plan rings for the Overview: one compact chip per provider, opening Agents.
 /// A plan at a glance: how much is left, in which colour, and one word on
 /// how it is going. Shared by the Overview strip and the menu-bar panel.
@@ -156,10 +164,11 @@ pub(crate) fn left_text(left: Option<f64>) -> String {
 
 pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
     let Plans::Loaded(plans) = plans else { return None };
+    let now = now();
+    let plans = current_plans(plans, now);
     if plans.is_empty() {
         return None;
     }
-    let now = now();
     let mut strip = div().flex().flex_wrap().gap_2();
     for plan in plans {
         let PlanGlance { left, color, ring, note, note_color, .. } = plan_glance(plan, now, dark);
@@ -373,7 +382,7 @@ fn session_title(session: &Session) -> String {
 }
 
 /// One line per session; selecting it shows what it started and Quit.
-fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, cpu: AppCpu, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let title = session_title(&session);
     let working = session.activity == Activity::Working;
     let (chip, chip_color) = match session.activity {
@@ -493,7 +502,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
                 .justify_end()
                 .text_size(t::TEXT_BODY)
                 .text_color(t::ink_dim(dark))
-                .child(if session.cpu_pct >= 1. { crate::locale::percent(session.cpu_pct, 0) } else { String::new() }),
+                .child(if cpu.value(session.cpu_pct) >= 0.5 { cpu.format(session.cpu_pct) } else { String::new() }),
         )
         .child(
             div()
@@ -546,8 +555,8 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
         if let Some(port) = started.port {
             what = format!("{what} · {} {port}", l("port", "port"));
         }
-        if started.cpu_pct >= 1. {
-            what = format!("{what} · {} CPU", crate::locale::percent(started.cpu_pct, 0));
+        if cpu.value(started.cpu_pct) >= 0.5 {
+            what = format!("{what} · {} CPU", cpu.format(started.cpu_pct));
         }
         detail = detail.child(
             div()
@@ -572,6 +581,7 @@ fn session_row(session: &Session, now: f64, expanded: bool, pending: bool, dark:
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let s = &view.snap;
     let now = now();
+    let cpu = AppCpu::chosen(s.chip.cores);
     let mut page = div().flex().flex_col().gap(t::SECTION_GAP);
     page = page.child(section_header(l("AI plans", "AI-abonnementer"), l("From OpenQuota", "Fra OpenQuota"), dark));
     page = match &s.plans {
@@ -666,7 +676,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let mut list = card(dark).p_1().gap(px(2.));
     for session in &s.agents {
         let expanded = view.agent_expanded == Some(session.root.pid);
-        list = list.child(session_row(session, now, expanded, view.process_pending, dark, this.clone()));
+        list = list.child(session_row(session, now, expanded, view.process_pending, cpu, dark, this.clone()));
     }
     page.child(list)
 }
@@ -674,7 +684,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
 #[cfg(test)]
 mod tests {
     // Named imports: the UI kit's glob export includes its own `test`.
-    use super::{credits_left, plan_not_updating, Plan, FRESH_SECS};
+    use super::{credits_left, current_plans, plan_not_updating, Plan, FRESH_SECS};
     use crate::locale::{number, text as l, whole};
 
     #[test]
@@ -703,5 +713,30 @@ mod tests {
         assert!(plan_not_updating(&plan(true, false, Some(now - 60.)), now));
         assert!(plan_not_updating(&plan(false, false, Some(now - FRESH_SECS - 1.)), now));
         assert!(plan_not_updating(&plan(false, false, None), now));
+    }
+
+    #[test]
+    fn only_plans_that_are_updating_are_shown_at_a_glance() {
+        let plan = |provider: &str, stale, failed, fetched_at| Plan {
+            provider: provider.into(),
+            plan: None,
+            windows: Vec::new(),
+            credits: None,
+            fetched_at,
+            stale,
+            failed,
+        };
+        let now = 10_000.;
+        let plans = vec![
+            plan("claude", false, false, Some(now - 60.)),
+            plan("codex", true, false, Some(now - 60.)),
+            plan("old", false, false, Some(now - FRESH_SECS - 1.)),
+            plan("never", false, false, None),
+            plan("broken", false, true, Some(now - 60.)),
+        ];
+        let shown: Vec<&str> = current_plans(&plans, now).iter().map(|p| p.provider.as_str()).collect();
+        assert_eq!(shown, ["claude"]);
+        assert!(current_plans(&plans[1..], now).is_empty(), "all stale: nothing to show, so no section");
+        assert!(current_plans(&[], now).is_empty());
     }
 }

@@ -32,10 +32,15 @@ fn still_enabled(metric: &str, settings: &Settings) -> bool {
         "network" => settings.alert_network_enabled,
         app if app.starts_with("app:") => settings.alert_app_enabled,
         app if app.starts_with("appmem:") => settings.alert_app_mem_enabled,
+        app if app.starts_with("leak:") => settings.alert_leak_enabled,
         "low_disk" => settings.alert_low_disk_enabled,
         "thermal" => settings.alert_thermal_enabled,
         "pressure" => settings.alert_pressure_enabled,
         "temperature" => settings.alert_temp_enabled,
+        "battery_low" => settings.alert_battery_low_enabled,
+        "battery_full" => settings.alert_battery_full_enabled,
+        disk if disk.starts_with("disk_health:") => settings.alert_disk_health_enabled,
+        "offline" | "online" => settings.alert_offline_enabled,
         _ => false,
     }
 }
@@ -143,7 +148,10 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         return;
     };
     let see_through = crate::menu_panel::see_through(&Settings::load());
-    let (width, height) = (crate::menu_panel::WIDTH as f64, crate::menu_panel::height() as f64);
+    // Decided now and handed to the panel, so the window's size and what it
+    // draws always agree.
+    let layout = crate::menu_panel::Layout::now();
+    let (width, height) = (crate::menu_panel::WIDTH as f64, layout.height() as f64);
     let left = (anchor.left + anchor.width / 2. - width / 2.).clamp(8., (anchor.display_width - width - 8.).max(8.));
     let bounds = Bounds::new(
         point(px(left as f32), px((anchor.bottom + 6.) as f32)),
@@ -171,7 +179,7 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
             if see_through {
                 crate::appearance::round_corners(window, f32::from(crate::theme::RADIUS_CARD) as f64);
             }
-            cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main))
+            cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main, layout))
         },
     );
     match opened {
@@ -220,13 +228,18 @@ mod tests {
             alert_network_enabled: true,
             alert_app_enabled: true,
             alert_app_mem_enabled: true,
+            alert_leak_enabled: true,
             alert_low_disk_enabled: true,
             alert_thermal_enabled: true,
             alert_pressure_enabled: true,
             alert_temp_enabled: true,
+            alert_battery_low_enabled: true,
+            alert_battery_full_enabled: true,
+            alert_disk_health_enabled: true,
+            alert_offline_enabled: true,
             ..Settings::default()
         };
-        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "low_disk", "thermal", "pressure", "temperature"] {
+        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "leak:com.example.busy", "low_disk", "thermal", "pressure", "temperature", "battery_low", "battery_full", "disk_health:disk0", "offline", "online"] {
             assert!(still_enabled(metric, &on), "{metric} was dropped");
             assert!(!still_enabled(metric, &Settings::default()), "{metric} passed while off");
         }

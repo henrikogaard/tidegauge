@@ -8,6 +8,93 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
+- Menu-bar readings can show one bar per CPU core (grouped by core type), a
+  ring for CPU, memory, free disk space or battery, and a battery gauge with a
+  charging bolt. Settings → Menu bar has a new Colors choice: Monochrome keeps
+  the menu bar's own ink, Colored uses each metric's accent and turns orange or
+  red at warning levels (CPU above 80 % and 95 %, memory pressure, battery or
+  free disk space below 20 % and 10 %). In review, rendered check pending
+  ([#86](https://github.com/henrikogaard/tidegauge/pull/86)).
+
+### Changed
+
+- The menu-bar image is redrawn only when what it shows changes, not on every
+  refresh ([#86](https://github.com/henrikogaard/tidegauge/pull/86)).
+- Three opt-in alerts in Settings → Alerts, all off until switched on. Low
+  battery alerts once when the charge falls to the chosen level (20% by
+  default) on battery, and again only after it has charged 5 points above it.
+  Battery charged alerts once per charge when the Mac on the adapter reaches
+  100% or the limit macOS reports. Disk health alerts when an internal disk's
+  SMART status turns to failing. The two battery alerts are hidden on a Mac
+  without a battery. Rendered check pending
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- The high CPU, heavy disk and heavy network alerts now name the busiest app
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- Clicking an alert brings Tidegauge's window forward
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- The Network page has a Connection card: whether the Mac is online, the
+  connection type (Wi-Fi, Ethernet or VPN, no longer always "Wi-Fi"), the
+  interface and its IPv4 and IPv6 addresses, and on Wi-Fi the signal strength
+  in dBm with a quality word, noise, channel and band, transmit rate and Wi-Fi
+  standard. The network's name is not read, so macOS asks for no permission.
+  Online comes from macOS's own network-path monitor; nothing is sent to check
+  ([#88](https://github.com/henrikogaard/tidegauge/pull/88)).
+- An opt-in alert (Settings → Alerts → Network lost) that says so after 10
+  seconds without a network path and again when it is back
+  ([#88](https://github.com/henrikogaard/tidegauge/pull/88)).
+
+### Changed
+
+- The default network interface is read from macOS's system configuration
+  instead of running `route`
+  ([#88](https://github.com/henrikogaard/tidegauge/pull/88)).
+- Tidegauge spots an app whose memory keeps growing: at least 1 GB and half
+  again over three hours, along a steady climb (not a swing that frees memory
+  again), in an app that has not been quit and reopened and now holds at least
+  1 GB. The Memory page lists it under Growing memory with a Quit button that
+  asks first, and an opt-in "Memory keeps growing" alert (off by default, once
+  per app, ten-minute cooldown) says so. The readings are kept in memory once
+  a minute, so a warning needs three hours of Tidegauge running
+  ([#89](https://github.com/henrikogaard/tidegauge/pull/89)).
+- "Why is my Mac slow?" on Overview and in the menu-bar panel's footer. One
+  click checks the latest readings and the last half minute, and says in plain
+  words what is slowing the Mac, worst first: memory pressure and swap, a
+  sustained busy processor, heat, a nearly full startup disk, heavy disk
+  activity, Low Power Mode or a low battery, and a long time since the last
+  restart. It names the apps using the most, offers to quit the top one through
+  the usual confirmation, and opens Folder sizes for a full disk. When nothing
+  is wrong it says so and lists the three busiest apps; if some checks had no
+  readings yet (just after launch) it says no problem was found so far and
+  names the checks it could not run. In review, not yet merged.
+- Folder sizes lists known caches over 100 MB with a button each: Xcode build
+  data and device support, unavailable simulators, Homebrew downloads, npm,
+  pnpm, Yarn and Bun caches, Cargo downloads, and the Trash (shown for
+  information, with a button that opens it). Each action first names the
+  folders and size and defaults to Cancel. A cache folder moves to the Trash
+  rather than being deleted, so it can be put back; Homebrew and Xcode's
+  unavailable simulators are cleared by their own commands. Afterwards the page
+  rescans and reports how much moved or was freed. Only a fixed list is
+  touched, never through links and never outside your home folder, and
+  Tidegauge never empties the Trash or asks for administrator rights
+  ([#91](https://github.com/henrikogaard/tidegauge/pull/91)).
+- Settings → General → App CPU shown as: a share of the whole Mac (the
+  default) or of one core, as Activity Monitor shows it. Every list of apps
+  and processes follows it, and the column header says which it is.
+- Settings → Menu-bar panel can hide the AI plans and Busiest apps sections.
+
+### Changed
+
+- The menu-bar panel's last tile takes the full width when the number of tiles
+  is odd, instead of leaving a gap. Its Network tile reads "↓ download" with
+  "↑ upload" beside it and a download curve, as Overview does, rather than a
+  total next to the download rate.
+- App CPU used to read as a percentage of one core, so an app could show 163%.
+  It now defaults to a share of the whole Mac (9.1% on 18 cores), with one
+  decimal below 10% and "<1%" for almost nothing.
+- AI plans that are not updating (flagged stale, failed, never fetched, or
+  last fetched over an hour ago) are left out of the menu-bar panel and the
+  Overview strip; the Agents page still lists them. When none is left, the
+  section disappears and the panel shrinks to fit.
 - Settings → Transparency lets the main window show the desktop through frosted
   glass: off, sidebar only, or the whole window, and separately the menu-bar
   panel, with one Amount slider for both. Cards fade less than the background so
