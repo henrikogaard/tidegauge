@@ -24,11 +24,14 @@ enum Timelines {
             let entry = TideEntry(date: now, snapshot: nil, metric: metric)
             return Timeline(entries: [entry], policy: .after(now.addingTimeInterval(retryRequest)))
         }
-        let entries = (0..<20).map { minute -> TideEntry in
-            let date = now.addingTimeInterval(Double(minute) * 60)
-            let expired = date.timeIntervalSince(snapshot.sampled) > maxDisplayAge
-            return TideEntry(date: date, snapshot: expired ? nil : snapshot, metric: metric)
-        }
+        let expiry = snapshot.sampled.addingTimeInterval(maxDisplayAge)
+        var entries = (0..<20)
+            .map { now.addingTimeInterval(Double($0) * 60) }
+            .filter { $0 < expiry }
+            .map { TideEntry(date: $0, snapshot: snapshot, metric: metric) }
+        // A last entry at the boundary, so a delayed reload never leaves old
+        // readings looking live.
+        entries.append(TideEntry(date: max(expiry, now), snapshot: nil, metric: metric))
         return Timeline(entries: entries, policy: .after(now.addingTimeInterval(refreshRequest)))
     }
 
