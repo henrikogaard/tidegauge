@@ -36,7 +36,13 @@ pub struct NetSample {
     pub total_in: u64,
     pub total_out: u64,
     pub primary: String,
-    pub kind: String,
+    pub kind: crate::network::LinkKind,
+    /// Whether macOS reports a usable network path; `None` before the first
+    /// sample.
+    pub online: Option<bool>,
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub wifi: Option<crate::network::Wifi>,
     pub peak_in: f64,
     pub peak_out: f64,
 }
@@ -223,6 +229,8 @@ pub struct Snapshot {
     /// Low Power Mode is on.
     pub low_power: bool,
     pub alerts: Vec<Alert>,
+    /// Apps whose memory has climbed steadily for hours.
+    pub leaks: Vec<crate::leaks::Leak>,
 }
 
 impl Default for Snapshot {
@@ -275,6 +283,7 @@ impl Default for Snapshot {
             boot_unix: None,
             low_power: false,
             alerts: Vec::new(),
+            leaks: Vec::new(),
         }
     }
 }
@@ -300,6 +309,7 @@ pub struct Engine {
     prev: HashMap<i32, PrevProc>,
     process_tracker: crate::process_activity::Tracker,
     resource_tracker: crate::resource_activity::Tracker,
+    leaks: crate::leaks::Tracker,
     tick: u64,
 }
 
@@ -323,6 +333,7 @@ impl Engine {
             prev: HashMap::new(),
             process_tracker: crate::process_activity::Tracker::default(),
             resource_tracker: crate::resource_activity::Tracker::default(),
+            leaks: crate::leaks::Tracker::default(),
             tick: 0,
         };
         e.snap.chip = chip_info();
@@ -427,8 +438,13 @@ impl Engine {
         s.net.total_in = rx;
         s.net.total_out = tx;
         self.last_net = (rx, tx);
-        s.net.primary = default_interface();
-        s.net.kind = "Wi-Fi".into();
+        let link = crate::network::details();
+        s.net.primary = link.interface;
+        s.net.kind = link.kind;
+        s.net.online = Some(link.online);
+        s.net.ipv4 = link.ipv4;
+        s.net.ipv6 = link.ipv6;
+        s.net.wifi = link.wifi;
         s.net_in_hist.push(s.net.rate_in);
         s.net_out_hist.push(s.net.rate_out);
         s.net.peak_in = s.net.peak_in.max(s.net.rate_in);
@@ -524,6 +540,8 @@ impl Engine {
         s.resource_activity = self.resource_tracker.sample(&procs, self.started.elapsed().as_secs_f64(), now_unix());
         s.apps = regroup_apps(&procs, &s.apps);
         s.app_count = s.apps.len();
+        self.leaks.update(s.at, &s.apps);
+        s.leaks = self.leaks.flagged().to_vec();
         s.procs = procs.clone();
 
         // attach per-app network via nettop (every other tick to save CPU)

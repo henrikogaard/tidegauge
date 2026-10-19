@@ -21,15 +21,18 @@ mod history_browser;
 mod gpu_power;
 mod icons;
 mod instance;
+mod leaks;
 mod keepawake;
 mod locale;
 #[cfg(test)]
 mod locale_guard;
 mod login;
 mod menu_panel;
+mod menu_style;
 mod metrics;
 mod move_to_applications;
 mod named_sensors;
+mod network;
 mod notifications;
 mod packages;
 mod processes;

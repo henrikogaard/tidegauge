@@ -443,7 +443,7 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
         })
 }
 
-fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
+pub(crate) fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
     let group = s.process_groups.iter().find(|g| g.bundle == app.key)?;
     match group.mains.as_slice() {
         [main] if app.pids.contains(&main.pid) => Some(main),
