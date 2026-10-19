@@ -443,12 +443,34 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
         })
 }
 
-fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
+pub(crate) fn registered_main<'a>(s: &'a Snapshot, app: &AppGroup) -> Option<&'a ProcInfo> {
     let group = s.process_groups.iter().find(|g| g.bundle == app.key)?;
     match group.mains.as_slice() {
         [main] if app.pids.contains(&main.pid) => Some(main),
         _ => None,
     }
+}
+
+/// The request that quits `app` the way its row here does, or `None` when
+/// nothing of it may be quit from Tidegauge (macOS's own, another user's,
+/// or Tidegauge itself).
+pub(crate) fn quit_action(s: &Snapshot, app: &AppGroup, force: Force) -> Option<Action> {
+    if let Some(main) = registered_main(s, app) {
+        return control::blocked(main).is_none().then(|| Action::App {
+            main: main.clone(),
+            name: app.name.clone(),
+            helpers: app.pids.len(),
+            memory: app.mem_bytes,
+            force,
+        });
+    }
+    let targets: Vec<ProcInfo> = s
+        .procs
+        .iter()
+        .filter(|p| app.pids.contains(&p.pid) && control::blocked(p).is_none())
+        .cloned()
+        .collect();
+    (!targets.is_empty()).then(|| Action::Processes { name: app.name.clone(), targets, force })
 }
 
 fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {

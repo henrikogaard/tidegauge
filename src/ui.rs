@@ -129,6 +129,8 @@ pub struct TideGaugeView {
     /// The page whose "About this page" notes are open; any other page
     /// opens with them closed.
     pub(crate) info_for: Option<Destination>,
+    /// The answer to "Why is my Mac slow?" while Overview shows it.
+    pub(crate) slow_check: Option<Vec<crate::diagnose::Finding>>,
     pub(crate) sliders: crate::settings_page::Sliders,
     /// How long Keep awake lasts when switched on; `None` until stopped.
     pub(crate) awake_choice: Option<u64>,
@@ -224,6 +226,7 @@ impl TideGaugeView {
             agent_expanded: None,
             show_sensor_channels: false,
             info_for: None,
+            slow_check: None,
             sliders,
             awake_choice: Some(60),
             last_here: None,
@@ -1322,6 +1325,11 @@ impl TideGaugeView {
         _cx: &mut Context<TideGaugeView>,
     ) -> PageChrome {
         match here {
+            Destination::Tab(Tab::Overview) => PageChrome {
+                actions: vec![crate::slow_check::header_button(self.slow_check.is_some(), dark, this).into_any_element()],
+                notes: tab_notes(Tab::Overview),
+                ..Default::default()
+            },
             Destination::Tab(tab) => PageChrome { notes: tab_notes(tab), ..Default::default() },
             Destination::Apps => crate::process_panel::chrome(self),
             Destination::Agents => PageChrome { notes: crate::agents_panel::notes(), ..Default::default() },
@@ -1340,6 +1348,10 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "Nettverkstotaler teller siden Macen startet. Gjennomsnitt og topper gjelder denne økten.",
             ),
             shared_memory_note(),
+            l(
+                "Why is my Mac slow? reads the latest readings and the last half minute, and only reports what is measured. Free disk space is what macOS reports, which can be less than Finder shows.",
+                "Hvorfor er Macen min treg? leser de siste målingene og det siste halve minuttet, og melder bare det som er målt. Ledig diskplass er det macOS melder, og det kan være mindre enn Finder viser.",
+            ),
         ],
         Tab::Cpu => vec![
             l(
@@ -1366,10 +1378,16 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
                 "Brukt skrivelevetid er en slitasjeindikator, ikke en helsescore, og kan overstige 100 %. Manglende SMART-data betyr aldri frisk.",
             ),
         ],
-        Tab::Network => vec![l(
-            "Received and sent count since the Mac started.",
-            "Mottatt og sendt teller siden Macen startet.",
-        )],
+        Tab::Network => vec![
+            l(
+                "Received and sent count since the Mac started.",
+                "Mottatt og sendt teller siden Macen startet.",
+            ),
+            l(
+                "Online means macOS reports a usable network path; Tidegauge sends nothing to check. Wi-Fi signal, noise and rate refresh every few seconds, and the network's name is never read. A value macOS does not report is left out.",
+                "På nett betyr at macOS melder en brukbar nettverkssti; Tidegauge sender ingenting for å sjekke. Wi-Fi-signal, støy og hastighet oppdateres med noen sekunders mellomrom, og nettverkets navn leses aldri. En verdi macOS ikke melder, utelates.",
+            ),
+        ],
         Tab::Gpu => vec![
             l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
             l("GPU power is measured: the change in macOS's GPU energy counter between samples.", "GPU-effekten er målt: endringen i GPU-energitelleren i macOS mellom målingene."),
@@ -1421,6 +1439,7 @@ fn settings_notes() -> Vec<&'static str> {
         l("Opt-in. CPU/memory: sustained for 20 seconds; disk/network: 30 seconds. One alert until recovery, with a 10-minute cooldown per metric.", "Valgfritt. CPU/minne: vedvarende i 20 sekunder; disk/nettverk: 30 sekunder. Ett varsel frem til normalisering, med 10 minutters pause per måling."),
         l("One app: its CPU, where 100% is one full core, must stay above the level for 5 minutes. Each app alerts once until it calms down or quits, with its own 10-minute cooldown. One app's memory works the same way, above the chosen GB for 5 minutes.", "Én app: CPU-en, der 100 % er én hel kjerne, må ligge over nivået i 5 minutter. Hver app varsler én gang til den roer seg eller avsluttes, med egen pause på 10 minutter. Minne for én app virker likt, over valgt antall GB i 5 minutter."),
         l("Startup disk space counts the free space macOS reports for the startup volume; purgeable space Finder may also show as available is not included. Overheating follows macOS's own thermal state: serious or critical for 10 seconds.", "Plass på oppstartsdisken teller ledig plass macOS melder for oppstartsvolumet; plass som kan frigjøres og som Finder kan vise som tilgjengelig, er ikke med. Overoppheting følger macOS sin egen termiske tilstand: alvorlig eller kritisk i 10 sekunder."),
+        l("Low battery alerts once when the charge falls to the chosen level on battery, and again only after it has charged 5 points above it. Battery charged alerts once per charge, when the Mac on the adapter reaches 100% or the limit macOS reports. Disk health alerts when an internal disk's SMART status turns to failing; disk health is read about every 30 seconds.", "Lavt batteri varsler én gang når ladingen faller til valgt nivå på batteri, og igjen først etter at den har lades 5 poeng over det. Batteriet er ladet varsler én gang per lading, når Macen på strømadapteren når 100 % eller grensen macOS melder. Diskhelse varsler når SMART-statusen til en intern disk blir dårlig; diskhelsen leses omtrent hvert 30. sekund."),
         l("Permission is requested with the first alert. macOS notification settings and Focus may suppress delivery. Memory in use measures usage; the memory-pressure alert follows macOS's own level. While pressure is warning or critical, the menu-bar memory reading turns orange or red.", "Tillatelse forespørres ved første varsel. Varselinnstillinger og Fokus i macOS kan hindre levering. Minne i bruk måler bruk; varselet for minnepress følger nivået macOS selv melder. Mens minnepresset er advarsel eller kritisk, blir minnetallet i menylinjen oransje eller rødt."),
         l("Prevents idle system sleep only. The display may sleep; closing the lid still sleeps. Off after quitting or restarting Tidegauge.", "Hindrer kun automatisk systemdvale. Skjermen kan sove; lukket lokk gir fortsatt dvale. Av etter avslutning eller omstart av Tidegauge."),
         l("Overview and Settings stay available. Menu-bar readings are independent.", "Oversikt og Innstillinger er alltid tilgjengelige. Menylinjemålinger er uavhengige."),
@@ -1622,7 +1641,13 @@ impl TideGaugeView {
         }
         let s = &self.snap;
         match self.tab {
-            Tab::Overview => overview(s, dark, this).into_any_element(),
+            Tab::Overview => div()
+                .flex()
+                .flex_col()
+                .gap(t::SPACE_4)
+                .when_some(self.slow_check.as_ref(), |d, findings| d.child(crate::slow_check::card_view(findings, dark, this.clone())))
+                .child(overview(s, dark, this))
+                .into_any_element(),
             Tab::Cpu => cpu_tab(s, dark, self.show_sensor_channels, this).into_any_element(),
             Tab::Memory => memory_tab(s, dark, this).into_any_element(),
             Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), this, cx).into_any_element(),
@@ -2030,7 +2055,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         ),
         (
             Tab::Network,
-            l("Downloading", "Laster ned").into(),
+            if s.net.online == Some(false) { l("Offline", "Uten nett") } else { l("Downloading", "Laster ned") }.into(),
             fmt_rate(s.net.rate_in),
             [
                 (l("Uploading", "Laster opp"), fmt_rate(s.net.rate_out)),
@@ -2809,9 +2834,49 @@ fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                     dark,
                 )),
         )
+        .when(!s.leaks.is_empty(), |d| d.child(growing_memory(s, dark, this.clone())))
         .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Memory", "Minne"), dark))
         .child(top_apps(rows.iter().copied(), |a| (fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64), max, m.accent(dark), false, dark, this))
         .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Pressure comes from macOS, not from these totals.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Minnepresset kommer fra macOS, ikke fra disse summene.")).text_color(t::ink_dim(dark)))
+}
+
+/// Apps whose memory has climbed steadily for hours, each with a Quit that
+/// goes through the usual confirmation. Not drawn when nothing is flagged.
+fn growing_memory(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let color = Metric::Memory.accent(dark);
+    let mut list = card(dark).child(caption(l("Growing memory", "Voksende minne"), dark));
+    for leak in &s.leaks {
+        let app = s.apps.iter().find(|a| a.key == leak.key);
+        let action = app.and_then(|a| crate::process_panel::quit_action(s, a, crate::process_control::Force::Quit));
+        let target = this.clone();
+        list = list.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_h(t::ROW_H)
+                .when_some(app, |d, a| d.child(app_icon(a, dark)))
+                .child(div().flex_1().min_w_0().text_size(t::TEXT_ROW).truncate().child(leak.name.clone()))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(t::TEXT_ROW)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(color)
+                        .child(format!("+{} {}", fmt_bytes(leak.growth), l("in 3 hours", "på 3 timer"))),
+                )
+                .when_some(action, |d, action| {
+                    d.child(crate::controls::button(
+                        format!("leak-quit-{}", leak.key),
+                        format!("{}…", l("Quit", "Avslutt")),
+                        false,
+                        dark,
+                        move |window, cx| crate::process_panel::request(action.clone(), target.clone(), window, cx),
+                    ))
+                }),
+        );
+    }
+    list.child(sub(l("Memory that climbs steadily for hours is usually a leak. Quitting and reopening the app frees it.", "Minne som øker jevnt i flere timer er som regel en lekkasje. Å avslutte og åpne appen på nytt frigjør det.")).text_color(t::ink_dim(dark)))
 }
 
 fn disk_tab(
@@ -3172,7 +3237,11 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .child(hero(
             l("Network · combined traffic", "Nettverk · samlet trafikk"),
             fmt_rate(s.net.rate_in + s.net.rate_out),
-            format!("{} · {}", s.net.kind, s.net.primary),
+            match (s.net.online, s.net.primary.is_empty()) {
+                (Some(false), _) => l("Offline", "Uten nett").into(),
+                (_, true) => s.net.kind.label().into(),
+                (_, false) => format!("{} · {}", s.net.kind.label(), s.net.primary),
+            },
             &hist,
             m.accent(dark),
             dark,
@@ -3196,6 +3265,8 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             dark,
         ))
         .child(top_apps(rows.iter().copied(), |a| { let r = a.net_in_rate + a.net_out_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
+        .child(section_header(l("Connection", "Tilkobling"), "", dark))
+        .child(connection_card(s, dark))
         .child(
             sub(format!(
                 "{}: {} / {}",
@@ -3208,6 +3279,82 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ))
             .text_color(t::ink_dim(dark)),
         )
+}
+
+/// The connection's details as captioned values in rows of four, like a
+/// hero's footer. A value macOS does not give is left out, never shown as 0.
+fn connection_card(s: &Snapshot, dark: bool) -> Div {
+    use crate::network::Quality;
+    let n = &s.net;
+    let mut cells: Vec<(String, String, Option<Hsla>)> = Vec::new();
+    if let Some(online) = n.online {
+        cells.push((
+            l("State", "Tilstand").into(),
+            if online { l("Online", "På nett") } else { l("Offline", "Uten nett") }.into(),
+            Some(if online { t::ok(dark) } else { t::warn(dark) }),
+        ));
+    }
+    if !n.primary.is_empty() {
+        cells.push((l("Connection type", "Tilkoblingstype").into(), n.kind.label().into(), None));
+        cells.push((l("Interface", "Grensesnitt").into(), n.primary.clone(), None));
+    }
+    if let Some(ip) = &n.ipv4 {
+        cells.push(("IPv4".into(), ip.clone(), None));
+    }
+    if let Some(ip) = &n.ipv6 {
+        cells.push(("IPv6".into(), ip.clone(), None));
+    }
+    if let Some(w) = &n.wifi {
+        let quality = crate::network::quality(w.rssi);
+        let tone = match quality {
+            Quality::Excellent | Quality::Good => None,
+            Quality::Fair => Some(t::caution(dark)),
+            Quality::Weak => Some(t::warn(dark)),
+        };
+        cells.push((
+            l("Signal strength", "Signalstyrke").into(),
+            format!("{} dBm · {}", w.rssi, quality.label()),
+            tone,
+        ));
+        if let Some(noise) = w.noise {
+            cells.push((l("Noise", "Støy").into(), format!("{noise} dBm"), None));
+        }
+        if let Some(channel) = w.channel {
+            let value = match w.band {
+                Some(band) => format!("{channel} · {}", band.label()),
+                None => channel.to_string(),
+            };
+            cells.push((l("Channel", "Kanal").into(), value, None));
+        }
+        if let Some(rate) = w.rate_mbps {
+            cells.push((l("Transmit rate", "Overføringshastighet").into(), format!("{} Mbps", crate::locale::number(rate, 0)), None));
+        }
+        if let Some(standard) = w.standard {
+            cells.push((l("Wi-Fi standard", "Wi-Fi-standard").into(), standard.into(), None));
+        }
+    }
+    let mut rows = Vec::new();
+    for chunk in cells.chunks(4) {
+        let mut row = div().flex().gap_6();
+        for i in 0..4 {
+            row = row.child(match chunk.get(i) {
+                Some((label, value, tone)) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label.clone()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when_some(*tone, |d, color| d.text_color(color))
+                            .child(value.clone()),
+                    ),
+                None => div().flex_1().min_w_0(),
+            });
+        }
+        rows.push(row);
+    }
+    card(dark).children(rows)
 }
 
 /// Empty-state card per the detail-page template: a metric-tinted icon tile,
