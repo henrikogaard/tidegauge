@@ -144,17 +144,13 @@ const TICK: Duration = Duration::from_millis(2000);
 
 /// Called by the menu-bar loop in main on each wake (see [`PUMP`]): applies
 /// toggles and pushes fresh numbers into the menu bar.
-pub fn pump_status_bar(
-    bar: &mut crate::statusbar::StatusBar,
-    view: &gpui_kit::Entity<crate::ui::TideGaugeView>,
-    cx: &mut gpui_kit::App,
-) {
+pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, cx: &mut gpui_kit::App) {
     use crate::statusbar::*;
     use std::sync::atomic::Ordering;
     let toggled = TOGGLE_POPOVER.swap(false, Ordering::SeqCst);
     let outside = CLICKED_OUTSIDE.swap(false, Ordering::SeqCst);
     if toggled {
-        toggle_popover(view.clone(), cx);
+        toggle_popover(cx);
     }
     // A press on the item itself also counts as outside on newer macOS; the
     // toggle above already handled that click, so only a real outside click
@@ -164,14 +160,14 @@ pub fn pump_status_bar(
     }
     if TOGGLE_PANEL.swap(false, Ordering::SeqCst) {
         close_popover(cx);
-        view.update(cx, |view, cx| {
+        dashboard(cx, true).update(cx, |view, cx| {
             view.show_settings = false;
             cx.notify();
         });
         toggle_panel(cx);
     }
     if SHOW_SETTINGS.swap(false, Ordering::SeqCst) {
-        view.update(cx, |view, cx| {
+        dashboard(cx, true).update(cx, |view, cx| {
             view.show_settings = true;
             view.reset_settings_scroll();
             view.scroll = gpui_kit::ScrollHandle::new();
@@ -181,7 +177,7 @@ pub fn pump_status_bar(
         toggle_panel(cx);
     }
     if SHOW_ABOUT.swap(false, Ordering::SeqCst) {
-        view.update(cx, |view, cx| {
+        dashboard(cx, true).update(cx, |view, cx| {
             view.show_settings = true;
             view.settings_error = None;
             view.scroll_settings_to_about();
@@ -201,10 +197,63 @@ pub fn pump_status_bar(
 }
 
 static PANEL: OnceLock<Mutex<Option<gpui_kit::AnyWindowHandle>>> = OnceLock::new();
+
+thread_local! {
+    /// The dashboard's view, once its window exists. Only the main thread
+    /// opens and reads it.
+    static DASHBOARD: std::cell::RefCell<Option<gpui_kit::Entity<crate::ui::TideGaugeView>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The dashboard's view. Its window, with the Metal surface behind it (about
+/// 150 MB of graphics memory while it is made), opens the first time it is
+/// asked for rather than at launch, so a start with the dashboard closed
+/// (the login item) never pays for it. `show` says whether a new window
+/// appears on screen; an existing one is left as it is.
+pub fn dashboard(cx: &mut gpui_kit::App, show: bool) -> gpui_kit::Entity<crate::ui::TideGaugeView> {
+    use gpui_kit::*;
+    if let Some(view) = DASHBOARD.with(|d| d.borrow().clone()) {
+        return view;
+    }
+    let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);
+    let (window, view) = gpui_kit::open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            kind: WindowKind::Normal,
+            focus: show,
+            show,
+            is_movable: true,
+            titlebar: Some(TitlebarOptions {
+                title: Some("Tidegauge".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(16.), px(26.))),
+            }),
+            window_min_size: Some(size(px(1050.), px(650.))),
+            ..Default::default()
+        },
+        cx,
+        |window, cx| {
+            // Closing the dashboard hides it; the menu-bar item reopens it.
+            window.on_window_should_close(cx, |_, cx| {
+                cx.hide();
+                false
+            });
+            cx.new(|cx| {
+                let mut v = crate::ui::TideGaugeView::new(window, cx);
+                v.snap = crate::engine::latest();
+                v
+            })
+        },
+    )
+    .expect("open panel");
+    set_panel_handle(window);
+    DASHBOARD.with(|d| *d.borrow_mut() = Some(view.clone()));
+    view
+}
 static POPOVER: Mutex<Option<gpui_kit::AnyWindowHandle>> = Mutex::new(None);
 
 /// Open the menu-bar panel under the item, or close it if it is open.
-pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut gpui_kit::App) {
+pub fn toggle_popover(cx: &mut gpui_kit::App) {
     use gpui_kit::*;
     if POPOVER.lock().unwrap().is_some() {
         close_popover(cx);
@@ -215,6 +264,9 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         crate::statusbar::raise(&crate::statusbar::SHOW_ITEM_MENU);
         return;
     };
+    // The panel acts on the dashboard's view, which exists once it is needed;
+    // the window itself stays off screen until it is asked for.
+    let main = dashboard(cx, false);
     let see_through = crate::menu_panel::see_through(&Settings::load());
     // Decided now and handed to the panel, so the window's size and what it
     // draws always agree.
