@@ -315,6 +315,12 @@ fn look() -> Look {
     *LOOK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The colour of `metric` as 0xRRGGBB under the colour setting last adopted,
+/// for the desktop widgets.
+pub fn metric_rgb(metric: Metric, dark: bool) -> u32 {
+    look().metric(metric, dark)
+}
+
 /// How the chart builders draw a series.
 pub fn chart_style() -> ChartStyle {
     look().charts

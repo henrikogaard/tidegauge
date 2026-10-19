@@ -125,6 +125,10 @@ pub fn start_sampler() {
                     if tick % 5 == 0 {
                         crate::history::record(&e.snap);
                     }
+                    // The desktop widgets: about every 12 s, and only while one exists.
+                    if tick % 6 == 0 {
+                        crate::widget_export::publish(&e.snap);
+                    }
                     tick += 1;
                 }
                 // The menu-bar item and any alerts follow the new sample.
