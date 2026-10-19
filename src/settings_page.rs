@@ -25,6 +25,8 @@ pub struct Sliders {
     pub chip_temp: Entity<SliderState>,
     /// The low-battery alert's charge level, in %.
     pub battery_low: Entity<SliderState>,
+    /// How see-through the window and the menu-bar panel are, in percent.
+    pub transparency: Entity<SliderState>,
     pub volume: Entity<SliderState>,
     /// When the volume was last dragged; the device's reading lags, so the
     /// slider isn't pulled back to it for a moment.
@@ -50,13 +52,16 @@ impl Sliders {
         let chip_temp = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_temp_c as f32));
         let (low, high) = crate::settings::BATTERY_LOW_RANGE;
         let battery_low = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.alert_battery_low_pct as f32));
-        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 6] = [
+        let (low, high) = crate::settings::TRANSPARENCY_RANGE;
+        let transparency = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.transparency_amount as f32));
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 7] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
             (&app, |s, v| s.alert_app_cpu_pct = v),
             (&app_memory, |s, v| s.alert_app_mem_gb = v),
             (&chip_temp, |s, v| s.alert_temp_c = v),
             (&battery_low, |s, v| s.alert_battery_low_pct = v),
+            (&transparency, |s, v| s.transparency_amount = v),
         ];
         for (state, set) in setters {
             cx.subscribe(state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
@@ -93,7 +98,7 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, app_memory, chip_temp, battery_low, volume, volume_touched: None, input_volume, input_touched: None }
+        Self { cpu, mem, app, app_memory, chip_temp, battery_low, transparency, volume, volume_touched: None, input_volume, input_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
@@ -107,6 +112,7 @@ impl Sliders {
             (&self.app_memory, settings.alert_app_mem_gb as f32),
             (&self.chip_temp, settings.alert_temp_c as f32),
             (&self.battery_low, settings.alert_battery_low_pct as f32),
+            (&self.transparency, settings.transparency_amount as f32),
         ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -379,6 +385,67 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         ],
         dark,
     )
+}
+
+/// Where the windows are see-through, and by how much. The amount is shared by
+/// the dashboard and the menu-bar panel.
+fn transparency(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::settings::Transparency;
+    let reduced = crate::appearance::reduce_transparency();
+    let wanted = settings.transparency != Transparency::Off || settings.panel_transparency;
+    let window = segment_group("transparency-window-options", l("Main window", "Hovedvindu"), dark).children(
+        [
+            (Transparency::Off, l("Off", "Av")),
+            (Transparency::Sidebar, l("Sidebar only", "Bare sidefeltet")),
+            (Transparency::Window, l("Whole window", "Hele vinduet")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (value, label))| {
+            choice(
+                format!("transparency-window-{i}"),
+                label,
+                format!("{}: {label}", l("Main window", "Hovedvindu")),
+                settings.transparency == value,
+                dark,
+                this.clone(),
+                move |settings| settings.transparency = value,
+            )
+        }),
+    );
+    let panel = segment_group("transparency-panel-options", l("Menu-bar panel", "Menylinjepanel"), dark).children(
+        [(false, l("Off", "Av")), (true, l("On", "På"))].into_iter().enumerate().map(|(i, (value, label))| {
+            choice(
+                format!("transparency-panel-{i}"),
+                label,
+                format!("{}: {label}", l("Menu-bar panel", "Menylinjepanel")),
+                settings.panel_transparency == value,
+                dark,
+                this.clone(),
+                move |settings| settings.panel_transparency = value,
+            )
+        }),
+    );
+    let mut rows = vec![
+        row(
+            l("Main window", "Hovedvindu"),
+            (reduced && wanted).then(|| l("Off while macOS Reduce transparency is on.", "Av så lenge macOS har Reduser gjennomsiktighet på.").to_string()),
+            window,
+            true,
+            dark,
+        ),
+        row(l("Menu-bar panel", "Menylinjepanel"), None, panel, false, dark),
+    ];
+    if wanted {
+        rows.push(row(
+            l("Amount", "Mengde"),
+            Some(crate::locale::percent(settings.transparency_amount, 0)),
+            slider(&view.sliders.transparency, 140., t::accent(dark)),
+            false,
+            dark,
+        ));
+    }
+    group(l("Transparency", "Gjennomsiktighet"), rows, dark)
 }
 
 /// The installed version and a way to look for a newer one. Sparkle also
@@ -896,6 +963,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             d.child(div().text_size(t::TEXT_BODY).text_color(t::warn(dark)).child(error))
         })
         .child(general(view, &settings, dark, this.clone()))
+        .child(transparency(view, &settings, dark, this.clone()))
         .child(alerts(view, &settings, dark, this.clone()))
         .child(menu_bar(&settings, dark, this.clone()))
         .child(panel_tiles(&settings, dark, this.clone()))

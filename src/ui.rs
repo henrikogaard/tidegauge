@@ -177,9 +177,24 @@ pub struct TideGaugeView {
     pub(crate) app_history: Option<crate::process_panel::AppHistory>,
     tab_scrolls: Vec<ScrollHandle>,
     settings_scroll: ScrollHandle,
+    /// Whether the window is showing its frosted background right now.
+    blurred: bool,
 }
 
 impl TideGaugeView {
+    /// Fade the window's surfaces by the transparency setting and switch the
+    /// window between frosted glass and plain as needed.
+    fn sync_transparency(&mut self, window: &mut Window) {
+        let settings = crate::settings::Settings::load();
+        let mode = settings.window_transparency(crate::appearance::reduce_transparency());
+        let alphas = t::window_alphas(mode, settings.transparency_amount);
+        t::set_window_alphas(alphas);
+        if self.blurred != alphas.is_see_through() {
+            self.blurred = alphas.is_see_through();
+            window.set_background_appearance(crate::appearance::background(self.blurred));
+        }
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         crate::appearance::apply(window, crate::settings::Settings::load().dark);
         let focus = cx.focus_handle();
@@ -268,6 +283,7 @@ impl TideGaugeView {
             app_history: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: ScrollHandle::new(),
+            blurred: false,
         };
         // 1s refresh loop
         cx.spawn(
@@ -733,7 +749,7 @@ fn top_apps<'a>(
 
 pub(crate) fn card(dark: bool) -> Div {
     div()
-        .bg(t::card(dark))
+        .bg(t::window_card(dark))
         .rounded(t::RADIUS_CARD)
         .border_1()
         .border_color(t::line(dark))
@@ -1116,7 +1132,7 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
         .flex_shrink_0()
         .flex()
         .flex_col()
-        .bg(t::sidebar(dark))
+        .bg(t::window_sidebar(dark))
         .border_r_1()
         .border_color(t::line(dark))
         // The window's traffic lights sit in this strip.
@@ -1483,6 +1499,7 @@ impl Render for TideGaugeView {
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
         let dark = self.dark;
+        self.sync_transparency(window);
         self.sliders.sync(self.snap.audio.device_volume, self.snap.audio.input.volume, window, cx);
         let s = &self.snap;
         let tab = self.tab;
@@ -1558,7 +1575,6 @@ impl Render for TideGaugeView {
             .size_full()
             .flex()
             .flex_row()
-            .bg(t::bg(dark))
             .text_color(t::ink(dark))
             .font_family(".AppleSystemUIFont")
             .track_focus(&self.focus)
@@ -1571,6 +1587,9 @@ impl Render for TideGaugeView {
                     .flex()
                     .flex_col()
                     .relative()
+                    // On the content column, not the root: the sidebar's own
+                    // fade would otherwise stack on this one.
+                    .bg(t::window_bg(dark))
                     .child(header)
                     .child(content)
                     .when_some(self.toast.as_ref(), |d, toast| d.child(toast_view(toast, dark, this.clone()))),
@@ -1855,7 +1874,7 @@ fn overview_card(
         .h(px(if compact { 154. } else { 208. }))
         .p_4()
         .rounded(t::RADIUS_CARD)
-        .bg(t::card(dark))
+        .bg(t::window_card(dark))
         .flex()
         .flex_col()
         .justify_between()
@@ -2271,7 +2290,7 @@ fn donut_card(
             .child(div().flex_shrink_0().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark))
                 .child(format(entry.value)))
     }).collect::<Vec<_>>();
-    div().min_w_0().h(px(184.)).rounded(t::RADIUS_CARD).bg(t::card(dark)).p(t::SPACE_4)
+    div().min_w_0().h(px(184.)).rounded(t::RADIUS_CARD).bg(t::window_card(dark)).p(t::SPACE_4)
         .flex().flex_col().gap(t::SPACE_3)
         .child(div().flex().items_center().gap_2()
             .child(div().size(px(22.)).rounded(t::RADIUS_CONTROL).bg(tab.metric().unwrap().soft(dark))
@@ -2321,7 +2340,7 @@ fn busiest_apps(s: &Snapshot, height: f32, rows: usize, dark: bool, this: Entity
         .min_w_0()
         .h(px(height))
         .rounded(t::RADIUS_CARD)
-        .bg(t::card(dark))
+        .bg(t::window_card(dark))
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .focus_visible(move |d| d.border_color(color))
@@ -2947,7 +2966,7 @@ fn disk_tab(
                 .role(Role::RadioButton).aria_label(SharedString::from(format!("{} · {}", id, device.name)))
                 .aria_toggled(if selected_id == Some(id.as_str()) { Toggled::True } else { Toggled::False }).tab_index(20 + index as isize)
                 .px_3().py_2().rounded_md().border_1().border_color(t::line(dark))
-                .bg(if selected_id == Some(id.as_str()) { t::card_hi(dark) } else { t::card(dark) })
+                .bg(if selected_id == Some(id.as_str()) { t::card_hi(dark) } else { t::window_card(dark) })
                 .hover(|d| d.bg(t::card_hi(dark))).focus_visible(|d| d.bg(t::card_hi(dark)))
                 .cursor_pointer().max_w(px(320.))
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(device.id.clone()))
@@ -3364,7 +3383,7 @@ fn connection_card(s: &Snapshot, dark: bool) -> Div {
 /// what is unavailable and why; never implies a measurement exists.
 pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, explanation: String, dark: bool) -> Div {
     div()
-        .bg(t::card(dark))
+        .bg(t::window_card(dark))
         .rounded(t::RADIUS_CARD)
         .border_1()
         .border_color(t::line(dark))

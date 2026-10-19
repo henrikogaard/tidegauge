@@ -116,13 +116,19 @@ fn open(main: &Entity<TideGaugeView>, to: Destination, cx: &mut App) {
     crate::app::toggle_panel(cx);
 }
 
+/// Whether the panel shows through to the desktop, which macOS's "Reduce
+/// transparency" overrides.
+pub fn see_through(settings: &crate::settings::Settings) -> bool {
+    settings.panel_is_transparent(crate::appearance::reduce_transparency())
+}
+
 fn tile(
     card: Card,
     value: String,
     detail: String,
     (points, max): (&[f64], Option<f64>),
     full_width: bool,
-    dark: bool,
+    (dark, fill): (bool, Hsla),
     main: Entity<TideGaugeView>,
 ) -> impl IntoElement {
     let color = card.color(dark);
@@ -137,7 +143,7 @@ fn tile(
         .when(full_width, |d| d.col_span(2))
         .p(t::SPACE_3)
         .rounded(t::RADIUS_CONTROL)
-        .bg(t::card(dark))
+        .bg(fill)
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .focus_visible(move |d| d.border_color(color))
@@ -285,6 +291,10 @@ impl Render for MenuPanel {
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
+        let settings = crate::settings::Settings::load();
+        let alphas = t::panel_alphas(see_through(&settings), settings.transparency_amount);
+        let ground = t::faded(t::bg(dark), alphas.bg);
+        let fill = t::faded(t::card(dark), alphas.card);
         let s = &self.snap;
         let main = self.main.clone();
         let layout = &self.layout;
@@ -320,7 +330,7 @@ impl Render for MenuPanel {
             .rounded(t::RADIUS_CARD)
             .border_1()
             .border_color(t::line(dark))
-            .bg(t::bg(dark))
+            .bg(ground)
             .text_color(t::ink(dark))
             .font_family(".AppleSystemUIFont")
             .child(
@@ -348,13 +358,13 @@ impl Render for MenuPanel {
                         let main = main.clone();
                         cards.into_iter().enumerate().map(move |(i, card)| {
                             let (value, detail, points, max) = tile_data(card, s);
-                            tile(card, value, detail, (&points, max), spans_both_columns(i, count), dark, main.clone())
+                            tile(card, value, detail, (&points, max), spans_both_columns(i, count), (dark, fill), main.clone())
                         })
                     })
             )
             .when(!plans.is_empty(), |d| {
                 d.child(caption(l("AI plans", "AI-abonnementer"))).child(
-                    div().rounded(t::RADIUS_CONTROL).bg(t::card(dark)).py(t::SPACE_1).flex().flex_col().children(plans.into_iter().map(|plan| {
+                    div().rounded(t::RADIUS_CONTROL).bg(fill).py(t::SPACE_1).flex().flex_col().children(plans.into_iter().map(|plan| {
                         div()
                             .h(px(28.))
                             .px(t::SPACE_2)
@@ -380,7 +390,7 @@ impl Render for MenuPanel {
             .when(layout.apps, |d| d.child(caption(l("Busiest apps", "Mest aktive apper"))).child(
                 div()
                     .rounded(t::RADIUS_CONTROL)
-                    .bg(t::card(dark))
+                    .bg(fill)
                     .py(t::SPACE_1)
                     .flex()
                     .flex_col()

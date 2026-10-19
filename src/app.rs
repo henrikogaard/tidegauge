@@ -147,6 +147,7 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
         return;
     };
+    let see_through = crate::menu_panel::see_through(&Settings::load());
     // Decided now and handed to the panel, so the window's size and what it
     // draws always agree.
     let layout = crate::menu_panel::Layout::now();
@@ -165,10 +166,21 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
             is_movable: false,
             titlebar: None,
             display_id: Some(DisplayId::from(anchor.display)),
-            window_background: WindowBackgroundAppearance::Transparent,
+            // Frosted when see-through; the panel has no frame of its own, so
+            // its corners are clipped to match its rounded body.
+            window_background: if see_through {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            },
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main, layout)),
+        |window, cx| {
+            if see_through {
+                crate::appearance::round_corners(window, f32::from(crate::theme::RADIUS_CARD) as f64);
+            }
+            cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main, layout))
+        },
     );
     match opened {
         Ok(handle) => *POPOVER.lock().unwrap() = Some(handle.into()),

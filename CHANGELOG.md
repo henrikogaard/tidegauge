@@ -95,6 +95,11 @@ hardware acceptance checks. A merge and a published release are separate events.
   last fetched over an hour ago) are left out of the menu-bar panel and the
   Overview strip; the Agents page still lists them. When none is left, the
   section disappears and the panel shrinks to fit.
+- Settings → Transparency lets the main window show the desktop through frosted
+  glass: off, sidebar only, or the whole window, and separately the menu-bar
+  panel, with one Amount slider for both. Cards fade less than the background so
+  numbers stay readable. It applies at once and turns itself off while macOS
+  Reduce transparency is on.
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 
