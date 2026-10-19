@@ -14,6 +14,7 @@ mod bluetooth;
 mod caches;
 mod clocks;
 mod controls;
+mod demand;
 mod diagnose;
 mod disks;
 mod engine;
@@ -77,6 +78,7 @@ fn main() {
     env_logger_init();
     sensors::start();
     disks::start();
+    projects::start_nettop();
     app::start_sampler();
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());

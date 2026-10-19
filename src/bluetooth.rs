@@ -17,7 +17,7 @@ struct SPBluetooth {
     device_not_connected: Option<Vec<serde_json::Value>>,
 }
 
-static CACHE: OnceLock<Mutex<(Instant, BtInfo)>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<(Option<Instant>, BtInfo)>> = OnceLock::new();
 
 fn classify(name: &str) -> &'static str {
     use crate::locale::text as t;
@@ -75,11 +75,12 @@ fn inner_battery(v: &serde_json::Value, keys: &[&str]) -> Option<f64> {
     None
 }
 
-pub fn bt_info() -> BtInfo {
-    let cache = CACHE.get_or_init(|| Mutex::new((Instant::now() - Duration::from_secs(60), BtInfo::default())));
+/// Bluetooth state, read again when the last reading is older than `max_age`.
+pub fn bt_info(max_age: Duration) -> BtInfo {
+    let cache = CACHE.get_or_init(|| Mutex::new((None, BtInfo::default())));
     {
         let g = cache.lock().unwrap();
-        if g.0.elapsed() < Duration::from_secs(20) {
+        if g.0.is_some_and(|at| at.elapsed() < max_age) {
             return g.1.clone();
         }
     }
@@ -123,6 +124,6 @@ pub fn bt_info() -> BtInfo {
         }
     }
     let mut g = cache.lock().unwrap();
-    *g = (Instant::now(), info.clone());
+    *g = (Some(Instant::now()), info.clone());
     info
 }

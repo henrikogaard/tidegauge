@@ -296,6 +296,17 @@ struct PrevProc {
     disk_write: u64,
     energy_nj: u64,
     start_unix: f64,
+    /// Name and path read when this process was first seen; they are read
+    /// again only if the process starts again or changes its name (exec).
+    comm: String,
+    exe_path: String,
+}
+
+/// The name and path already known for a process that is still the same one:
+/// same start time and same name.
+fn known_identity<'a>(prev: Option<&'a PrevProc>, start: f64, comm: &str) -> Option<&'a str> {
+    prev.filter(|p| p.start_unix == start && p.comm == comm)
+        .map(|p| p.exe_path.as_str())
 }
 
 pub struct Engine {
@@ -311,6 +322,8 @@ pub struct Engine {
     resource_tracker: crate::resource_activity::Tracker,
     leaks: crate::leaks::Tracker,
     tick: u64,
+    /// When the process pass last ran; its rates are per this interval.
+    last_heavy: Instant,
 }
 
 pub static ENGINE: OnceLock<Arc<Mutex<Engine>>> = OnceLock::new();
@@ -335,6 +348,7 @@ impl Engine {
             resource_tracker: crate::resource_activity::Tracker::default(),
             leaks: crate::leaks::Tracker::default(),
             tick: 0,
+            last_heavy: Instant::now(),
         };
         e.snap.chip = chip_info();
         e.snap.boot_unix = boot_unix();
@@ -465,88 +479,98 @@ impl Engine {
             s.batt_hist.pts.clear();
         }
 
-        // Processes
-        let pids = list_pids();
-        let enumerated = pids.iter().copied().collect();
-        let mut procs = Vec::with_capacity(pids.len());
-        for pid in pids {
-            let Some(b) = proc_bsd(pid) else { continue };
-            let Some(r) = proc_rusage(pid) else { continue };
-            let start = b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6;
-            let cpu_ns = mach_ticks_to_ns(r.ri_user_time.saturating_add(r.ri_system_time));
-            let prev = self.prev.get(&pid);
-            let (cpu_pct, rr, wr, pw) = if let Some(pv) = prev {
-                let alive = if pv.start_unix == start { dt } else { 0.0 };
-                if alive > 0.0 {
-                    (
-                        (cpu_ns.saturating_sub(pv.cpu_ns)) as f64 / dt / 1e9 * 100.0,
-                        (r.ri_diskio_bytesread.saturating_sub(pv.disk_read)) as f64 / dt,
-                        (r.ri_diskio_byteswritten.saturating_sub(pv.disk_write)) as f64 / dt,
-                        (r.ri_energy_nj.saturating_sub(pv.energy_nj)) as f64 / dt / 1e9,
-                    )
-                } else {
-                    (0.0, 0.0, 0.0, 0.0)
-                }
-            } else {
-                // first sight: estimate from lifetime
-                let life = (now_unix() - start).max(1.0);
-                (
-                    cpu_ns as f64 / life / 1e9 * 100.0,
-                    r.ri_diskio_bytesread as f64 / life,
-                    r.ri_diskio_byteswritten as f64 / life,
-                    r.ri_energy_nj as f64 / life / 1e9,
-                )
-            };
-            let exe = proc_path(pid);
-            procs.push(ProcInfo {
-                pid,
-                ppid: b.pbi_ppid as i32,
-                uid: b.pbi_uid,
-                comm: unsafe {
+        // Processes. Hidden, this pass runs every few seconds; the rest of
+        // the sample is light and runs every tick.
+        let demand = crate::demand::current();
+        let since_heavy = now.duration_since(self.last_heavy);
+        let heavy = self.tick == 1 || demand.heavy_due(since_heavy);
+        if heavy {
+            let pdt = since_heavy.as_secs_f64().max(0.1);
+            self.last_heavy = now;
+            let pids = list_pids();
+            let enumerated = pids.iter().copied().collect();
+            let mut procs = Vec::with_capacity(pids.len());
+            for pid in pids {
+                let Some(b) = proc_bsd(pid) else { continue };
+                let Some(r) = proc_rusage(pid) else { continue };
+                let start = b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6;
+                let cpu_ns = mach_ticks_to_ns(r.ri_user_time.saturating_add(r.ri_system_time));
+                let comm = unsafe {
                     std::ffi::CStr::from_ptr(b.pbi_comm.as_ptr())
                         .to_string_lossy()
                         .to_string()
-                },
-                exe_path: exe,
-                start_unix: start,
-                cpu_ns,
-                mem_bytes: r.ri_phys_footprint,
-                disk_read: r.ri_diskio_bytesread,
-                disk_write: r.ri_diskio_byteswritten,
-                energy_nj: r.ri_energy_nj,
-                interrupt_wakeups: Some(r.ri_interrupt_wkups),
-                cpu_pct: cpu_pct.clamp(0.0, 3200.0),
-                read_rate: rr.max(0.0),
-                write_rate: wr.max(0.0),
-                power_w: pw.max(0.0),
-            });
-            self.prev.insert(
-                pid,
-                PrevProc {
+                };
+                let prev = self.prev.get(&pid);
+                let (cpu_pct, rr, wr, pw) = if let Some(pv) = prev {
+                    let alive = if pv.start_unix == start { pdt } else { 0.0 };
+                    if alive > 0.0 {
+                        (
+                            (cpu_ns.saturating_sub(pv.cpu_ns)) as f64 / pdt / 1e9 * 100.0,
+                            (r.ri_diskio_bytesread.saturating_sub(pv.disk_read)) as f64 / pdt,
+                            (r.ri_diskio_byteswritten.saturating_sub(pv.disk_write)) as f64 / pdt,
+                            (r.ri_energy_nj.saturating_sub(pv.energy_nj)) as f64 / pdt / 1e9,
+                        )
+                    } else {
+                        (0.0, 0.0, 0.0, 0.0)
+                    }
+                } else {
+                    // first sight: estimate from lifetime
+                    let life = (now_unix() - start).max(1.0);
+                    (
+                        cpu_ns as f64 / life / 1e9 * 100.0,
+                        r.ri_diskio_bytesread as f64 / life,
+                        r.ri_diskio_byteswritten as f64 / life,
+                        r.ri_energy_nj as f64 / life / 1e9,
+                    )
+                };
+                let exe = known_identity(prev, start, &comm)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| proc_path(pid));
+                self.prev.insert(
+                    pid,
+                    PrevProc {
+                        cpu_ns,
+                        disk_read: r.ri_diskio_bytesread,
+                        disk_write: r.ri_diskio_byteswritten,
+                        energy_nj: r.ri_energy_nj,
+                        start_unix: start,
+                        comm: comm.clone(),
+                        exe_path: exe.clone(),
+                    },
+                );
+                procs.push(ProcInfo {
+                    pid,
+                    ppid: b.pbi_ppid as i32,
+                    uid: b.pbi_uid,
+                    comm,
+                    exe_path: exe,
+                    start_unix: start,
                     cpu_ns,
+                    mem_bytes: r.ri_phys_footprint,
                     disk_read: r.ri_diskio_bytesread,
                     disk_write: r.ri_diskio_byteswritten,
                     energy_nj: r.ri_energy_nj,
-                    start_unix: start,
-                },
-            );
-        }
-        // prune dead pids
-        let live: std::collections::HashSet<i32> = procs.iter().map(|p| p.pid).collect();
-        self.prev.retain(|p, _| live.contains(p));
+                    interrupt_wakeups: Some(r.ri_interrupt_wkups),
+                    cpu_pct: cpu_pct.clamp(0.0, 3200.0),
+                    read_rate: rr.max(0.0),
+                    write_rate: wr.max(0.0),
+                    power_w: pw.max(0.0),
+                });
+            }
+            // prune dead pids
+            let live: std::collections::HashSet<i32> = procs.iter().map(|p| p.pid).collect();
+            self.prev.retain(|p, _| live.contains(p));
 
-        s.proc_count = procs.len();
-        s.process_groups = self.process_tracker.sample(&procs, &enumerated);
-        s.resource_activity = self.resource_tracker.sample(&procs, self.started.elapsed().as_secs_f64(), now_unix());
-        s.apps = regroup_apps(&procs, &s.apps);
-        s.app_count = s.apps.len();
-        self.leaks.update(s.at, &s.apps);
-        s.leaks = self.leaks.flagged().to_vec();
-        s.procs = procs.clone();
-
-        // attach per-app network via nettop (every other tick to save CPU)
-        if self.tick % 2 == 0 {
-            crate::projects::apply_nettop(&mut s.apps);
+            s.proc_count = procs.len();
+            s.process_groups = self.process_tracker.sample(&procs, &enumerated);
+            s.resource_activity = self.resource_tracker.sample(&procs, self.started.elapsed().as_secs_f64(), now_unix());
+            s.apps = regroup_apps(&procs, &s.apps);
+            s.app_count = s.apps.len();
+            self.leaks.update(s.at, &s.apps);
+            s.leaks = self.leaks.flagged().to_vec();
+            // Per-app network comes from the nettop worker's latest reading.
+            crate::projects::apply_net_rates(&mut s.apps);
+            s.procs = procs;
         }
 
         // System power is the power controller's own measurement; battery
@@ -577,26 +601,29 @@ impl Engine {
             s.audio.inputs = crate::audio::devices(crate::audio::Direction::Input);
         }
         s.bt = bt;
-        s.projects = crate::projects::detect_projects(&procs);
-        s.agents = crate::agents::sessions(&procs, &s.projects);
-        s.plans = crate::agents::plans();
+        if heavy {
+            s.projects = crate::projects::detect_projects(&s.procs, demand.listeners_period());
+            s.agents = crate::agents::sessions(&s.procs, &s.projects);
+            s.plans = crate::agents::plans();
+        }
         s.uptime = self.started.elapsed();
     }
 }
 
 // UI readers share only the last completed sample, never the collection lock.
-static PUBLISHED: OnceLock<Mutex<Snapshot>> = OnceLock::new();
+// They clone the pointer, not the sample.
+static PUBLISHED: OnceLock<Mutex<Arc<Snapshot>>> = OnceLock::new();
 
-fn published() -> &'static Mutex<Snapshot> {
-    PUBLISHED.get_or_init(|| Mutex::new(Snapshot::default()))
+fn published() -> &'static Mutex<Arc<Snapshot>> {
+    PUBLISHED.get_or_init(|| Mutex::new(Arc::new(Snapshot::default())))
 }
 
 pub fn publish(snap: &Snapshot) {
-    let snapshot = snap.clone();
+    let snapshot = Arc::new(snap.clone());
     *published().lock().unwrap() = snapshot;
 }
 
-pub fn latest() -> Snapshot {
+pub fn latest() -> Arc<Snapshot> {
     published().lock().unwrap().clone()
 }
 
@@ -832,6 +859,108 @@ mod tests {
         let fresh = regroup_apps(&procs, &previous);
         assert_eq!(fresh[0].net_in_rate, 4096.0);
         assert_eq!(fresh[0].net_out_rate, 1024.0);
+    }
+
+    fn prev_proc(start: f64, comm: &str, exe: &str) -> PrevProc {
+        PrevProc {
+            cpu_ns: 0,
+            disk_read: 0,
+            disk_write: 0,
+            energy_nj: 0,
+            start_unix: start,
+            comm: comm.into(),
+            exe_path: exe.into(),
+        }
+    }
+
+    #[test]
+    fn a_known_process_keeps_its_path_until_it_starts_again_or_changes_name() {
+        let prev = prev_proc(100.5, "node", "/usr/bin/node");
+        assert_eq!(known_identity(Some(&prev), 100.5, "node"), Some("/usr/bin/node"));
+        // The pid was reused: a new start time.
+        assert_eq!(known_identity(Some(&prev), 200.5, "node"), None);
+        // The same process ran another program (exec).
+        assert_eq!(known_identity(Some(&prev), 100.5, "bun"), None);
+        assert_eq!(known_identity(None, 100.5, "node"), None);
+    }
+
+    /// Prints what the sampler costs with nothing on screen and with the
+    /// Network page open, to compare before and after a change. Counts
+    /// `lsof`, `nettop` and `system_profiler` launches through shims on PATH.
+    #[test]
+    #[ignore = "samples for about a minute per mode; cargo test --release native_sampling_cost -- --ignored --nocapture"]
+    fn native_sampling_cost_hidden_and_visible() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("tidegauge-shims-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("spawns.log");
+        std::fs::write(&log, "").unwrap();
+        for (name, real) in [
+            ("lsof", "/usr/sbin/lsof"),
+            ("nettop", "/usr/bin/nettop"),
+            ("system_profiler", "/usr/sbin/system_profiler"),
+        ] {
+            let script = dir.join(name);
+            std::fs::write(&script, format!("#!/bin/sh\necho {name} >> '{}'\nexec {real} \"$@\"\n", log.display())).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::env::set_var("PATH", format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default()));
+        let spawns = |tool: &str| std::fs::read_to_string(&log).unwrap().lines().filter(|l| *l == tool).count();
+        let cpu = || unsafe {
+            let mut total = 0.0;
+            for who in [libc::RUSAGE_SELF, libc::RUSAGE_CHILDREN] {
+                let mut r: libc::rusage = std::mem::zeroed();
+                libc::getrusage(who, &mut r);
+                total += r.ru_utime.tv_sec as f64 + r.ru_utime.tv_usec as f64 / 1e6;
+                total += r.ru_stime.tv_sec as f64 + r.ru_stime.tv_usec as f64 / 1e6;
+            }
+            total
+        };
+        crate::sensors::start();
+        crate::disks::start();
+        crate::projects::start_nettop();
+        let mut engine = Engine::new();
+        // Start-up work (first inventory, sensor discovery, first readings)
+        // is not what idle costs.
+        for _ in 0..10 {
+            let bt = crate::bluetooth::bt_info(crate::demand::current().bluetooth_period());
+            engine.sample(Vec::new(), bt);
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        for (label, page) in [
+            ("hidden", None),
+            ("Network page open", Some(crate::demand::Page::Network)),
+        ] {
+            crate::demand::set_window(page);
+            let collections = || crate::disks::inventory().collected_at;
+            let (cpu0, wall0, collected0) = (cpu(), Instant::now(), collections());
+            let before = ["lsof", "nettop", "system_profiler"].map(spawns);
+            let mut busy = Duration::ZERO;
+            let mut inventories = 0;
+            let ticks = 30;
+            for _ in 0..ticks {
+                let started = Instant::now();
+                let bt = crate::bluetooth::bt_info(crate::demand::current().bluetooth_period());
+                engine.sample(Vec::new(), bt);
+                publish(&engine.snap);
+                busy += started.elapsed();
+                std::thread::sleep(Duration::from_secs(2).saturating_sub(started.elapsed()));
+            }
+            if collections() != collected0 {
+                inventories += 1;
+            }
+            let after = ["lsof", "nettop", "system_profiler"].map(spawns);
+            println!(
+                "{label}: {:.1} ms per sample, cpu {:.2}% of one core (children included), lsof {} nettop {} system_profiler {}, diskutil inventory refreshed: {}",
+                busy.as_secs_f64() * 1000.0 / ticks as f64,
+                (cpu() - cpu0) / wall0.elapsed().as_secs_f64() * 100.0,
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2],
+                inventories > 0,
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

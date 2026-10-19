@@ -81,7 +81,7 @@ fn current_plans(plans: &crate::agents::Plans, now: f64) -> Vec<&crate::agents::
 
 pub struct MenuPanel {
     layout: Layout,
-    snap: Snapshot,
+    snap: std::sync::Arc<Snapshot>,
     main: Entity<TideGaugeView>,
     focus: FocusHandle,
 }
@@ -95,8 +95,12 @@ impl MenuPanel {
             let alive = cx
                 .update(|cx: &mut App| {
                     this.update(cx, |panel, cx| {
-                        panel.snap = crate::engine::latest();
-                        cx.notify();
+                        crate::demand::panel_seen();
+                        let fresh = crate::engine::latest();
+                        if fresh.at != panel.snap.at {
+                            panel.snap = fresh;
+                            cx.notify();
+                        }
                     })
                     .is_ok()
                 });
@@ -105,6 +109,7 @@ impl MenuPanel {
             }
         })
         .detach();
+        crate::demand::panel_seen();
         Self { layout, snap: crate::engine::latest(), main, focus }
     }
 }

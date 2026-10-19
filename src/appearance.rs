@@ -19,6 +19,15 @@ pub fn apply(window: &Window, dark: Option<bool>) {
     }
 }
 
+/// Whether the window is on screen: not minimized, and its app not hidden.
+pub fn is_visible(window: &Window) -> bool {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return true };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return true };
+    // The borrowed GPUI window owns this AppKit view for the duration of this call.
+    let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+    view.window().is_none_or(|window| window.isVisible())
+}
+
 /// Whether macOS has "Reduce transparency" on; the see-through settings give
 /// way to it.
 pub fn reduce_transparency() -> bool {

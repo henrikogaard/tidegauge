@@ -6,6 +6,23 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Changed
+
+- Tidegauge samples less when nothing is watching. With no window or panel
+  open, the process list, apps and agents refresh every 8 seconds instead of
+  every 2, and the slow probes rest unless a page or an alert needs them:
+  per-app network (`nettop`) runs every 4 seconds on the Network page, every
+  10 seconds while the network alert is on, and once a minute otherwise;
+  disk details (`diskutil`) refresh only on the Disk page, or every 10 minutes
+  while the disk-health alert is on; Bluetooth is read every 20 seconds on its
+  page and every 5 minutes otherwise; listening ports (`lsof`) are fresh on
+  Projects and Agents and at most 30 seconds old elsewhere; the raw
+  temperature channels are read only while the CPU page is open. Fan limits and
+  Claude Code session files are read once instead of every sample, and a
+  hidden or minimized window no longer redraws. Alerts keep working with every
+  window closed. History's busiest-by-network list is coarser while the
+  Network page is closed.
+
 ## [0.4.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.0) — 2026-10-19
 
 ### Added
