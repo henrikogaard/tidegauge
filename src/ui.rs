@@ -178,6 +178,10 @@ pub struct TideGaugeView {
     pub(crate) app_history: Option<crate::process_panel::AppHistory>,
     tab_scrolls: Vec<ScrollHandle>,
     settings_scroll: ScrollHandle,
+    /// The Alerts group in Settings, for "Pick alerts" in the welcome.
+    pub(crate) alerts_anchor: ScrollAnchor,
+    /// Settings was opened to show Alerts: scroll there once it is drawn.
+    scroll_to_alerts: bool,
     /// Whether the window is showing its frosted background right now.
     blurred: bool,
 }
@@ -225,6 +229,7 @@ impl TideGaugeView {
             }
         })
         .detach();
+        let settings_scroll = ScrollHandle::new();
         let v = TideGaugeView {
             tab: Tab::Overview,
             dark: matches!(
@@ -283,7 +288,9 @@ impl TideGaugeView {
             history_loaded_at: None,
             app_history: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
-            settings_scroll: ScrollHandle::new(),
+            settings_scroll: settings_scroll.clone(),
+            alerts_anchor: ScrollAnchor::for_handle(settings_scroll),
+            scroll_to_alerts: false,
             blurred: false,
         };
         // 1s refresh loop. A hidden or minimized window does no work, and a
@@ -577,7 +584,7 @@ fn bar_span(index: usize, count: usize, width: f32) -> (f32, f32) {
 
 /// Chart of one series in the chosen style (Settings → Charts): a stroked
 /// line, the line over a low-opacity fill, or one bar per bucket. Every style
-/// keeps the dashed high-water line. Empty series draw nothing; a single
+/// keeps the dashed peak line. Empty series draw nothing; a single
 /// point draws a short tick (a single bar in bars style); non-finite samples
 /// become gaps rather than fabricated values. The series is thinned to the
 /// chart's own width when it paints.
@@ -685,7 +692,7 @@ pub(crate) fn area_chart(
                 window.paint_path(stroke, color);
             }
 
-            // High water: the highest sample in view, as a dashed line.
+            // Peak: the highest sample in view, as a dashed line.
             if data_max > 0. {
                 let yh = y_of(data_max);
                 let end = ox + w - 2.0;
@@ -926,7 +933,11 @@ fn hero(
                                     .text_xs()
                                     .text_color(t::ink_dim(dark))
                                     .child(chart_span(hist.pts.len()))
-                                    .child(l("- - high water in view", "- - høyvann i visningen"))
+                                    .child(crate::controls::tipped(
+                                        l("- - peak in view", "- - topp i visningen"),
+                                        dark,
+                                        div().child(l("- - peak in view", "- - topp i visningen")),
+                                    ))
                                     .child(l("now", "nå")),
                             ),
                     )
@@ -941,12 +952,14 @@ fn hero(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(
+                            .child(crate::controls::tipped(
+                                &k.clone(),
+                                dark,
                                 div()
                                     .text_size(t::TEXT_CAPTION)
                                     .text_color(t::ink_dim(dark))
                                     .child(k),
-                            )
+                            ))
                             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(v))
                     })),
             )
@@ -955,7 +968,7 @@ fn hero(
 
 fn stat_card(label: &str, value: String, color: Option<Hsla>, dark: bool) -> Div {
     card(dark)
-        .child(caption(label, dark))
+        .child(crate::controls::tipped(label, dark, caption(label, dark)))
         .child(
             div()
                 .text_xl()
@@ -972,12 +985,14 @@ pub(crate) fn section_header(left: &str, right: &str, dark: bool) -> Div {
         .items_end()
         .px_4()
         .child(caption(left, dark))
-        .child(
+        .child(crate::controls::tipped(
+            right,
+            dark,
             div()
                 .text_size(t::TEXT_CAPTION)
                 .text_color(t::ink_dim(dark))
                 .child(right.to_string()),
-        )
+        ))
 }
 
 /// Where the window is: a metric or work tab, the apps list, a maintenance
@@ -1658,6 +1673,13 @@ impl Render for TideGaugeView {
             self.tab_scrolls[tab as usize].clone()
         };
 
+        // "Pick alerts" in the welcome opens Settings at the Alerts group,
+        // once the page has been drawn and its place is known.
+        if self.show_settings && std::mem::take(&mut self.scroll_to_alerts) {
+            self.alerts_anchor.scroll_to(window, cx);
+            window.refresh();
+        }
+
         let here = self.destination();
         // Every page opens with its notes closed: moving elsewhere drops
         // notes opened for another page.
@@ -1751,6 +1773,7 @@ impl TideGaugeView {
     /// Settings opens at the top; only the About menu item opens it lower.
     pub fn reset_settings_scroll(&mut self) {
         self.settings_scroll = ScrollHandle::new();
+        self.alerts_anchor = ScrollAnchor::for_handle(self.settings_scroll.clone());
     }
 }
 
@@ -2099,13 +2122,15 @@ fn overview_card(
                     .children(stats.into_iter().map(|(label, value)| {
                         div()
                             .min_w_0()
-                            .child(
+                            .child(crate::controls::tipped(
+                                label,
+                                dark,
                                 div()
                                     .text_size(t::TEXT_CAPTION)
                                     .line_height(px(16.))
                                     .text_color(t::ink_dim(dark))
                                     .child(label.to_string()),
-                            )
+                            ))
                             .child(
                                 div()
                                     .text_size(t::TEXT_BODY)
@@ -2138,6 +2163,102 @@ fn overview_card(
 fn history_average(hist: &Hist) -> String {
     if hist.pts.is_empty() { return "—".into(); }
     fmt_pct(hist.pts.iter().sum::<f64>() / hist.pts.len() as f64)
+}
+
+/// Whether CPU and memory both show their value in the menu bar.
+fn menu_bar_shows_cpu_and_memory(settings: &crate::settings::Settings) -> bool {
+    ["cpu", "memory"]
+        .iter()
+        .all(|key| settings.menu_items.iter().any(|item| item.metric == *key && item.style == "value"))
+}
+
+/// Shown once, on the first launch: three one-tap choices and a way to dismiss
+/// it for good.
+fn welcome_card(settings: &crate::settings::Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::controls::button;
+    let login = crate::login::status();
+    let readouts = this.clone();
+    let alerts = this.clone();
+    let done = this.clone();
+    let at_login = this.clone();
+    card(dark)
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(t::TEXT_EMPH)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(l("Welcome to Tidegauge", "Velkommen til Tidegauge")),
+                )
+                .child(
+                    sub(l(
+                        "Three quick choices. Each one can be changed later in Settings.",
+                        "Tre raske valg. Hvert av dem kan endres senere i Innstillinger.",
+                    ))
+                    .text_color(t::ink_dim(dark)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(button(
+                    "welcome-readouts",
+                    l("Show CPU and memory in the menu bar", "Vis CPU og minne i menylinjen"),
+                    menu_bar_shows_cpu_and_memory(settings),
+                    dark,
+                    move |_, cx| {
+                        let _ = crate::settings::mutate(|s| {
+                            s.set_menu_style("cpu", Some("value"));
+                            s.set_menu_style("memory", Some("value"));
+                        });
+                        readouts.update(cx, |_, cx| cx.notify());
+                    },
+                ))
+                // Only where macOS lets the app manage its login item.
+                .when(login.can_change(), |d| {
+                    d.child(button(
+                        "welcome-login",
+                        l("Open at login", "Åpne ved pålogging"),
+                        login.is_registered(),
+                        dark,
+                        move |_, cx| {
+                            let on = crate::login::status().is_registered();
+                            crate::settings_page::set_launch_at_login(!on, &at_login, cx);
+                        },
+                    ))
+                })
+                .child(button(
+                    "welcome-alerts",
+                    l("Pick alerts", "Velg varsler"),
+                    false,
+                    dark,
+                    move |_, cx| {
+                        alerts.update(cx, |view, cx| {
+                            view.show_tools = false;
+                            view.show_processes = false;
+                            view.show_agents = false;
+                            view.show_settings = true;
+                            view.reset_settings_scroll();
+                            view.scroll = ScrollHandle::new();
+                            view.settings_error = None;
+                            view.scroll_to_alerts = true;
+                            cx.notify();
+                        });
+                    },
+                ))
+                .child(div().flex_1())
+                .child(button("welcome-done", l("Done", "Ferdig"), false, dark, move |_, cx| {
+                    let _ = crate::settings::mutate(|s| s.welcomed = true);
+                    done.update(cx, |_, cx| cx.notify());
+                })),
+        )
 }
 
 fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
@@ -2294,6 +2415,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .flex()
         .flex_col()
         .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
+        .when(settings.show_welcome(), |d| d.child(welcome_card(&settings, dark, this.clone())))
         .when_some(crate::agents_panel::plan_strip(&s.plans, dark, this.clone()), |d, strip| d.child(strip))
         .when(crate::keepawake::status().active, |d| {
             d.child(crate::controls::keep_awake(dark, this.clone()))
@@ -2444,7 +2566,7 @@ fn donut_card(
         div().flex().items_center().gap(t::SPACE_2).h(px(23.))
             .child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(entry.color))
             .when_some(entry.app.as_ref(), |d, app| d.child(app_icon(app, dark)))
-            .child(div().flex_1().min_w_0().text_size(t::TEXT_SMALL).truncate().child(entry.name.clone()))
+            .child(crate::controls::tipped(&entry.name, dark, div().flex_1().min_w_0().text_size(t::TEXT_SMALL).truncate().child(entry.name.clone())))
             .child(div().flex_shrink_0().text_size(t::TEXT_SMALL).text_color(t::ink_dim(dark))
                 .child(format(entry.value)))
     }).collect::<Vec<_>>();

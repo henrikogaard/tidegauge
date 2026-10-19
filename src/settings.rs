@@ -113,6 +113,11 @@ pub struct Settings {
     pub panel_shortcut: Option<String>,
     /// "Don't ask again" on the Move to Applications prompt.
     pub move_prompt_declined: bool,
+    /// The first-run welcome on Overview has been dismissed. A settings file
+    /// from before the welcome existed lacks this key and counts as
+    /// dismissed: only a first launch, with no file, shows it.
+    #[serde(default = "already_welcomed")]
+    pub welcomed: bool,
     /// Where the dashboard window is see-through.
     pub transparency: Transparency,
     /// Whether the menu-bar panel is see-through.
@@ -162,11 +167,17 @@ impl Default for Settings {
             language: None,
             panel_shortcut: None,
             move_prompt_declined: false,
+            welcomed: false,
             transparency: Transparency::Off,
             panel_transparency: false,
             transparency_amount: TRANSPARENCY_DEFAULT,
         }
     }
+}
+
+/// What a settings file without the `welcomed` key means: an existing user.
+fn already_welcomed() -> bool {
+    true
 }
 
 fn path() -> PathBuf {
@@ -203,6 +214,18 @@ fn stamp(path: &std::path::Path) -> Option<Stamp> {
     Some((metadata.modified().ok(), metadata.len()))
 }
 
+/// The settings in `path`. Only a missing file gives the first-run defaults;
+/// a file that exists but cannot be read or parsed belongs to an existing
+/// user, so it falls back to defaults that do not show the welcome.
+fn read_file(path: &std::path::Path) -> Settings {
+    let fallback = || Settings { welcomed: true, ..Settings::default() };
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| fallback()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+        Err(_) => fallback(),
+    }
+}
+
 impl Cache {
     /// The settings in `path`. With `trust_recent` a read from the last
     /// moments is returned without looking at the file; otherwise the file's
@@ -220,10 +243,7 @@ impl Cache {
                 return settings.clone();
             }
         }
-        let mut settings: Settings = std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let mut settings = read_file(path);
         settings.normalize();
         self.entry = current.map(|current| (current, std::time::Instant::now(), settings.clone()));
         settings
@@ -275,6 +295,11 @@ impl Settings {
     /// Whether the menu-bar panel is see-through, under the same rule.
     pub fn panel_is_transparent(&self, reduce_transparency: bool) -> bool {
         self.panel_transparency && !reduce_transparency
+    }
+
+    /// Whether Overview shows the first-run welcome.
+    pub fn show_welcome(&self) -> bool {
+        !self.welcomed
     }
 
     pub fn reset_dashboard(&mut self) {
@@ -469,6 +494,40 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_file_is_a_first_run() {
+        let dir = std::env::temp_dir().join(format!("tidegauge-welcome-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        let _ = std::fs::remove_file(&file);
+        assert!(read_file(&file).show_welcome(), "no file is a first run");
+        std::fs::write(&file, b"{ not json").unwrap();
+        assert!(!read_file(&file).show_welcome(), "a malformed file is an existing user");
+        std::fs::remove_file(&file).unwrap();
+        // Unreadable: a directory where the file should be.
+        std::fs::create_dir(&file).unwrap();
+        assert!(!read_file(&file).show_welcome(), "an unreadable file is an existing user");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_first_launch_without_a_settings_file_is_welcomed() {
+        // No file: the defaults, which have not welcomed anyone.
+        assert!(Settings::default().show_welcome());
+        // A file from before the welcome existed: an existing user.
+        let existing: Settings = serde_json::from_str(r#"{"dark":true}"#).unwrap();
+        assert!(!existing.show_welcome());
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.show_welcome());
+        // A first run that saved something before dismissing still sees it,
+        // and dismissing is remembered.
+        let mut saved: Settings = serde_json::from_str(&serde_json::to_string(&Settings::default()).unwrap()).unwrap();
+        assert!(saved.show_welcome());
+        saved.welcomed = true;
+        let again: Settings = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(!again.show_welcome());
+    }
 
     #[test]
     fn roadmap_settings_migrate_normalize_and_reset_independently() {

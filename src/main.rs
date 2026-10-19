@@ -87,6 +87,9 @@ fn main() {
 
     app.run(|cx| {
         gpui_kit::init(cx);
+        // Asked first: the Apple event it reads is only current while the
+        // app is still starting.
+        let at_login = login::launched_at_login();
         cx.on_app_quit(|_| async {
             crate::keepawake::shutdown();
             // Apps play on their own again.
@@ -123,7 +126,9 @@ fn main() {
             notifications::initialize();
             updater::initialize();
             // Before any window: on yes, the copy in Applications takes over.
-            move_to_applications::offer();
+            if login::startup_prompts_allowed(at_login) {
+                move_to_applications::offer();
+            }
         }
 
         let bounds = Bounds::centered(None, size(px(1192.), px(780.)), cx);
@@ -160,7 +165,12 @@ fn main() {
         app::set_panel_handle(window);
         // TIDEGAUGE_HIDDEN=1 starts with the dashboard hidden, as after it is
         // closed, so the app's idle cost can be measured.
-        if std::env::var_os("TIDEGAUGE_HIDDEN").is_some_and(|v| v == "1") {
+        // Started by the login item, the dashboard stays closed too: only
+        // the menu-bar item shows.
+        if !login::opens_dashboard(
+            at_login,
+            std::env::var_os("TIDEGAUGE_HIDDEN").is_some_and(|v| v == "1"),
+        ) {
             cx.hide();
         }
 

@@ -18,6 +18,26 @@ hardware acceptance checks. A merge and a published release are separate events.
   readings to a shared app group folder every 12 seconds, and only while a
   widget exists; nothing leaves the Mac. macOS decides how often a widget is
   redrawn, typically every few minutes.
+- Started by the login item, Tidegauge opens only its menu-bar item and leaves
+  the dashboard closed; opening it yourself still shows the window. The
+  launch is recognised from the "launched as login item" Apple event macOS
+  sends, or a `--login` argument. Existing login items keep working as they
+  are. Rendered and at-login checks are pending.
+- A welcome card on Overview, shown once on the first launch ever (never when
+  a settings file already exists): show CPU and memory in the menu bar, open
+  at login, pick alerts (opens Settings at Alerts), and Done to dismiss it for
+  good.
+- Hover tips explain memory pressure, wired, compressed, cached, swap, the
+  load average, the thermal state and the peak line, and name the icon-only
+  buttons in the menu-bar panel footer and page headers.
+- Hovering or dragging across the History plot, and the last-hour charts of an
+  app in Apps & processes, shows a line with the value and the time at that
+  point. The plot has light gridlines, and 7- and 30-day ranges have a tick at
+  each local midnight.
+
+### Changed
+
+- "High water" is now "Peak" ("Topp") wherever the app says it.
 
 ## [0.4.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.2) — 2026-10-19
 

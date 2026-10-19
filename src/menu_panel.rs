@@ -280,6 +280,8 @@ fn footer_control(
         .text_size(t::TEXT_BODY)
         .child(svg().path(icon).size(px(13.)).text_color(t::ink_dim(dark)))
         .when(show_label, |d| d.child(label))
+        // An icon alone says its name when the pointer rests on it.
+        .when(!show_label, |d| d.tooltip(crate::controls::tip(label, dark)))
         .on_click(move |_, _, cx| action(cx))
         .capture_key_down(move |event, window, cx| {
             if crate::controls::is_activation_key(&event.keystroke) {
