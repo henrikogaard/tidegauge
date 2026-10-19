@@ -244,6 +244,8 @@ impl Settings {
         let result = self.write_to(&path());
         // Read the saved file afresh next time, whatever its timestamp says.
         CACHE.lock().unwrap().entry = None;
+        // The menu-bar item may show something else now.
+        crate::app::PUMP.notify();
         result
     }
 

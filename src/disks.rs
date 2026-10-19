@@ -190,7 +190,9 @@ pub fn start() {
                 // disk-health alert asks.
                 let mut last: Option<Instant> = None;
                 loop {
-                    let due = match (last, crate::demand::current().inventory_period()) {
+                    let seen = crate::demand::generation();
+                    let period = crate::demand::current().inventory_period();
+                    let due = match (last, period) {
                         (None, _) => true,
                         (Some(at), Some(period)) => at.elapsed() >= period,
                         (Some(_), None) => false,
@@ -200,7 +202,13 @@ pub fn start() {
                         *out.lock().unwrap() = sample;
                         last = Some(Instant::now());
                     }
-                    std::thread::sleep(Duration::from_secs(1));
+                    // Rest until the next run is due, or until the demand
+                    // changes and the answer may too.
+                    let rest = match (last, period) {
+                        (Some(at), Some(period)) => period.saturating_sub(at.elapsed()),
+                        _ => Duration::from_secs(3600),
+                    };
+                    crate::demand::wait_for_change(seen, rest.max(Duration::from_secs(1)));
                 }
             })
             .expect("disk inventory worker");
@@ -215,6 +223,17 @@ pub fn start() {
                 crate::demand::utility_thread();
                 let mut previous = HashMap::new();
                 loop {
+                    let seen = crate::demand::generation();
+                    // Nobody sees the rates with every window closed: rest,
+                    // and start afresh when one opens.
+                    if !crate::demand::current().disk_io_wanted() {
+                        if !previous.is_empty() {
+                            previous.clear();
+                            out.lock().unwrap().clear();
+                        }
+                        crate::demand::wait_for_change(seen, Duration::from_secs(3600));
+                        continue;
+                    }
                     let mut next = HashMap::new();
                     for (id, entry_id, read, write) in native_counters() {
                         let sample =
@@ -223,7 +242,7 @@ pub fn start() {
                     }
                     *out.lock().unwrap() = next.clone();
                     previous = next;
-                    std::thread::sleep(Duration::from_secs(2));
+                    crate::demand::wait_for_change(seen, Duration::from_secs(2));
                 }
             })
             .expect("disk I/O worker");

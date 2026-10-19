@@ -993,12 +993,17 @@ pub fn start_nettop() {
             let mut probe = NetProbe::default();
             let mut last: Option<Instant> = None;
             loop {
+                let seen = crate::demand::generation();
                 let period = crate::demand::current().nettop_period();
                 if last.is_none_or(|at| at.elapsed() + Duration::from_millis(500) >= period) {
                     probe.poll(period);
                     last = Some(Instant::now());
                 }
-                std::thread::sleep(Duration::from_secs(1));
+                // Rest until the next run is due, or until the demand changes.
+                let rest = last.map_or(Duration::ZERO, |at| {
+                    period.saturating_sub(at.elapsed() + Duration::from_millis(500))
+                });
+                crate::demand::wait_for_change(seen, rest.max(Duration::from_secs(1)));
             }
         })
         .expect("nettop worker");

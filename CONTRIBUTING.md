@@ -34,6 +34,17 @@ through `locale::text(english, norwegian)`, counts through `locale::count` or
 inconsistent translations and missing singulars. To run the whole suite as
 Norwegian, set `TIDEGAUGE_TEST_LANG=nb`.
 
+To measure what Tidegauge costs while its dashboard is closed, start it with
+`TIDEGAUGE_HIDDEN=1`, and point `HOME` at a temporary directory so it does not
+touch your own data:
+
+```sh
+HOME=$(mktemp -d) TIDEGAUGE_HIDDEN=1 target/release/tidegauge
+```
+
+Measure the packaged app or a copy of the binary inside an `.app` bundle: the
+icon handling differs outside one.
+
 For a documentation-only change, verify examples against the source, check local Markdown links, and inspect the diff. Source comment edits do not require new behavioral tests.
 
 For a collector or FFI change, compare native structure sizes, field offsets, constants, and return-value conventions against the installed macOS SDK. Exercise the affected collector with a bounded, read-only probe. Prefer a focused regression test when the logic can run without native hardware.

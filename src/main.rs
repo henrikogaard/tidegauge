@@ -105,9 +105,18 @@ fn main() {
                     objc2_foundation::MainThreadMarker::new_unchecked(),
                 );
                 application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-                let data = NSData::with_bytes(include_bytes!("../assets/logo.svg"));
-                if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
-                    application.setApplicationIconImage(Some(&icon));
+                // The packaged app has its icon in the bundle; macOS keeps a
+                // full-size copy of one set here (about 24 MB), so only a
+                // run outside a bundle sets it.
+                let bundled = objc2_foundation::NSBundle::mainBundle()
+                    .bundlePath()
+                    .to_string()
+                    .ends_with(".app");
+                if !bundled {
+                    let data = NSData::with_bytes(include_bytes!("../assets/logo.svg"));
+                    if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+                        application.setApplicationIconImage(Some(&icon));
+                    }
                 }
             }
             notifications::initialize();
@@ -148,6 +157,11 @@ fn main() {
         )
         .expect("open panel");
         app::set_panel_handle(window);
+        // TIDEGAUGE_HIDDEN=1 starts with the dashboard hidden, as after it is
+        // closed, so the app's idle cost can be measured.
+        if std::env::var_os("TIDEGAUGE_HIDDEN").is_some_and(|v| v == "1") {
+            cx.hide();
+        }
 
         #[cfg(target_os = "macos")]
         {
@@ -155,10 +169,12 @@ fn main() {
             // A shortcut another app has taken since stays off; Settings
             // says so, since what is in effect is read from shortcut::active.
             let _ = shortcut::apply(settings::Settings::load().panel_shortcut.as_deref());
-            // status bar pump: refresh readouts + handle toggles
+            // Status bar pump: refresh the readouts and handle clicks. It
+            // wakes for a click, a new sample or saved settings, and looks
+            // anyway every ten seconds (the menu bar may have changed color).
             cx.spawn(async move |cx: &mut AsyncApp| {
+                smol::Timer::after(Duration::from_millis(700)).await;
                 loop {
-                    smol::Timer::after(Duration::from_millis(700)).await;
                     let _ = cx.update(|cx: &mut App| app::pump_status_bar(&mut bar, &view, cx));
                     // Native menu tracking runs a nested event loop. Release the
                     // GPUI App borrow before allowing other UI tasks to run.
@@ -173,6 +189,7 @@ fn main() {
                         let _ = cx.update(app::close_popover);
                         statusbar::show_item_menu();
                     }
+                    app::PUMP.wait(Duration::from_secs(10)).await;
                 }
             })
             .detach();

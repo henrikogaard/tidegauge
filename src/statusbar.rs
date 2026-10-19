@@ -28,6 +28,12 @@ pub static SHOW_ITEM_MENU: AtomicBool = AtomicBool::new(false);
 /// A click somewhere else on screen: close the panel.
 pub static CLICKED_OUTSIDE: AtomicBool = AtomicBool::new(false);
 
+/// Set one of the flags above and wake the menu-bar loop to act on it.
+pub fn raise(flag: &AtomicBool) {
+    flag.store(true, Ordering::SeqCst);
+    crate::app::PUMP.notify();
+}
+
 thread_local! {
     static ITEM: std::cell::RefCell<Option<(Retained<NSStatusItem>, Retained<TideGaugeTarget>)>> =
         const { std::cell::RefCell::new(None) };
@@ -143,7 +149,7 @@ pub fn toggle_from_keyboard() {
             }),
         };
     }
-    TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+    raise(&TOGGLE_POPOVER);
 }
 
 /// Show the native menu from the item, as a right click would.
@@ -175,19 +181,19 @@ define_class!(
     impl TideGaugeTarget {
         #[unsafe(method(settings:))]
         fn _settings(&self, _sender: Option<&NSObject>) {
-            SHOW_SETTINGS.store(true, Ordering::SeqCst);
+            raise(&SHOW_SETTINGS);
         }
         #[unsafe(method(about:))]
         fn _about(&self, _sender: Option<&NSObject>) {
-            SHOW_ABOUT.store(true, Ordering::SeqCst);
+            raise(&SHOW_ABOUT);
         }
         #[unsafe(method(toggle:))]
         fn _toggle(&self, _sender: Option<&NSObject>) {
-            TOGGLE_PANEL.store(true, Ordering::SeqCst);
+            raise(&TOGGLE_PANEL);
         }
         #[unsafe(method(quit:))]
         fn _quit(&self, _sender: Option<&NSObject>) {
-            QUIT_APP.store(true, Ordering::SeqCst);
+            raise(&QUIT_APP);
         }
         #[unsafe(method(clicked:))]
         fn _clicked(&self, _sender: Option<&NSObject>) {
@@ -199,9 +205,9 @@ define_class!(
             let at = NSEvent::mouseLocation();
             *CLICK_AT.lock().unwrap() = Some((at.x, at.y));
             if secondary {
-                SHOW_ITEM_MENU.store(true, Ordering::SeqCst);
+                raise(&SHOW_ITEM_MENU);
             } else {
-                TOGGLE_POPOVER.store(true, Ordering::SeqCst);
+                raise(&TOGGLE_POPOVER);
             }
         }
     }
@@ -318,7 +324,7 @@ impl StatusBar {
             &block2::RcBlock::new(|_| {
                 let at = NSEvent::mouseLocation();
                 *OUTSIDE_AT.lock().unwrap() = Some((at.x, at.y));
-                CLICKED_OUTSIDE.store(true, Ordering::SeqCst);
+                raise(&CLICKED_OUTSIDE);
             }),
         );
         OUTSIDE_MONITOR.with(|slot| *slot.borrow_mut() = monitor);

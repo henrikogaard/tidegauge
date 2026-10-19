@@ -325,6 +325,14 @@ pub fn set_volume(process: AudioObjectID, volume: f32) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether any app is being held at a volume, and so must be followed.
+pub fn active() -> bool {
+    TAPS.lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|taps| !taps.is_empty())
+}
+
 /// The volume Tidegauge holds for each tapped process.
 pub fn levels() -> HashMap<AudioObjectID, Level> {
     let taps = TAPS.lock().unwrap();

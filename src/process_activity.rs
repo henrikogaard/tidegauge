@@ -62,11 +62,37 @@ impl ProcessGroup {
 #[derive(Default)]
 pub struct Tracker {
     origins: HashMap<Identity, Origin>,
+    /// The bundle macOS registers for each running app. Fixed for the life of
+    /// a process, so each is asked for once: every lookup is a round trip to
+    /// LaunchServices.
+    bundles: BundleCache,
+}
+
+/// What was learned about each process, keyed by pid and start time.
+#[derive(Default)]
+struct BundleCache(HashMap<Identity, String>);
+
+impl BundleCache {
+    /// The cached bundle for `id`, else `lookup()`, which is then kept. No
+    /// answer is not kept: an app may not be registered yet.
+    fn resolve(&mut self, id: Identity, lookup: impl FnOnce() -> Option<String>) -> Option<String> {
+        if let Some(bundle) = self.0.get(&id) {
+            return Some(bundle.clone());
+        }
+        let bundle = lookup()?;
+        self.0.insert(id, bundle.clone());
+        Some(bundle)
+    }
+
+    /// Forget processes that are no longer running.
+    fn retain(&mut self, live: &HashSet<Identity>) {
+        self.0.retain(|id, _| live.contains(id));
+    }
 }
 
 impl Tracker {
     pub fn sample(&mut self, procs: &[ProcInfo], enumerated: &HashSet<i32>) -> Vec<ProcessGroup> {
-        let apps = registered_apps(procs);
+        let apps = registered_apps(procs, &mut self.bundles);
         let exited: HashSet<Identity> = self
             .origins
             .values()
@@ -215,22 +241,24 @@ impl Tracker {
     }
 }
 
-fn registered_apps(procs: &[ProcInfo]) -> Vec<RegisteredApp> {
+fn registered_apps(procs: &[ProcInfo], cache: &mut BundleCache) -> Vec<RegisteredApp> {
     use objc2_app_kit::NSWorkspace;
     let by_pid: HashMap<_, _> = procs.iter().map(|p| (p.pid, p)).collect();
+    cache.retain(&procs.iter().map(Identity::of).collect());
     NSWorkspace::sharedWorkspace()
         .runningApplications()
         .iter()
         .filter_map(|app| {
-            if app.isTerminated() {
-                return None;
-            }
             let p = *by_pid.get(&app.processIdentifier())?;
-            let bundle = app.bundleURL()?.path()?.to_string();
-            let executable = app.executableURL()?.path()?.to_string();
-            if executable != p.exe_path || bundle_root(&executable).as_deref() != Some(&bundle) {
-                return None;
-            }
+            let bundle = cache.resolve(Identity::of(p), || {
+                if app.isTerminated() {
+                    return None;
+                }
+                let bundle = app.bundleURL()?.path()?.to_string();
+                let executable = app.executableURL()?.path()?.to_string();
+                (executable == p.exe_path && bundle_root(&executable).as_deref() == Some(&bundle))
+                    .then_some(bundle)
+            })?;
             Some(RegisteredApp {
                 process: p.clone(),
                 bundle,
@@ -254,6 +282,61 @@ pub(crate) fn confirmed_exit(id: Identity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_process_is_looked_up_once_for_as_long_as_it_runs() {
+        let mut cache = BundleCache::default();
+        let (a, b) = (
+            Identity {
+                pid: 1,
+                started: 10,
+            },
+            Identity {
+                pid: 2,
+                started: 20,
+            },
+        );
+        let mut lookups = 0;
+        for _ in 0..3 {
+            assert_eq!(
+                cache.resolve(a, || {
+                    lookups += 1;
+                    Some("/A.app".into())
+                }),
+                Some("/A.app".into())
+            );
+            assert_eq!(
+                cache.resolve(b, || {
+                    lookups += 1;
+                    None
+                }),
+                None
+            );
+        }
+        // A: once. B has no bundle, so it is asked every time.
+        assert_eq!(lookups, 4);
+        // The pid comes back for another process: it is asked again.
+        cache.retain(&HashSet::from([b]));
+        let reused = Identity {
+            pid: 1,
+            started: 99,
+        };
+        assert_eq!(
+            cache.resolve(reused, || {
+                lookups += 1;
+                Some("/B.app".into())
+            }),
+            Some("/B.app".into())
+        );
+        assert_eq!(
+            cache.resolve(a, || {
+                lookups += 1;
+                None
+            }),
+            None
+        );
+        assert_eq!(lookups, 6);
+    }
     fn proc(pid: i32, ppid: i32, path: &str) -> ProcInfo {
         ProcInfo {
             pid,

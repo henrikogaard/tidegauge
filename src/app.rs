@@ -45,6 +45,42 @@ fn still_enabled(metric: &str, settings: &Settings) -> bool {
     }
 }
 
+/// A one-slot signal for a loop that would otherwise poll: [`Wake::notify`]
+/// from anywhere, and [`Wake::wait`] returns at once, or when the timeout
+/// passes. Notifications that arrive together count as one.
+pub struct Wake {
+    tx: smol::channel::Sender<()>,
+    rx: smol::channel::Receiver<()>,
+}
+
+impl Wake {
+    fn new() -> Self {
+        let (tx, rx) = smol::channel::bounded(1);
+        Self { tx, rx }
+    }
+
+    pub fn notify(&self) {
+        let _ = self.tx.try_send(());
+    }
+
+    pub async fn wait(&self, timeout: Duration) {
+        smol::future::or(
+            async {
+                let _ = self.rx.recv().await;
+            },
+            async {
+                smol::Timer::after(timeout).await;
+            },
+        )
+        .await;
+    }
+}
+
+/// Wakes the menu-bar loop: a click on the item, a new sample, new settings.
+pub static PUMP: std::sync::LazyLock<Wake> = std::sync::LazyLock::new(Wake::new);
+/// Wakes the dashboard's refresh loop when the window is brought forward.
+pub static REFRESH: std::sync::LazyLock<Wake> = std::sync::LazyLock::new(Wake::new);
+
 /// Background sampler: light metrics every ~2s; the process list, projects
 /// and agents every 2s while a window or the panel is open and every ~8s
 /// otherwise; Bluetooth, `nettop`, `lsof` and `diskutil` at the pace
@@ -57,11 +93,22 @@ pub fn start_sampler() {
             let eng = engine();
             let mut alerts = AlertEngine::new();
             let mut tick = 0u64;
+            let mut last_audio: Option<Instant> = None;
             loop {
                 let started = Instant::now();
                 let settings = Settings::load();
                 crate::demand::set_alerts(settings.alert_network_enabled, settings.alert_disk_health_enabled);
-                let procs_audio = crate::audio::audio_processes();
+                // Audio apps are read for a window or the panel, for an app
+                // held at a volume, and now and then otherwise.
+                let audio_due = last_audio.is_none_or(|at| {
+                    crate::demand::current().audio_due(at.elapsed(), crate::app_volume::active())
+                });
+                let procs_audio = if audio_due {
+                    last_audio = Some(Instant::now());
+                    Some(crate::audio::audio_processes())
+                } else {
+                    None
+                };
                 let bt = crate::bluetooth::bt_info(crate::demand::current().bluetooth_period());
                 {
                     let mut e = eng.lock().unwrap();
@@ -80,6 +127,8 @@ pub fn start_sampler() {
                     }
                     tick += 1;
                 }
+                // The menu-bar item and any alerts follow the new sample.
+                PUMP.notify();
                 // A steady 2 s from the start of one pass to the next.
                 thread::sleep(TICK.saturating_sub(started.elapsed()));
             }
@@ -89,8 +138,8 @@ pub fn start_sampler() {
 
 const TICK: Duration = Duration::from_millis(2000);
 
-/// Called once per UI frame-pump (~500ms) from main: applies toggles and
-/// pushes fresh numbers into the menu bar.
+/// Called by the menu-bar loop in main on each wake (see [`PUMP`]): applies
+/// toggles and pushes fresh numbers into the menu bar.
 pub fn pump_status_bar(
     bar: &mut crate::statusbar::StatusBar,
     view: &gpui_kit::Entity<crate::ui::TideGaugeView>,
@@ -159,7 +208,7 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
     }
     let Some(anchor) = crate::statusbar::anchor() else {
         // Without a known position, the menu instead.
-        crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::statusbar::raise(&crate::statusbar::SHOW_ITEM_MENU);
         return;
     };
     let see_through = crate::menu_panel::see_through(&Settings::load());
@@ -200,7 +249,7 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
     match opened {
         Ok(handle) => *POPOVER.lock().unwrap() = Some(handle.into()),
         // A click must always do something: without the panel, the menu.
-        Err(_) => crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst),
+        Err(_) => crate::statusbar::raise(&crate::statusbar::SHOW_ITEM_MENU),
     }
 }
 
@@ -219,6 +268,7 @@ pub fn set_panel_handle(h: gpui_kit::AnyWindowHandle) {
 }
 
 pub fn toggle_panel(cx: &mut gpui_kit::App) {
+    REFRESH.notify();
     cx.activate(true);
     let g = PANEL.get_or_init(|| Mutex::new(None)).lock().unwrap();
     if let Some(h) = g.as_ref() {
@@ -231,7 +281,23 @@ pub fn toggle_panel(cx: &mut gpui_kit::App) {
 
 #[cfg(test)]
 mod tests {
-    use super::still_enabled;
+    use super::{still_enabled, Wake};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_notified_wake_returns_at_once_and_counts_once() {
+        let wake = Wake::new();
+        wake.notify();
+        wake.notify();
+        let start = Instant::now();
+        smol::block_on(wake.wait(Duration::from_secs(30)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        // The second notify was folded into the first: this one times out.
+        let start = Instant::now();
+        smol::block_on(wake.wait(Duration::from_millis(80)));
+        assert!(start.elapsed() >= Duration::from_millis(70));
+    }
+
     use crate::settings::Settings;
 
     #[test]

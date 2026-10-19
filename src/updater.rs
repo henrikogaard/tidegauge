@@ -78,6 +78,7 @@ pub static CHECK_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::A
 
 pub fn ask_for_check() {
     CHECK_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::app::PUMP.notify();
 }
 
 /// The installed app's version, as its bundle states it.
