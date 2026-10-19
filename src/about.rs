@@ -1,6 +1,6 @@
 //! The About section at the end of Settings: version, update check and links.
 
-use crate::controls::button_indexed;
+use crate::controls::{button_indexed, control, ControlSpec};
 use crate::locale::text as l;
 use crate::settings_page::{group, row};
 use crate::theme as t;
@@ -58,12 +58,18 @@ fn link_row(
             .items_center()
             .gap(t::SPACE_3)
             .child(svg().path(icon).size(px(14.)).text_color(t::ink_dim(dark)))
-            .child(button_indexed(
-                id,
-                l("Open", "Åpne"),
-                false,
-                dark,
-                0,
+            .child(control(
+                ControlSpec {
+                    id: id.into(),
+                    label: l("Open", "Åpne").into(),
+                    aria: Some(format!("{} {name}", l("Open", "Åpne"))),
+                    role: Role::Button,
+                    tab_index: 0,
+                    selected: false,
+                    accent: t::accent(dark),
+                    dark,
+                    framed: true,
+                },
                 move |_, _| open(url),
             )),
         false,

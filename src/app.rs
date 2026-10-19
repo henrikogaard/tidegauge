@@ -115,6 +115,7 @@ pub fn pump_status_bar(
     if SHOW_SETTINGS.swap(false, Ordering::SeqCst) {
         view.update(cx, |view, cx| {
             view.show_settings = true;
+            view.reset_settings_scroll();
             view.scroll = gpui_kit::ScrollHandle::new();
             view.settings_error = None;
             cx.notify();
