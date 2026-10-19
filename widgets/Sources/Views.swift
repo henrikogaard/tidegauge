@@ -151,15 +151,26 @@ struct SmallView: View {
                         Text(title(r.id)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Spacer()
                     }
-                    Ring(fraction: r.available ? r.fraction : 0, color: color) {
-                        if r.available {
+                    if !r.available {
+                        Spacer(minLength: 0)
+                        Text("Not available").font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    } else if r.isRate {
+                        // A rate has no 100 %, so no ring: the figure and its history.
+                        Text(headline(r))
+                            .font(.system(.title2, design: .rounded).weight(.semibold))
+                            .minimumScaleFactor(0.6)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Sparkline(values: r.series, maximum: r.seriesMax, color: color)
+                            .frame(maxHeight: .infinity)
+                    } else {
+                        Ring(fraction: r.fraction, color: color, lineWidth: 10) {
                             Text(headline(r))
-                                .font(.system(r.isRate ? .callout : .title2, design: .rounded).weight(.semibold))
-                                .minimumScaleFactor(0.6)
+                                .font(.system(.title3, design: .rounded).weight(.semibold))
+                                .minimumScaleFactor(0.5)
                                 .lineLimit(1)
-                                .padding(.horizontal, 14)
-                        } else {
-                            Text("Not available").font(.caption2).foregroundStyle(.secondary)
+                                .padding(.horizontal, 18)
                         }
                     }
                     if let line = caption(r) {
@@ -178,7 +189,6 @@ struct SmallView: View {
 
 private struct Cell: View {
     let reading: Reading
-    var showsRing = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -195,17 +205,8 @@ private struct Cell: View {
                 }
             }
             if reading.available {
-                if showsRing {
-                    Ring(fraction: reading.fraction, color: color, lineWidth: 7) {
-                        Text(percent(reading.fraction * 100))
-                            .font(.system(.caption, design: .rounded).weight(.medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxHeight: 62)
-                    .frame(maxWidth: .infinity)
-                }
                 Sparkline(values: reading.series, maximum: reading.seriesMax, color: color)
-                    .frame(minHeight: 22)
+                    .frame(minHeight: 22, maxHeight: .infinity)
                 if let line = caption(reading) {
                     line.font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
                 }
@@ -253,6 +254,7 @@ struct MediumView: View {
                             }
                         }
                     }
+                    .frame(maxHeight: .infinity)
                     HStack { Spacer(); UpdatedLabel(sampled: snapshot.sampled) }
                 }
             } else {
@@ -275,13 +277,14 @@ struct LargeView: View {
                     Grid(horizontalSpacing: 18, verticalSpacing: 14) {
                         ForEach(0..<(readings.count + 1) / 2, id: \.self) { row in
                             GridRow {
-                                Cell(reading: readings[row * 2], showsRing: true)
+                                Cell(reading: readings[row * 2])
                                 if row * 2 + 1 < readings.count {
-                                    Cell(reading: readings[row * 2 + 1], showsRing: true)
+                                    Cell(reading: readings[row * 2 + 1])
                                 }
                             }
                         }
                     }
+                    .frame(maxHeight: .infinity)
                     HStack { Spacer(); UpdatedLabel(sampled: snapshot.sampled) }
                 }
             } else {
