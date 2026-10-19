@@ -5,7 +5,7 @@
 use crate::controls::{button_indexed, segment, segment_group, switch};
 use crate::locale::text as l;
 use crate::settings::{
-    localized_metric_label, localized_style_label, Settings, MENU_METRICS, MENU_STYLES,
+    localized_metric_label, localized_style_label, style_fits, Settings, MENU_METRICS, MENU_STYLES,
 };
 use crate::theme as t;
 use crate::ui::{caption, card, update_preference, Tab, TideGaugeView};
@@ -602,6 +602,7 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         let choices = std::iter::once(("off", l("Off", "Av"))).chain(
             MENU_STYLES
                 .iter()
+                .filter(|(style, _)| style_fits(key, style))
                 .map(|(style, _)| (*style, localized_style_label(style).expect("menu style has a localized label"))),
         );
         let group = segment_group(format!("settings-{key}"), name, dark).children(choices.enumerate().map(
@@ -619,6 +620,26 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         ));
         rows.push(row(name, None, group, false, dark));
     }
+    let colors = segment_group("settings-menu-colors", l("Colors", "Farger"), dark).children(
+        [(false, l("Monochrome", "Ensfarget")), (true, l("Colored", "Farget"))].into_iter().map(|(colored, label)| {
+            choice(
+                format!("menu-colors-{colored}"),
+                label,
+                format!("{}: {label}", l("Colors", "Farger")),
+                settings.menu_colored == colored,
+                dark,
+                this.clone(),
+                move |settings| settings.menu_colored = colored,
+            )
+        }),
+    );
+    rows.push(row(
+        l("Colors", "Farger"),
+        Some(l("Colored readings turn orange or red at warning levels.", "Farget visning blir oransje eller rød ved advarsler.").into()),
+        colors,
+        false,
+        dark,
+    ));
     let target = this.clone();
     rows.push(row(
         l("Readings", "Målinger"),

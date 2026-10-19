@@ -29,7 +29,7 @@ const LOCALE_FNS: &[&str] = &["l", "localized", "t", "text"];
 /// outside `ALLOWED_BARE_WORDS` (units, symbols, technical terms), or when it
 /// is one of these words that Norwegian keeps as is.
 const SAME_IN_BOTH: &[&str] = &[
-    "App", "app", "Bluetooth", "Disk", "Server", "server", "System",
+    "App", "app", "Bluetooth", "Disk", "Ring", "Server", "server", "System",
     // Language names are written in their own language in both UIs.
     "English", "Norsk",
     // A network port number: "port 8765" in both languages.
