@@ -42,6 +42,13 @@ pub struct Settings {
     /// Alert when the chip's hottest sensor stays above `alert_temp_c`.
     pub alert_temp_enabled: bool,
     pub alert_temp_c: f64,
+    /// Alert when the charge falls to `alert_battery_low_pct` on battery.
+    pub alert_battery_low_enabled: bool,
+    pub alert_battery_low_pct: f64,
+    /// Alert once when the battery reaches full on the adapter.
+    pub alert_battery_full_enabled: bool,
+    /// Alert when an internal disk reports failing health.
+    pub alert_disk_health_enabled: bool,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
@@ -79,6 +86,10 @@ impl Default for Settings {
             alert_pressure_enabled: false,
             alert_temp_enabled: false,
             alert_temp_c: CHIP_TEMP_DEFAULT,
+            alert_battery_low_enabled: false,
+            alert_battery_low_pct: BATTERY_LOW_DEFAULT,
+            alert_battery_full_enabled: false,
+            alert_disk_health_enabled: false,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
@@ -145,6 +156,7 @@ impl Settings {
         self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
         self.alert_app_mem_gb = valid_app_memory_gb(self.alert_app_mem_gb);
         self.alert_temp_c = valid_chip_temp(self.alert_temp_c);
+        self.alert_battery_low_pct = valid_battery_low(self.alert_battery_low_pct);
         normalize_choices(&mut self.dashboard_tabs, &DASHBOARD_TABS);
         normalize_choices(&mut self.favorite_metrics, &FAVORITE_METRICS);
         normalize_choices(&mut self.panel_tiles, &PANEL_TILES);
@@ -230,6 +242,17 @@ pub fn valid_chip_temp(value: f64) -> f64 {
         value.clamp(CHIP_TEMP_RANGE.0, CHIP_TEMP_RANGE.1)
     } else {
         CHIP_TEMP_DEFAULT
+    }
+}
+
+pub const BATTERY_LOW_DEFAULT: f64 = 20.;
+pub const BATTERY_LOW_RANGE: (f64, f64) = (5., 50.);
+
+pub fn valid_battery_low(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(BATTERY_LOW_RANGE.0, BATTERY_LOW_RANGE.1)
+    } else {
+        BATTERY_LOW_DEFAULT
     }
 }
 
@@ -328,6 +351,10 @@ mod tests {
         )
         .unwrap();
         assert!(!settings.alert_cpu_enabled);
+        assert!(!settings.alert_battery_low_enabled, "older files get the new alerts off");
+        assert!(!settings.alert_battery_full_enabled);
+        assert!(!settings.alert_disk_health_enabled);
+        assert_eq!(settings.alert_battery_low_pct, 20.);
         assert_eq!(settings.dashboard_tabs.len(), 10);
         settings.dashboard_tabs = vec![
             "history".into(),

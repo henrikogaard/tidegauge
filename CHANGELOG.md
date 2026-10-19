@@ -20,6 +20,18 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 - The menu-bar image is redrawn only when what it shows changes, not on every
   refresh ([#86](https://github.com/henrikogaard/tidegauge/pull/86)).
+- Three opt-in alerts in Settings → Alerts, all off until switched on. Low
+  battery alerts once when the charge falls to the chosen level (20% by
+  default) on battery, and again only after it has charged 5 points above it.
+  Battery charged alerts once per charge when the Mac on the adapter reaches
+  100% or the limit macOS reports. Disk health alerts when an internal disk's
+  SMART status turns to failing. The two battery alerts are hidden on a Mac
+  without a battery. Rendered check pending
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- The high CPU, heavy disk and heavy network alerts now name the busiest app
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
+- Clicking an alert brings Tidegauge's window forward
+  ([#87](https://github.com/henrikogaard/tidegauge/pull/87)).
 
 ## [0.3.8](https://github.com/henrikogaard/tidegauge/releases/tag/v0.3.8) — 2026-10-18
 

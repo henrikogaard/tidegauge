@@ -23,6 +23,8 @@ pub struct Sliders {
     pub app_memory: Entity<SliderState>,
     /// The chip temperature alert's level, in °C.
     pub chip_temp: Entity<SliderState>,
+    /// The low-battery alert's charge level, in %.
+    pub battery_low: Entity<SliderState>,
     pub volume: Entity<SliderState>,
     /// When the volume was last dragged; the device's reading lags, so the
     /// slider isn't pulled back to it for a moment.
@@ -46,12 +48,15 @@ impl Sliders {
         let input_volume = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.).default_value(50.));
         let (low, high) = crate::settings::CHIP_TEMP_RANGE;
         let chip_temp = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_temp_c as f32));
-        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 5] = [
+        let (low, high) = crate::settings::BATTERY_LOW_RANGE;
+        let battery_low = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.alert_battery_low_pct as f32));
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 6] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
             (&app, |s, v| s.alert_app_cpu_pct = v),
             (&app_memory, |s, v| s.alert_app_mem_gb = v),
             (&chip_temp, |s, v| s.alert_temp_c = v),
+            (&battery_low, |s, v| s.alert_battery_low_pct = v),
         ];
         for (state, set) in setters {
             cx.subscribe(state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
@@ -88,7 +93,7 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, app_memory, chip_temp, volume, volume_touched: None, input_volume, input_touched: None }
+        Self { cpu, mem, app, app_memory, chip_temp, battery_low, volume, volume_touched: None, input_volume, input_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
@@ -101,6 +106,7 @@ impl Sliders {
             (&self.app, settings.alert_app_cpu_pct as f32),
             (&self.app_memory, settings.alert_app_mem_gb as f32),
             (&self.chip_temp, settings.alert_temp_c as f32),
+            (&self.battery_low, settings.alert_battery_low_pct as f32),
         ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -508,11 +514,34 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             None,
             settings.alert_thermal_enabled,
         ),
+        (
+            "disk-health",
+            l("Disk health", "Diskhelse"),
+            l("An internal disk reports failing health", "En intern disk melder dårlig helse").to_string(),
+            None,
+            settings.alert_disk_health_enabled,
+        ),
+        (
+            "battery-low",
+            l("Low battery", "Lavt batteri"),
+            format!("{} {}", l("On battery at or below", "På batteri ved eller under"), pct(settings.alert_battery_low_pct)),
+            Some(&view.sliders.battery_low),
+            settings.alert_battery_low_enabled,
+        ),
+        (
+            "battery-full",
+            l("Battery charged", "Batteriet er ladet"),
+            l("Once when charging reaches 100%", "Én gang når ladingen når 100 %").to_string(),
+            None,
+            settings.alert_battery_full_enabled,
+        ),
     ];
+    // A Mac that has no battery has nothing to alert about.
+    let no_battery = view.snap.battery.confirmed_absent();
+    let rows = rows.into_iter().filter(|(key, ..)| !(no_battery && key.starts_with("battery-")));
     group(
         l("Alerts", "Varsler"),
-        rows.into_iter()
-            .enumerate()
+        rows.enumerate()
             .map(|(i, (key, name, detail, threshold, on))| {
                 let control = div()
                     .flex()
@@ -538,6 +567,9 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                             "thermal" => s.alert_thermal_enabled = value,
                             "pressure" => s.alert_pressure_enabled = value,
                             "chip-temp" => s.alert_temp_enabled = value,
+                            "disk-health" => s.alert_disk_health_enabled = value,
+                            "battery-low" => s.alert_battery_low_enabled = value,
+                            "battery-full" => s.alert_battery_full_enabled = value,
                             _ => s.alert_network_enabled = value,
                         },
                     ));

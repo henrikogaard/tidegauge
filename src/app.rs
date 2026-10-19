@@ -36,6 +36,9 @@ fn still_enabled(metric: &str, settings: &Settings) -> bool {
         "thermal" => settings.alert_thermal_enabled,
         "pressure" => settings.alert_pressure_enabled,
         "temperature" => settings.alert_temp_enabled,
+        "battery_low" => settings.alert_battery_low_enabled,
+        "battery_full" => settings.alert_battery_full_enabled,
+        disk if disk.starts_with("disk_health:") => settings.alert_disk_health_enabled,
         _ => false,
     }
 }
@@ -212,9 +215,12 @@ mod tests {
             alert_thermal_enabled: true,
             alert_pressure_enabled: true,
             alert_temp_enabled: true,
+            alert_battery_low_enabled: true,
+            alert_battery_full_enabled: true,
+            alert_disk_health_enabled: true,
             ..Settings::default()
         };
-        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "low_disk", "thermal", "pressure", "temperature"] {
+        for metric in ["cpu", "memory", "disk", "network", "app:com.example.busy", "appmem:com.example.busy", "low_disk", "thermal", "pressure", "temperature", "battery_low", "battery_full", "disk_health:disk0"] {
             assert!(still_enabled(metric, &on), "{metric} was dropped");
             assert!(!still_enabled(metric, &Settings::default()), "{metric} passed while off");
         }

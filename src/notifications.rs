@@ -7,8 +7,8 @@ use objc2::{define_class, msg_send, ClassType};
 use objc2_foundation::{NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
-    UNNotificationPresentationOptions, UNNotificationRequest, UNUserNotificationCenter,
-    UNUserNotificationCenterDelegate,
+    UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
+    UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,6 +30,19 @@ define_class!(
             completion
                 .call((UNNotificationPresentationOptions::Banner
                     | UNNotificationPresentationOptions::List,));
+        }
+
+        // Clicking an alert brings Tidegauge's window forward; the UI pump
+        // picks the flag up on the main thread.
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn did_receive(
+            &self,
+            _center: &UNUserNotificationCenter,
+            _response: &UNNotificationResponse,
+            completion: &DynBlock<dyn Fn()>,
+        ) {
+            crate::statusbar::TOGGLE_PANEL.store(true, Ordering::SeqCst);
+            completion.call(());
         }
     }
 );
