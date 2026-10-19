@@ -1,5 +1,7 @@
 //! Threshold alerts with independent sustained episodes and cooldowns.
 
+use crate::battery::BatteryStats;
+use crate::disks::{Device, Health};
 use crate::engine::{Alert, Snapshot};
 use crate::settings::{valid_threshold, Settings};
 
@@ -111,6 +113,9 @@ pub struct AlertEngine {
     thermal: Episode,
     pressure: Episode,
     temperature: Episode,
+    low_battery: LowBattery,
+    charged_battery: ChargedBattery,
+    disk_health: DiskHealth,
     offline: Episode,
     /// "Network lost" went out, so "Network back" is owed.
     offline_alerted: bool,
@@ -129,6 +134,9 @@ impl AlertEngine {
             thermal: Episode::default(),
             pressure: Episode::default(),
             temperature: Episode::default(),
+            low_battery: LowBattery::default(),
+            charged_battery: ChargedBattery::default(),
+            disk_health: DiskHealth::default(),
             offline: Episode::default(),
             offline_alerted: false,
         }
@@ -143,6 +151,9 @@ impl AlertEngine {
         let disk_rate = snapshot.disk.read_rate + snapshot.disk.write_rate;
         let network_rate = snapshot.net.rate_in + snapshot.net.rate_out;
         let mut alerts = Vec::new();
+        let top_cpu = top_app(snapshot, |app| app.cpu_pct);
+        let top_disk = top_app(snapshot, |app| app.disk_read_rate + app.disk_write_rate);
+        let top_network = top_app(snapshot, |app| app.net_in_rate + app.net_out_rate);
 
         if let Some(alert) = self.cpu.check(
             at,
@@ -152,11 +163,14 @@ impl AlertEngine {
             CPU_MEMORY_DURATION,
             |value| Alert {
                 metric: "cpu".into(),
-                message: format!(
-                    "{}: {} {}",
-                    crate::locale::text("High CPU usage", "Høy CPU-bruk"),
-                    crate::locale::percent(value, 0),
-                    crate::locale::text("for over 20 seconds", "i over 20 sekunder")
+                message: with_top_app(
+                    format!(
+                        "{}: {} {}",
+                        crate::locale::text("High CPU usage", "Høy CPU-bruk"),
+                        crate::locale::percent(value, 0),
+                        crate::locale::text("for over 20 seconds", "i over 20 sekunder")
+                    ),
+                    top_cpu,
                 ),
                 at,
             },
@@ -196,11 +210,14 @@ impl AlertEngine {
             IO_DURATION,
             |value| Alert {
                 metric: "disk".into(),
-                message: format!(
-                    "{}: {} {}",
-                    crate::locale::text("Heavy disk activity", "Stor diskaktivitet"),
-                    crate::engine::fmt_rate(value),
-                    crate::locale::text("read+write", "lesing+skriving")
+                message: with_top_app(
+                    format!(
+                        "{}: {} {}",
+                        crate::locale::text("Heavy disk activity", "Stor diskaktivitet"),
+                        crate::engine::fmt_rate(value),
+                        crate::locale::text("read+write", "lesing+skriving")
+                    ),
+                    top_disk,
                 ),
                 at,
             },
@@ -220,10 +237,13 @@ impl AlertEngine {
             IO_DURATION,
             |value| Alert {
                 metric: "network".into(),
-                message: format!(
-                    "{}: {}",
-                    crate::locale::text("Heavy network activity", "Stor nettverksaktivitet"),
-                    crate::engine::fmt_rate(value)
+                message: with_top_app(
+                    format!(
+                        "{}: {}",
+                        crate::locale::text("Heavy network activity", "Stor nettverksaktivitet"),
+                        crate::engine::fmt_rate(value)
+                    ),
+                    top_network,
                 ),
                 at,
             },
@@ -401,6 +421,246 @@ impl AlertEngine {
             });
         }
 
+        alerts.extend(self.check_power_and_disks(snapshot, settings));
+        alerts
+    }
+
+    /// The battery and disk-health alerts, which watch states rather than
+    /// sustained thresholds.
+    fn check_power_and_disks(&mut self, snapshot: &Snapshot, settings: &Settings) -> Vec<Alert> {
+        let at = snapshot.at;
+        let mut alerts = Vec::new();
+        let threshold = crate::settings::valid_battery_low(settings.alert_battery_low_pct);
+        if let Some(percent) = self.low_battery.check(
+            at,
+            settings.alert_battery_low_enabled,
+            threshold,
+            &snapshot.battery,
+        ) {
+            alerts.push(Alert {
+                metric: "battery_low".into(),
+                message: format!(
+                    "{}: {} {}",
+                    crate::locale::text("Low battery", "Lavt batteri"),
+                    crate::locale::percent(percent, 0),
+                    crate::locale::text("left", "igjen")
+                ),
+                at,
+            });
+        }
+        if let Some(percent) =
+            self.charged_battery
+                .check(at, settings.alert_battery_full_enabled, &snapshot.battery)
+        {
+            alerts.push(Alert {
+                metric: "battery_full".into(),
+                message: format!(
+                    "{}: {}",
+                    crate::locale::text("Battery charged", "Batteriet er ladet"),
+                    crate::locale::percent(percent, 0)
+                ),
+                at,
+            });
+        }
+        // Only read the disk inventory when the alert is on.
+        let inventory = settings
+            .alert_disk_health_enabled
+            .then(crate::disks::inventory);
+        let devices = inventory
+            .as_ref()
+            .filter(|inventory| inventory.available)
+            .map_or(&[][..], |inventory| &inventory.devices[..]);
+        alerts.extend(
+            self.disk_health
+                .check(at, settings.alert_disk_health_enabled, devices),
+        );
+        alerts
+    }
+}
+
+/// The app using the most of a reading, if any is using any.
+fn top_app(
+    snapshot: &Snapshot,
+    value: impl Fn(&crate::processes::AppGroup) -> f64,
+) -> Option<&str> {
+    snapshot
+        .apps
+        .iter()
+        .filter(|app| !app.name.is_empty())
+        .map(|app| (app.name.as_str(), value(app)))
+        .filter(|(_, value)| value.is_finite() && *value > 0.)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(name, _)| name)
+}
+
+/// The alert's text with the busiest app named after it.
+fn with_top_app(message: String, app: Option<&str>) -> String {
+    match app {
+        Some(name) => format!(
+            "{message} · {}: {name}",
+            crate::locale::text("Top app", "Mest aktive app")
+        ),
+        None => message,
+    }
+}
+
+/// Whether a send at `last_sent` still counts as too recent at `at`.
+fn cooling_down(last_sent: Option<f64>, at: f64) -> bool {
+    last_sent.is_some_and(|previous| (0.0..COOLDOWN).contains(&(at - previous)))
+}
+
+/// Re-arm this far above the low-battery level, so a charge that hovers at
+/// the level does not alert again and again.
+const BATTERY_REARM_MARGIN: f64 = 5.;
+/// A full battery on the adapter that sags below this starts a new charge.
+const BATTERY_NEW_CHARGE_BELOW: f64 = 95.;
+
+/// Low battery: one alert per crossing of the level while on battery.
+#[derive(Default)]
+struct LowBattery {
+    /// Alerted for this crossing; the charge has to climb above the level
+    /// plus 5 points to arm it again.
+    alerted: bool,
+    last_sent: Option<f64>,
+    last_threshold: Option<f64>,
+}
+
+impl LowBattery {
+    /// The charge to report when the battery has just crossed the level.
+    fn check(
+        &mut self,
+        at: f64,
+        enabled: bool,
+        threshold: f64,
+        battery: &BatteryStats,
+    ) -> Option<f64> {
+        if self
+            .last_threshold
+            .is_some_and(|previous| previous != threshold)
+        {
+            self.alerted = false;
+        }
+        self.last_threshold = Some(threshold);
+        if !enabled {
+            self.alerted = false;
+            return None;
+        }
+        let percent = battery
+            .percent
+            .filter(|percent| percent.is_finite() && battery.present && at.is_finite())?;
+        if percent > threshold + BATTERY_REARM_MARGIN {
+            self.alerted = false;
+            return None;
+        }
+        if self.alerted
+            || !battery.on_battery
+            || percent > threshold
+            || cooling_down(self.last_sent, at)
+        {
+            return None;
+        }
+        self.alerted = true;
+        self.last_sent = Some(at);
+        Some(percent)
+    }
+}
+
+/// Battery charged: one alert per charge session, when the Mac on the adapter
+/// is full.
+#[derive(Default)]
+struct ChargedBattery {
+    sent: bool,
+    last_sent: Option<f64>,
+    /// A battery has been read once; a battery already full then is no
+    /// news, so a restart at full charge stays quiet.
+    seen: bool,
+}
+
+impl ChargedBattery {
+    /// The charge to report when a charge session has just finished.
+    fn check(&mut self, at: f64, enabled: bool, battery: &BatteryStats) -> Option<f64> {
+        let percent = battery
+            .percent
+            .filter(|percent| percent.is_finite() && battery.present && at.is_finite())?;
+        // macOS marks the battery charged at its own limit too, so a Mac
+        // held at 80 % counts as full.
+        let full =
+            battery.ac_power && !battery.on_battery && (battery.is_charged || percent >= 100.);
+        if !self.seen {
+            self.seen = true;
+            self.sent = full;
+        }
+        if !enabled {
+            // Switching it on while already full is not a new charge.
+            self.sent = full;
+            return None;
+        }
+        if !full {
+            if battery.on_battery || percent < BATTERY_NEW_CHARGE_BELOW {
+                self.sent = false;
+            }
+            return None;
+        }
+        if self.sent || cooling_down(self.last_sent, at) {
+            return None;
+        }
+        self.sent = true;
+        self.last_sent = Some(at);
+        Some(percent)
+    }
+}
+
+/// Disk health: one alert each time an internal disk turns to failing.
+#[derive(Default)]
+struct DiskHealth {
+    /// The last verdict seen for each disk, passed or failed. A disk whose
+    /// health goes unreadable keeps its last verdict.
+    seen: std::collections::HashMap<String, Health>,
+    last_sent: std::collections::HashMap<String, f64>,
+}
+
+impl DiskHealth {
+    fn check(&mut self, at: f64, enabled: bool, devices: &[Device]) -> Vec<Alert> {
+        if !enabled || !at.is_finite() {
+            // Switched on later, a disk that already fails is news.
+            self.seen.clear();
+            return Vec::new();
+        }
+        let mut alerts = Vec::new();
+        for device in devices
+            .iter()
+            .filter(|device| device.internal == Some(true))
+        {
+            match device.smart.health {
+                Health::Passed => {
+                    self.seen.insert(device.id.clone(), Health::Passed);
+                }
+                Health::Failed => {
+                    if self.seen.get(&device.id) == Some(&Health::Failed)
+                        || cooling_down(self.last_sent.get(&device.id).copied(), at)
+                    {
+                        continue;
+                    }
+                    self.seen.insert(device.id.clone(), Health::Failed);
+                    self.last_sent.insert(device.id.clone(), at);
+                    let name = if device.name.is_empty() {
+                        crate::locale::text("An internal disk", "En intern disk").to_string()
+                    } else {
+                        device.name.clone()
+                    };
+                    alerts.push(Alert {
+                        metric: format!("disk_health:{}", device.id),
+                        message: format!(
+                            "{}: {name} {}",
+                            crate::locale::text("Disk health warning", "Diskhelse-advarsel"),
+                            crate::locale::text("reports failing health", "melder dårlig helse")
+                        ),
+                        at,
+                    });
+                }
+                Health::Unsupported | Health::Unavailable => {}
+            }
+        }
         alerts
     }
 }
@@ -639,6 +899,454 @@ mod tests {
             s.at = at;
             assert!(engine.check(&s, &settings).is_empty(), "no reading is not a hot chip");
         }
+    }
+
+    fn battery(percent: f64, on_battery: bool) -> BatteryStats {
+        BatteryStats {
+            available: true,
+            present: true,
+            on_battery,
+            ac_power: !on_battery,
+            percent: Some(percent),
+            ..BatteryStats::default()
+        }
+    }
+
+    fn with_battery(at: f64, battery: BatteryStats) -> Snapshot {
+        Snapshot {
+            battery,
+            ..snapshot(at)
+        }
+    }
+
+    #[test]
+    fn low_battery_alerts_once_per_crossing_and_rearms_above_the_margin() {
+        let settings = Settings {
+            alert_battery_low_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(engine
+            .check(&with_battery(0., battery(30., true)), &settings)
+            .is_empty());
+        assert!(
+            engine
+                .check(&with_battery(10., battery(21., true)), &settings)
+                .is_empty(),
+            "above 20 %"
+        );
+        let alerts = engine.check(&with_battery(20., battery(20., true)), &settings);
+        assert_eq!(alerts.len(), 1, "falling to the level alerts");
+        assert_eq!(alerts[0].metric, "battery_low");
+        assert!(alerts[0].message.contains("20"), "{}", alerts[0].message);
+        assert!(
+            engine
+                .check(&with_battery(30., battery(19., true)), &settings)
+                .is_empty(),
+            "once per crossing"
+        );
+        // Charging a little, but not past 25 %, keeps it quiet after the cooldown.
+        assert!(engine
+            .check(&with_battery(40., battery(25., false)), &settings)
+            .is_empty());
+        assert!(
+            engine
+                .check(&with_battery(1000., battery(20., true)), &settings)
+                .is_empty(),
+            "25 % is not above 25 %"
+        );
+        // Above level + 5 re-arms; the next fall alerts again.
+        assert!(engine
+            .check(&with_battery(1010., battery(26., false)), &settings)
+            .is_empty());
+        assert!(
+            engine
+                .check(&with_battery(1020., battery(18., true)), &settings)
+                .len()
+                == 1
+        );
+    }
+
+    #[test]
+    fn low_battery_needs_battery_power_a_reading_and_the_switch() {
+        let settings = Settings {
+            alert_battery_low_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(
+            engine
+                .check(&with_battery(0., battery(10., false)), &settings)
+                .is_empty(),
+            "on the adapter"
+        );
+        let mut no_reading = battery(10., true);
+        no_reading.percent = None;
+        assert!(engine
+            .check(&with_battery(1., no_reading), &settings)
+            .is_empty());
+        let mut absent = battery(10., true);
+        absent.present = false;
+        assert!(
+            engine
+                .check(&with_battery(2., absent), &settings)
+                .is_empty(),
+            "no battery in this Mac"
+        );
+        assert!(engine
+            .check(&with_battery(3., BatteryStats::default()), &settings)
+            .is_empty());
+        assert!(
+            engine
+                .check(&with_battery(4., battery(10., true)), &Settings::default())
+                .is_empty(),
+            "off by default"
+        );
+        // Unplugged while already low: that is the crossing.
+        assert_eq!(
+            engine
+                .check(&with_battery(5., battery(10., true)), &settings)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn low_battery_follows_its_adjustable_level() {
+        let mut settings = Settings {
+            alert_battery_low_enabled: true,
+            alert_battery_low_pct: 10.,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(engine
+            .check(&with_battery(0., battery(15., true)), &settings)
+            .is_empty());
+        assert_eq!(
+            engine
+                .check(&with_battery(1., battery(10., true)), &settings)
+                .len(),
+            1
+        );
+        // Out-of-range values are clamped.
+        settings.alert_battery_low_pct = 500.;
+        assert_eq!(
+            crate::settings::valid_battery_low(settings.alert_battery_low_pct),
+            50.
+        );
+        assert_eq!(crate::settings::valid_battery_low(1.), 5.);
+        assert_eq!(crate::settings::valid_battery_low(f64::NAN), 20.);
+    }
+
+    #[test]
+    fn low_battery_cooldown_holds_back_a_quick_second_crossing() {
+        let settings = Settings {
+            alert_battery_low_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert_eq!(
+            engine
+                .check(&with_battery(0., battery(19., true)), &settings)
+                .len(),
+            1
+        );
+        engine.check(&with_battery(10., battery(30., false)), &settings);
+        assert!(
+            engine
+                .check(&with_battery(20., battery(19., true)), &settings)
+                .is_empty(),
+            "within 10 minutes"
+        );
+        assert_eq!(
+            engine
+                .check(&with_battery(601., battery(19., true)), &settings)
+                .len(),
+            1,
+            "after the cooldown"
+        );
+    }
+
+    fn charged(percent: f64, is_charged: bool) -> BatteryStats {
+        BatteryStats {
+            is_charged,
+            ..battery(percent, false)
+        }
+    }
+
+    #[test]
+    fn battery_charged_alerts_once_per_charge_session() {
+        let settings = Settings {
+            alert_battery_full_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(engine
+            .check(&with_battery(0., charged(60., false)), &settings)
+            .is_empty());
+        assert!(engine
+            .check(&with_battery(10., charged(99., false)), &settings)
+            .is_empty());
+        let alerts = engine.check(&with_battery(20., charged(100., true)), &settings);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "battery_full");
+        assert!(
+            engine
+                .check(&with_battery(30., charged(100., true)), &settings)
+                .is_empty(),
+            "once per session"
+        );
+        // A dip to 97 % on the adapter is the same session.
+        assert!(engine
+            .check(&with_battery(40., charged(97., false)), &settings)
+            .is_empty());
+        assert!(engine
+            .check(&with_battery(1000., charged(100., true)), &settings)
+            .is_empty());
+        // Unplugging ends the session; the next full charge alerts again.
+        assert!(engine
+            .check(&with_battery(1010., battery(90., true)), &settings)
+            .is_empty());
+        assert!(
+            engine
+                .check(&with_battery(1020., charged(100., true)), &settings)
+                .len()
+                == 1
+        );
+    }
+
+    #[test]
+    fn battery_charged_stays_quiet_when_it_starts_full() {
+        let settings = Settings {
+            alert_battery_full_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(
+            engine
+                .check(&with_battery(0., charged(100., true)), &settings)
+                .is_empty(),
+            "already full at launch"
+        );
+        assert!(engine
+            .check(&with_battery(10., charged(100., true)), &settings)
+            .is_empty());
+        // Unplugged and charged again: that is a real charge.
+        assert!(engine
+            .check(&with_battery(20., battery(90., true)), &settings)
+            .is_empty());
+        assert_eq!(
+            engine
+                .check(&with_battery(30., charged(100., true)), &settings)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn battery_charged_accepts_the_limit_macos_reports() {
+        let settings = Settings {
+            alert_battery_full_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(engine
+            .check(&with_battery(0., charged(78., false)), &settings)
+            .is_empty());
+        let alerts = engine.check(&with_battery(10., charged(80., true)), &settings);
+        assert_eq!(alerts.len(), 1, "held at an 80 % limit counts as charged");
+        assert!(
+            engine
+                .check(&with_battery(20., charged(80., true)), &settings)
+                .is_empty(),
+            "the limit does not repeat"
+        );
+    }
+
+    #[test]
+    fn battery_charged_ignores_battery_power_switch_off_and_no_battery() {
+        let settings = Settings {
+            alert_battery_full_enabled: true,
+            ..Settings::default()
+        };
+        let mut engine = AlertEngine::new();
+        assert!(
+            engine
+                .check(&with_battery(0., battery(100., true)), &settings)
+                .is_empty(),
+            "on battery"
+        );
+        assert!(
+            engine
+                .check(&with_battery(1., BatteryStats::default()), &settings)
+                .is_empty(),
+            "no battery"
+        );
+        assert!(
+            engine
+                .check(&with_battery(2., charged(100., true)), &Settings::default())
+                .is_empty(),
+            "off by default"
+        );
+        // Switching it on while already full is not a new charge.
+        assert!(engine
+            .check(&with_battery(3., charged(100., true)), &settings)
+            .is_empty());
+        engine.check(&with_battery(4., battery(50., true)), &settings);
+        assert_eq!(
+            engine
+                .check(&with_battery(5., charged(100., true)), &settings)
+                .len(),
+            1
+        );
+    }
+
+    fn internal_disk(id: &str, health: Health) -> Device {
+        Device {
+            id: id.into(),
+            name: format!("Disk {id}"),
+            internal: Some(true),
+            smart: crate::disks::Smart {
+                health,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn disk_health_alerts_once_when_an_internal_disk_turns_failing() {
+        let mut watch = DiskHealth::default();
+        assert!(watch
+            .check(0., true, &[internal_disk("disk0", Health::Passed)])
+            .is_empty());
+        let alerts = watch.check(30., true, &[internal_disk("disk0", Health::Failed)]);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].metric, "disk_health:disk0");
+        assert!(
+            alerts[0].message.contains("Disk disk0"),
+            "{}",
+            alerts[0].message
+        );
+        for at in [60., 90., 5000.] {
+            assert!(
+                watch
+                    .check(at, true, &[internal_disk("disk0", Health::Failed)])
+                    .is_empty(),
+                "no repeat at {at}"
+            );
+        }
+        // An unreadable status keeps the last verdict instead of repeating it.
+        assert!(watch
+            .check(6000., true, &[internal_disk("disk0", Health::Unavailable)])
+            .is_empty());
+        assert!(watch
+            .check(6030., true, &[internal_disk("disk0", Health::Failed)])
+            .is_empty());
+        // Recovering and failing again is a new state change.
+        assert!(watch
+            .check(7000., true, &[internal_disk("disk0", Health::Passed)])
+            .is_empty());
+        assert_eq!(
+            watch
+                .check(7030., true, &[internal_disk("disk0", Health::Failed)])
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn disk_health_skips_healthy_unknown_external_and_switched_off() {
+        let mut watch = DiskHealth::default();
+        let mut external = internal_disk("disk4", Health::Failed);
+        external.internal = Some(false);
+        let mut unknown = internal_disk("disk5", Health::Failed);
+        unknown.internal = None;
+        let devices = [
+            internal_disk("disk0", Health::Passed),
+            internal_disk("disk1", Health::Unsupported),
+            internal_disk("disk2", Health::Unavailable),
+            external,
+            unknown,
+        ];
+        assert!(watch.check(0., true, &devices).is_empty());
+        let failing = [internal_disk("disk0", Health::Failed)];
+        assert!(
+            watch.check(1., false, &failing).is_empty(),
+            "off by default"
+        );
+        // Switched on with a disk already failing: worth one alert.
+        assert_eq!(watch.check(2., true, &failing).len(), 1);
+        let two = [
+            internal_disk("disk0", Health::Failed),
+            internal_disk("disk1", Health::Failed),
+        ];
+        let alerts = watch.check(3., true, &two);
+        assert_eq!(alerts.len(), 1, "only the new failure");
+        assert_eq!(alerts[0].metric, "disk_health:disk1");
+    }
+
+    #[test]
+    fn disk_health_is_off_by_default_in_the_engine() {
+        let mut engine = AlertEngine::new();
+        assert!(engine.check(&snapshot(0.), &Settings::default()).is_empty());
+        let settings = Settings {
+            alert_disk_health_enabled: true,
+            ..Settings::default()
+        };
+        assert!(
+            engine.check(&snapshot(1.), &settings).is_empty(),
+            "no inventory, no alert"
+        );
+    }
+
+    #[test]
+    fn cpu_disk_and_network_alerts_name_the_top_app() {
+        let settings = settings();
+        let top_label = crate::locale::text("Top app", "Mest aktive app");
+        let top = format!("{top_label}: Xcode");
+        let mut engine = AlertEngine::new();
+        let mut s = snapshot(0.);
+        s.cpu_pct = 95.;
+        s.disk.read_rate = 450e6;
+        s.net.rate_in = 90e6;
+        s.apps = vec![
+            crate::processes::AppGroup {
+                key: "a".into(),
+                name: "Quiet".into(),
+                cpu_pct: 5.,
+                disk_read_rate: 1e6,
+                net_in_rate: 1e6,
+                ..Default::default()
+            },
+            crate::processes::AppGroup {
+                key: "b".into(),
+                name: "Xcode".into(),
+                cpu_pct: 93.,
+                disk_write_rate: 400e6,
+                net_out_rate: 80e6,
+                ..Default::default()
+            },
+        ];
+        engine.check(&s, &settings);
+        s.at = 20.;
+        let cpu = engine.check(&s, &settings);
+        assert!(cpu[0].message.ends_with(&top), "{}", cpu[0].message);
+        s.at = 30.;
+        let io = engine.check(&s, &settings);
+        assert_eq!(io.len(), 2);
+        assert!(
+            io.iter().all(|alert| alert.message.ends_with(&top)),
+            "{:?}",
+            io.iter().map(|a| &a.message).collect::<Vec<_>>()
+        );
+        // Without any app using it, the text is as before.
+        let mut s = snapshot(1000.);
+        s.cpu_pct = 95.;
+        let mut engine = AlertEngine::new();
+        engine.check(&s, &settings);
+        s.at = 1020.;
+        assert!(!engine.check(&s, &settings)[0].message.contains(top_label));
     }
 
     #[test]
