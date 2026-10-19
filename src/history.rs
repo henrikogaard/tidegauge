@@ -201,14 +201,22 @@ fn app_id(
     ts: f64,
 ) -> Option<i64> {
     if let Some((id, seen)) = ids.get_mut(name) {
-        if ts - *seen >= SEEN_EVERY_SECS || ts < *seen {
-            let _ = c.execute(
-                "UPDATE apps SET last_seen=? WHERE id=?",
-                rusqlite::params![ts, *id],
-            );
-            *seen = ts;
+        if ts - *seen < SEEN_EVERY_SECS && ts >= *seen {
+            return Some(*id);
         }
-        return Some(*id);
+        // The row may have been pruned (or its id given to another app) since
+        // the id was cached: a refresh that matches no row means look it up again.
+        let touched = c
+            .execute(
+                "UPDATE apps SET last_seen=? WHERE id=? AND name=?",
+                rusqlite::params![ts, *id, name],
+            )
+            .unwrap_or(0);
+        if touched > 0 {
+            *seen = ts;
+            return Some(*id);
+        }
+        ids.remove(name);
     }
     c.execute(
         "INSERT OR IGNORE INTO apps(name, last_seen) VALUES(?, ?)",
@@ -603,6 +611,53 @@ mod tests {
             mem_bytes: Some(2.),
         });
         assert!(watched.contains(&"watched".to_string()));
+    }
+
+    #[test]
+    fn an_app_pruned_and_seen_again_keeps_its_samples_visible() {
+        let c = fresh();
+        let mut ids = HashMap::new();
+        let start = 1_800_000_000.0_f64;
+        let mut s = Snapshot {
+            at: start,
+            ..Snapshot::default()
+        };
+        s.apps = vec![app("Other", 5, 1.), app("Editor", 5, 1.)];
+        record_on(&c, &mut ids, &s, Pins::default());
+        // Thirty-one days later only Other is seen and upkeep prunes Editor.
+        let later = start + 31. * 86400.;
+        s.at = later;
+        s.apps = vec![app("Other", 5, 1.)];
+        record_on(&c, &mut ids, &s, Pins::default());
+        maintain(&c, later).unwrap();
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM apps WHERE name='Editor'"),
+            0
+        );
+        // A new app takes over Editor's freed id, then Editor returns while the
+        // writer still caches the old id.
+        s.at = later + 10.;
+        s.apps = vec![app("Third", 3, 1.)];
+        record_on(&c, &mut ids, &s, Pins::default());
+        s.at = later + 20.;
+        s.apps = vec![
+            app("Editor", 7, 2.),
+            app("Third", 3, 1.),
+            app("Other", 5, 1.),
+        ];
+        record_on(&c, &mut ids, &s, Pins::default());
+        let mem = |name: &str| -> Option<f64> {
+            c.query_row(
+                "SELECT mem FROM app_metric WHERE app=? AND ts=?",
+                rusqlite::params![name, later + 20.],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(mem("Editor"), Some(7.));
+        assert_eq!(mem("Third"), Some(3.));
+        assert_eq!(mem("Other"), Some(5.));
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM apps"), 3);
     }
 
     #[test]
