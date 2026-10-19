@@ -6,12 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.4.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.1) — 2026-10-19
+
 ### Added
 
 - An About section at the end of Settings shows the app icon, version and
   build, Check for Updates, and links to the project, the author, Buy me a
   coffee and the license. The version and update check moved there from
-  General, and the menu-bar menu has an About Tidegauge item that opens it.
+  General, and the menu-bar menu has an About Tidegauge item that opens it
+  ([#96](https://github.com/henrikogaard/tidegauge/pull/96)).
+
 ### Changed
 
 - The history database is about a tenth of its size. App names are stored once,
@@ -26,9 +30,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Settings are read from memory for a quarter of a second at a time instead of
   from disk on every request while the window draws; a change from another
   process or a save shows at once.
-- The release binary is stripped of symbols, about 4 MB smaller.
-### Changed
-
+- The release binary is stripped of symbols, about 4 MB smaller
+  ([#97](https://github.com/henrikogaard/tidegauge/pull/97)).
 - Tidegauge samples less when nothing is watching. With no window or panel
   open, the process list, apps and agents refresh every 8 seconds instead of
   every 2, and the slow probes rest unless a page or an alert needs them:
@@ -42,7 +45,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   Claude Code session files are read once instead of every sample, and a
   hidden or minimized window no longer redraws. Alerts keep working with every
   window closed. History's busiest-by-network list is coarser while the
-  Network page is closed.
+  Network page is closed. A window on another Space or fully covered counts as
+  hidden ([#98](https://github.com/henrikogaard/tidegauge/pull/98)).
 
 ## [0.4.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.4.0) — 2026-10-19
 
