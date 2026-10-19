@@ -59,6 +59,14 @@ pub struct Settings {
     pub favorite_metrics: Vec<String>,
     /// The tiles in the menu-bar panel, in order; any of `PANEL_TILES`.
     pub panel_tiles: Vec<String>,
+    /// Show the AI plans section in the menu-bar panel. Plans that are not
+    /// updating are left out whatever this says.
+    pub panel_show_plans: bool,
+    /// Show the Busiest apps section in the menu-bar panel.
+    pub panel_show_apps: bool,
+    /// App CPU as a share of one core (100 % is one full core, like Activity
+    /// Monitor) instead of a share of the whole Mac.
+    pub app_cpu_per_core: bool,
     pub compact_dashboard: bool,
     /// The app's language: "en", "nb", or `None` to follow macOS.
     pub language: Option<String>,
@@ -101,6 +109,9 @@ impl Default for Settings {
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
             panel_tiles: DEFAULT_PANEL_TILES.iter().map(|s| (*s).into()).collect(),
+            panel_show_plans: true,
+            panel_show_apps: true,
+            app_cpu_per_core: false,
             compact_dashboard: false,
             language: None,
             panel_shortcut: None,
@@ -388,6 +399,17 @@ mod tests {
         assert_eq!(settings.dark, Some(true));
         assert_eq!(settings.alert_cpu_pct, 73.);
         assert_eq!(settings.menu_items[0].style, "value");
+    }
+
+    #[test]
+    fn old_settings_files_get_the_panel_section_and_app_cpu_defaults() {
+        let settings: Settings = serde_json::from_str(r#"{"panel_tiles":["cpu"],"dark":false}"#).unwrap();
+        assert!(settings.panel_show_plans);
+        assert!(settings.panel_show_apps);
+        assert!(!settings.app_cpu_per_core, "a share of the whole Mac unless chosen otherwise");
+        assert_eq!(settings.panel_tiles, ["cpu"]);
+        let off: Settings = serde_json::from_str(r#"{"panel_show_plans":false,"app_cpu_per_core":true}"#).unwrap();
+        assert!(!off.panel_show_plans && off.panel_show_apps && off.app_cpu_per_core);
     }
 
     #[test]

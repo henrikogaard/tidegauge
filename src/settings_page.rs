@@ -296,6 +296,22 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             move |window, cx| set_language(&target, value, window, cx),
         ));
     }
+    let app_cpu = segment_group("app-cpu-options", l("App CPU shown as", "App-CPU vises som"), dark).children(
+        [(false, crate::app_cpu::AppCpu::new(1, false).unit()), (true, crate::app_cpu::AppCpu::new(1, true).unit())]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (per_core, label))| {
+                choice(
+                    format!("app-cpu-{i}"),
+                    label,
+                    format!("{}: {label}", l("App CPU shown as", "App-CPU vises som")),
+                    settings.app_cpu_per_core == per_core,
+                    dark,
+                    this.clone(),
+                    move |settings| settings.app_cpu_per_core = per_core,
+                )
+            }),
+    );
     let mut shortcut = segment_group("shortcut-options", l("Open the panel", "Åpne panelet"), dark);
     let choices = std::iter::once((None, l("Off", "Av"))).chain(crate::shortcut::CHOICES.iter().map(|c| (Some(c.0), c.1)));
     for (i, (value, label)) in choices.enumerate() {
@@ -330,6 +346,13 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
             row(l("Language", "Språk"), None, language, false, dark),
+            row(
+                l("App CPU shown as", "App-CPU vises som"),
+                Some(l("In every list of apps and processes. 100% of one core is what Activity Monitor shows.", "I alle lister over apper og prosesser. 100 % av én kjerne er det Aktivitetsmonitor viser.").to_string()),
+                app_cpu,
+                false,
+                dark,
+            ),
             row(
                 l("Open the panel", "Åpne panelet"),
                 Some(match crate::shortcut::label(settings.panel_shortcut.as_deref()) {
@@ -708,6 +731,30 @@ fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> 
             };
             row(label, None, control, i == 0, dark)
         })
+        .collect::<Vec<_>>();
+    // The two sections below the tiles. A plan that is not updating stays
+    // hidden whatever the first switch says.
+    let sections = [
+        (
+            "plans",
+            l("AI plans", "AI-abonnementer"),
+            Some(l("A plan that is not updating is left out", "Et abonnement som ikke oppdateres, skjules").to_string()),
+            settings.panel_show_plans,
+        ),
+        ("apps", l("Busiest apps", "Mest aktive apper"), None, settings.panel_show_apps),
+    ];
+    let rows = rows
+        .into_iter()
+        .chain(sections.into_iter().map(|(key, label, detail, on)| {
+            let control = preference_switch(format!("panel-section-{key}"), format!("{} {label}", l("Show in the panel:", "Vis i panelet:")), on, dark, this.clone(), move |s, on| {
+                if key == "plans" {
+                    s.panel_show_plans = on;
+                } else {
+                    s.panel_show_apps = on;
+                }
+            });
+            row(label, detail, control, false, dark)
+        }))
         .collect();
     group(l("Menu-bar panel", "Menylinjepanel"), rows, dark)
 }

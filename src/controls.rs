@@ -545,16 +545,23 @@ pub fn history_panel(
                 dark,
             ));
         } else {
-            let max =
-                values
-                    .iter()
-                    .copied()
-                    .fold(0., f64::max)
-                    .max(if !app && metric.unit(app) == "%" {
-                        100.
-                    } else {
-                        1.
-                    });
+            // An app's CPU is stored per core; it is shown in the unit chosen
+            // in Settings, like the app lists.
+            let app_cpu = (app && metric == Metric::Cpu).then(|| crate::app_cpu::AppCpu::chosen(view.snap.chip.cores));
+            let shown: Vec<Option<f64>> = match app_cpu {
+                Some(cpu) => data.values.iter().map(|v| v.map(|v| cpu.value(v))).collect(),
+                None => data.values.clone(),
+            };
+            let max = shown
+                .iter()
+                .flatten()
+                .copied()
+                .fold(0., f64::max)
+                .max(match app_cpu {
+                    Some(cpu) => cpu.value(100.),
+                    None if !app && metric.unit(app) == "%" => 100.,
+                    None => 1.,
+                });
             let samples = data.counts.iter().sum::<u64>();
             let format_value = |v| match metric.unit(app) {
                 "B" => crate::engine::fmt_bytes(v),
@@ -571,7 +578,7 @@ pub fn history_panel(
                         .child(sub(crate::locale::count(samples, "sample", "samples", "måling", "målinger")))
                         .child(sub(format_value(max))),
                 )
-                .child(history_chart(&data.values, max, accent, 180.))
+                .child(history_chart(&shown, max, accent, 180.))
                 .child(sub(format_value(0.)))
                 .child(
                     div()
@@ -594,7 +601,7 @@ pub fn history_panel(
             }
             let target = this.clone();
             panel = panel
-                .child(section_header(metric.label(app), metric.unit(app), dark))
+                .child(section_header(metric.label(app), app_cpu.map_or(metric.unit(app), |cpu| cpu.unit()), dark))
                 .child(plot)
                 .child(div().flex().child(button(
                     "history-export",

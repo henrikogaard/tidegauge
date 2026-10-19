@@ -1,6 +1,7 @@
 //! Apps & processes: every app with its helpers, sortable by CPU or memory,
 //! with confirmed Quit and Force Quit for anything you own.
 
+use crate::app_cpu::AppCpu;
 use crate::controls::{button, button_destructive, segment, segment_group};
 use crate::engine::{fmt_bytes, Snapshot};
 use crate::locale::text as l;
@@ -124,10 +125,10 @@ fn mono(text: impl Into<String>, dark: bool) -> Div {
 }
 
 const COL_PROCS: f32 = 92.;
-const COL_CPU: f32 = 72.;
+const COL_CPU: f32 = 112.;
 const COL_MEM: f32 = 88.;
 
-fn header_row(sort_cpu: bool, dark: bool) -> Div {
+fn header_row(sort_cpu: bool, cpu: AppCpu, dark: bool) -> Div {
     let cell = |text: &str, width: f32, active: bool| {
         div()
             .w(px(width))
@@ -149,7 +150,7 @@ fn header_row(sort_cpu: bool, dark: bool) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .child(div().flex_1().text_color(t::ink_dim(dark)).child(l("App", "App").to_uppercase()))
         .child(cell(l("PROCESSES", "PROSESSER"), COL_PROCS, false))
-        .child(cell("CPU", COL_CPU, sort_cpu))
+        .child(cell(cpu.column_header(), COL_CPU, sort_cpu))
         .child(cell(l("MEMORY", "MINNE"), COL_MEM, !sort_cpu))
         .child(div().w(px(16.)).flex_shrink_0())
 }
@@ -173,7 +174,7 @@ pub(crate) fn chrome(view: &TideGaugeView) -> crate::ui::PageChrome {
                 "The list keeps its order while the pointer is over it, so a click never lands on the wrong row.",
                 "Listen holder rekkefølgen mens pekeren er over den, så et klikk aldri treffer feil rad.",
             ),
-            l("CPU: 100% is one full core.", "CPU: 100 % er én hel kjerne."),
+            AppCpu::chosen(s.chip.cores).explanation(),
         ]
         .into_iter()
         .chain(view.process_recent.then(|| crate::tools_panel::about_notes(crate::tools_panel::Page::Activity)).into_iter().flatten())
@@ -186,6 +187,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let s = &view.snap;
     let remaining = remaining_pids(s);
     let sort_cpu = view.process_sort_cpu;
+    let cpu = AppCpu::chosen(s.chip.cores);
 
     // Three views of the same processes: every app, what an app left
     // running after it quit, and the last minute's activity per process.
@@ -348,11 +350,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         .pb_2()
         .px_2()
         .gap_0()
-        .child(header_row(sort_cpu, dark));
+        .child(header_row(sort_cpu, cpu, dark));
     for app in apps.into_iter().take(shown) {
         let expanded = view.expanded_process_group.as_deref() == Some(app.key.as_str());
         let value = if sort_cpu { app.cpu_pct } else { app.mem_bytes as f64 };
-        table = table.child(app_row(app, expanded, (value / max_value).clamp(0., 1.), sort_cpu, dark, this.clone()));
+        table = table.child(app_row(app, expanded, (value / max_value).clamp(0., 1.), sort_cpu, cpu, dark, this.clone()));
         if expanded {
             table = table.child(app_detail(view, app, &remaining, dark, this.clone()));
         }
@@ -378,7 +380,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     page.child(table)
 }
 
-fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, cpu: AppCpu, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
     let key = app.key.clone();
     let keyboard_key = key.clone();
     let keyboard = this.clone();
@@ -430,7 +432,7 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, dark: bool
                 .child(div().min_w_0().truncate().text_size(t::TEXT_ROW).when(expanded, |d| d.font_weight(FontWeight::SEMIBOLD)).child(app.name.clone())),
         )
         .child(div().w(px(COL_PROCS)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(app.pids.len().to_string()))
-        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(crate::locale::percent(app.cpu_pct, 1)))
+        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(cpu.format(app.cpu_pct)))
         .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(!sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
         .child(div().w(px(16.)).flex_shrink_0().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }))
         .on_click(move |_, _, cx| toggle(&this, &key, cx))
@@ -640,6 +642,7 @@ pub fn load_app_history(this: &Entity<TideGaugeView>, app: String, cx: &mut App)
 /// CPU and memory over the last hour, and a way into History for more.
 fn app_hour(view: &TideGaugeView, app: &AppGroup, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let data = view.app_history.as_ref().filter(|h| h.app == app.name).and_then(|h| h.data.as_ref());
+    let cpu = AppCpu::chosen(view.snap.chip.cores);
     let chart = |label: &str, values: &[Option<f64>], color: Hsla, format: &dyn Fn(f64) -> String, floor: f64| {
         let peak = values.iter().flatten().copied().fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))));
         div()
@@ -660,10 +663,18 @@ fn app_hour(view: &TideGaugeView, app: &AppGroup, dark: bool, this: Entity<TideG
             .child(crate::controls::history_chart(values, peak.unwrap_or(0.).max(floor), color, 44.))
     };
     let body = match data {
-        Some(Ok((cpu, mem))) if cpu.values.iter().chain(&mem.values).any(Option::is_some) => div()
+        Some(Ok((cpu_hour, mem))) if cpu_hour.values.iter().chain(&mem.values).any(Option::is_some) => div()
             .flex()
             .gap_4()
-            .child(chart(l("CPU · last hour", "CPU · siste time"), &cpu.values, Metric::Cpu.accent(dark), &|v| crate::locale::percent(v, 1), 100.))
+            // History keeps the raw per-core figure; the chart shows the
+            // unit chosen in Settings, with one core as its lowest top.
+            .child(chart(
+                l("CPU · last hour", "CPU · siste time"),
+                &cpu_hour.values.iter().map(|v| v.map(|v| cpu.value(v))).collect::<Vec<_>>(),
+                Metric::Cpu.accent(dark),
+                &AppCpu::display,
+                cpu.value(100.),
+            ))
             .child(chart(l("Memory · last hour", "Minne · siste time"), &mem.values, Metric::Memory.accent(dark), &|v| fmt_bytes(v), 1.)),
         Some(Ok(_)) => sub(l("Nothing recorded for this app in the last hour. History records every ten seconds or so.", "Ingenting registrert for denne appen den siste timen. Historikken registrerer omtrent hvert tiende sekund.")).text_color(t::ink_dim(dark)),
         Some(Err(error)) => sub(error.clone()).text_color(t::ink_dim(dark)),
@@ -824,7 +835,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
                     )
                     .child(mono(short_path(p, bundle), dark)),
             )
-            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(crate::locale::percent(p.cpu_pct, 1)))
+            .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(AppCpu::chosen(view.snap.chip.cores).format(p.cpu_pct)))
             .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(fmt_bytes(p.mem_bytes as f64)))
             // Same trailing slot as the app row's chevron, so columns line up.
             .child(div().w(px(16.)).flex_shrink_0()),

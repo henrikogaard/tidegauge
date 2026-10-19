@@ -232,7 +232,7 @@ pub(crate) fn about_notes(page: Page) -> Vec<&'static str> {
             l("Partial inventory of legacy launch registrations. A file is not proof of approval or a running process. Modern app background items and managed items belong in System Settings.", "Delvis oversikt over eldre oppstartsregistreringer. En fil beviser ikke godkjenning eller at prosessen kjører. Moderne bakgrunnselementer og administrerte elementer håndteres i Systeminnstillinger."),
         ],
         Page::Activity => vec![
-            l("Time-weighted activity over up to 60 observed seconds per process. CPU: 100% is one core. No energy score or battery-drain estimate. New, missing or reset counters remain unavailable.", "Tidsvektet aktivitet over inntil 60 observerte sekunder per prosess. CPU: 100 % er én kjerne. Ingen energipoeng eller anslag for batteriforbruk. Nye, manglende eller nullstilte tellere vises som utilgjengelige."),
+            l("Time-weighted activity over up to 60 observed seconds per process. No energy score or battery-drain estimate. New, missing or reset counters remain unavailable.", "Tidsvektet aktivitet over inntil 60 observerte sekunder per prosess. Ingen energipoeng eller anslag for batteriforbruk. Nye, manglende eller nullstilte tellere vises som utilgjengelige."),
             l("Interrupt wakeups are reported kernel counts, not energy use. Package-idle wakeups remain unvalidated and unavailable. Denied or new counters show a dash.", "Avbruddsoppvåkninger er rapporterte kjernetellere, ikke energibruk. Oppvåkninger fra pakkehvile er fortsatt uvaliderte og utilgjengelige. Nye tellere eller tellere uten tilgang vises med en strek."),
             l("System processes may deny access. The list is limited to 8,192 sampled processes; the top 80 are shown.", "Systemprosesser kan nekte tilgang. Listen er begrenset til 8 192 målte prosesser; de 80 øverste vises."),
         ],
@@ -638,6 +638,7 @@ pub(crate) fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeV
         ));
     }
     let dash = || String::from("—");
+    let cpu = crate::app_cpu::AppCpu::chosen(view.snap.chip.cores);
     let cell = |width: f32, value: String| {
         div()
             .w(px(width))
@@ -663,7 +664,7 @@ pub(crate) fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeV
             .text_color(t::ink_dim(dark))
             .child(div().flex_1().child(l("Process", "Prosess").to_uppercase()))
             .child(cell(56., "PID".into()))
-            .child(cell(64., "CPU".into()))
+            .child(cell(112., cpu.column_header().into()))
             .child(cell(100., l("Disk I/O", "Diskaktivitet").to_uppercase()))
             .child(cell(116., l("Wakeups/s", "Oppvåkninger/s").to_uppercase())),
     );
@@ -688,7 +689,7 @@ pub(crate) fn activity(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeV
             Some(meta),
             vec![
                 cell(56., r.pid.to_string()),
-                cell(64., r.cpu.map(|v| crate::locale::percent(v, 1)).unwrap_or_else(dash)),
+                cell(112., r.cpu.map(|v| cpu.format(v)).unwrap_or_else(dash)),
                 cell(100., r.io.map(crate::engine::fmt_rate).unwrap_or_else(dash)),
                 cell(116., r.interrupt_wakeups.map(|v| crate::locale::number(v, 1)).unwrap_or_else(dash)),
             ],

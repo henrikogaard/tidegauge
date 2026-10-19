@@ -147,7 +147,10 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
         crate::statusbar::SHOW_ITEM_MENU.store(true, std::sync::atomic::Ordering::SeqCst);
         return;
     };
-    let (width, height) = (crate::menu_panel::WIDTH as f64, crate::menu_panel::height() as f64);
+    // Decided now and handed to the panel, so the window's size and what it
+    // draws always agree.
+    let layout = crate::menu_panel::Layout::now();
+    let (width, height) = (crate::menu_panel::WIDTH as f64, layout.height() as f64);
     let left = (anchor.left + anchor.width / 2. - width / 2.).clamp(8., (anchor.display_width - width - 8.).max(8.));
     let bounds = Bounds::new(
         point(px(left as f32), px((anchor.bottom + 6.) as f32)),
@@ -165,7 +168,7 @@ pub fn toggle_popover(main: gpui_kit::Entity<crate::ui::TideGaugeView>, cx: &mut
             window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main)),
+        |window, cx| cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main, layout)),
     );
     match opened {
         Ok(handle) => *POPOVER.lock().unwrap() = Some(handle.into()),

@@ -1355,8 +1355,8 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
         ],
         Tab::Cpu => vec![
             l(
-                "App CPU: 100% is one full core, so a busy app can show more than 100%.",
-                "App-CPU: 100 % er én hel kjerne, så en travel app kan vise mer enn 100 %.",
+                "App CPU is a share of the whole Mac. Settings can show it per core instead, where 100% is one full core and a busy app can show more.",
+                "App-CPU er en andel av hele Macen. Innstillinger kan vise den per kjerne i stedet, der 100 % er én hel kjerne og en travel app kan vise mer.",
             ),
             l("Chip, SSD and battery come from the sensors macOS names itself. The channel list is the SMC's own; its codes are the hardware's, and some are not temperatures.", "Brikke, SSD og batteri kommer fra sensorene macOS selv navngir. Kanallisten er SMC-ens egen; kodene er maskinvarens, og noen er ikke temperaturer."),
             l("Native channel identifiers are preserved; locations vary by model. Missing or stale readings are never treated as zero. macOS retains automatic fan control.", "Opprinnelige kanalnavn beholdes; plassering varierer med modell. Manglende eller utdaterte målinger behandles aldri som null. macOS beholder automatisk viftekontroll."),
@@ -2311,6 +2311,7 @@ fn busiest_apps(s: &Snapshot, height: f32, rows: usize, dark: bool, this: Entity
     let color = Metric::Cpu.accent(dark);
     let mut top: Vec<&AppGroup> = s.apps.iter().filter(|a| a.cpu_pct > 0.).collect();
     top.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
+    let cpu = crate::app_cpu::AppCpu::chosen(s.chip.cores);
     let keyboard = this.clone();
     div()
         .id("overview-busiest")
@@ -2380,7 +2381,7 @@ fn busiest_apps(s: &Snapshot, height: f32, rows: usize, dark: bool, this: Entity
                                 .flex_shrink_0()
                                 .text_size(t::TEXT_SMALL)
                                 .text_color(t::ink_dim(dark))
-                                .child(fmt_pct(app.cpu_pct)),
+                                .child(cpu.format(app.cpu_pct)),
                         )
                 })),
         )
@@ -2505,6 +2506,7 @@ fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeV
     let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
     rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap());
     let max = rows.first().map(|a| a.cpu_pct).unwrap_or(1.0).max(1.0);
+    let cpu_unit = crate::app_cpu::AppCpu::chosen(s.chip.cores);
     div()
         .flex()
         .flex_col()
@@ -2556,10 +2558,10 @@ fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeV
         .when_some(cores_card(s, dark), |d, c| d.child(c))
         .child(section_header(
             l("Apps · highest usage first", "Apper · høyest bruk først"),
-            l("CPU · 100% per core", "CPU · 100 % per kjerne"),
+            cpu_unit.qualifier(),
             dark,
         ))
-        .child(top_apps(rows.iter().copied(), |a| (fmt_pct(a.cpu_pct), a.cpu_pct), max, m.accent(dark), true, dark, this.clone()))
+        .child(top_apps(rows.iter().copied(), |a| (cpu_unit.format(a.cpu_pct), a.cpu_pct), max, m.accent(dark), true, dark, this.clone()))
         .child(sensor_panel(s, dark, open_sensors, this))
 }
 
