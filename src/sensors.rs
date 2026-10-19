@@ -90,6 +90,7 @@ pub fn start() {
         std::thread::Builder::new()
             .name("tidegauge-sensors".into())
             .spawn(move || {
+                crate::demand::utility_thread();
                 let mut known_keys = Vec::new();
                 let mut next_key = 0;
                 let mut key_count = None;
@@ -101,13 +102,17 @@ pub fn start() {
                             let (cursor, count) = resume_cursor(key_count, next_key, fresh_count);
                             smc.next_key = cursor;
                             smc.key_count = count;
-                            let opened = Instant::now();
-                            while opened.elapsed() < Duration::from_secs(60) {
+                            // One connection serves until the Mac sleeps or a
+                            // read fails; reopening on a timer only costs.
+                            let mut failing = 0;
+                            loop {
                                 let before = (std::time::SystemTime::now(), Instant::now());
-                                let mut sample = smc.sample();
+                                let raw = crate::demand::current().raw_sensors();
+                                let mut sample = smc.sample(raw);
+                                failing = if matches!(sample.source, SourceState::Ready) { 0 } else { failing + 1 };
                                 sample.named = crate::named_sensors::read();
                                 *out.lock().unwrap() = sample;
-                                std::thread::sleep(Duration::from_secs(2));
+                                wait_for_next_sample(raw);
                                 // After sleep, start over with fresh connections
                                 // rather than trust ones opened before it.
                                 if slept(before.0.elapsed().unwrap_or_default(), before.1.elapsed()) {
@@ -115,6 +120,10 @@ pub fn start() {
                                     // hide it until a new one arrives.
                                     out.lock().unwrap().collected_at = None;
                                     crate::named_sensors::reset();
+                                    break;
+                                }
+                                // Reads that keep failing get a fresh connection.
+                                if failing >= 15 {
                                     break;
                                 }
                             }
@@ -156,6 +165,18 @@ pub fn start() {
             .expect("sensor worker");
         state
     });
+}
+
+/// Sleep until the next sample is due: two seconds, or at once when the CPU
+/// page has just opened and wants the raw channels.
+fn wait_for_next_sample(raw: bool) {
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(250));
+        if !raw && crate::demand::current().raw_sensors() {
+            return;
+        }
+    }
 }
 
 #[repr(C)]
@@ -208,6 +229,9 @@ extern "C" {
 /// because the controller enumerates keys in ASCII order.
 const MAX_TEMPERATURE_KEYS: usize = 512;
 
+/// A fan's lowest and highest speed.
+type FanLimits = (Option<f64>, Option<f64>);
+
 struct Smc {
     connection: u32,
     info: HashMap<u32, Option<KeyInfo>>,
@@ -216,6 +240,8 @@ struct Smc {
     key_count: Option<u32>,
     inventory_limited: bool,
     transport_error: Cell<Option<i32>>,
+    /// Fan limits do not change while the Mac runs; read once per fan count.
+    fan_limits: Option<(u8, Vec<FanLimits>)>,
 }
 
 fn resume_cursor(
@@ -262,6 +288,7 @@ impl Smc {
                 key_count: None,
                 inventory_limited: false,
                 transport_error: Cell::new(None),
+                fan_limits: None,
             })
         }
     }
@@ -308,6 +335,27 @@ impl Smc {
         let info = self.key_info(key)?;
         self.call(key, ReadCommand::Value, 0, info)
             .map(|out| (info, out.bytes))
+    }
+
+    /// Each fan's lowest and highest speed, read once and kept while the fan
+    /// count stays and every limit was reported.
+    fn limits_of(&mut self, count: u8, key: impl Fn(u8, &[u8; 2]) -> [u8; 4]) -> Vec<FanLimits> {
+        if let Some((cached_for, limits)) = &self.fan_limits {
+            if *cached_for == count {
+                return limits.clone();
+            }
+        }
+        let limits: Vec<_> = (0..count)
+            .map(|index| {
+                let mut limit = |kind: &[u8; 2]| self.read(fcc(&key(index, kind))).and_then(|(info, bytes)| decode_fan(info, &bytes));
+                (limit(b"Mn"), limit(b"Mx"))
+            })
+            .collect();
+        self.fan_limits = limits
+            .iter()
+            .all(|(min, max)| min.is_some() && max.is_some())
+            .then(|| (count, limits.clone()));
+        limits
     }
 
     fn read_key_count(&mut self) -> Option<u32> {
@@ -375,22 +423,29 @@ impl Smc {
         self.temperature_keys.sort_unstable();
     }
 
-    fn sample(&mut self) -> SensorSnapshot {
+    /// One reading. The raw temperature channels, a few hundred keys, are read
+    /// only when `raw` is set (the CPU page lists them); fans always are.
+    fn sample(&mut self, raw: bool) -> SensorSnapshot {
         let collected_at = Instant::now();
         self.transport_error.set(None);
-        self.discover();
-        let temperatures = self
-            .temperature_keys
-            .clone()
-            .into_iter()
-            .map(|key| Reading {
-                key: String::from_utf8_lossy(&key.to_be_bytes()).into_owned(),
-                value: self
-                    .read(key)
-                    .and_then(|(info, bytes)| decode(info, &bytes))
-                    .filter(|v| valid_temperature(*v)),
-            })
-            .collect();
+        if raw {
+            self.discover();
+        }
+        let temperatures = if raw {
+            self.temperature_keys
+                .clone()
+                .into_iter()
+                .map(|key| Reading {
+                    key: String::from_utf8_lossy(&key.to_be_bytes()).into_owned(),
+                    value: self
+                        .read(key)
+                        .and_then(|(info, bytes)| decode(info, &bytes))
+                        .filter(|v| valid_temperature(*v)),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let fan_count = self.read(fcc(b"FNum")).and_then(|(info, bytes)| {
             (info.data_type == fcc(b"ui8 ") && info.size == 1 && bytes[0] <= 16).then_some(bytes[0])
         });
@@ -406,12 +461,7 @@ impl Smc {
                 }
             })
             .collect();
-        let fan_limits = (0..fan_count.unwrap_or(0))
-            .map(|index| {
-                let mut limit = |kind: &[u8; 2]| self.read(fcc(&fan_key(index, kind))).and_then(|(info, bytes)| decode_fan(info, &bytes));
-                (limit(b"Mn"), limit(b"Mx"))
-            })
-            .collect();
+        let fan_limits = self.limits_of(fan_count.unwrap_or(0), fan_key);
         SensorSnapshot {
             source: match self.transport_error.get() {
                 Some(code) if matches!(code as u32, 0xe00002c1 | 0xe00002e2) => SourceState::Denied,
@@ -423,9 +473,12 @@ impl Smc {
             fan_limits,
             fan_count,
             collected_at: Some(collected_at),
-            discovering: self
-                .key_count
-                .is_some_and(|count| self.next_key < count.min(8192)),
+            // Not reading the channels now counts as still discovering, so the
+            // CPU page says so for the moment before they arrive.
+            discovering: !raw
+                || self
+                    .key_count
+                    .is_some_and(|count| self.next_key < count.min(8192)),
             inventory_limited: self.inventory_limited,
             named: Vec::new(),
         }
@@ -644,9 +697,9 @@ mod tests {
         match Smc::open() {
             Ok(mut smc) => {
                 let started = Instant::now();
-                let mut snapshot = smc.sample();
+                let mut snapshot = smc.sample(true);
                 while snapshot.discovering && started.elapsed() < Duration::from_secs(30) {
-                    snapshot = smc.sample();
+                    snapshot = smc.sample(true);
                 }
                 println!("{snapshot:#?}");
                 println!(

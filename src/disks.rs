@@ -184,10 +184,24 @@ pub fn start() {
         let out = state.clone();
         std::thread::Builder::new()
             .name("tidegauge-disk-inventory".into())
-            .spawn(move || loop {
-                let sample = collect();
-                *out.lock().unwrap() = sample;
-                std::thread::sleep(Duration::from_secs(30));
+            .spawn(move || {
+                crate::demand::utility_thread();
+                // Once at start; after that as often as the Disk page or the
+                // disk-health alert asks.
+                let mut last: Option<Instant> = None;
+                loop {
+                    let due = match (last, crate::demand::current().inventory_period()) {
+                        (None, _) => true,
+                        (Some(at), Some(period)) => at.elapsed() >= period,
+                        (Some(_), None) => false,
+                    };
+                    if due {
+                        let sample = collect();
+                        *out.lock().unwrap() = sample;
+                        last = Some(Instant::now());
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
             })
             .expect("disk inventory worker");
         state
@@ -198,6 +212,7 @@ pub fn start() {
         std::thread::Builder::new()
             .name("tidegauge-disk-io".into())
             .spawn(move || {
+                crate::demand::utility_thread();
                 let mut previous = HashMap::new();
                 loop {
                     let mut next = HashMap::new();

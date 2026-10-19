@@ -7,7 +7,7 @@ use crate::engine::{engine, Alert};
 use crate::settings::Settings;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Latest un-notified alerts, drained by the UI/notification layer.
 static ALERTS: OnceLock<Mutex<Vec<Alert>>> = OnceLock::new();
@@ -45,25 +45,27 @@ fn still_enabled(metric: &str, settings: &Settings) -> bool {
     }
 }
 
-/// Background sampler: process/audio/projects every ~2s; BT every ~20s
-/// (system_profiler is expensive); history write every ~10s.
+/// Background sampler: light metrics every ~2s; the process list, projects
+/// and agents every 2s while a window or the panel is open and every ~8s
+/// otherwise; Bluetooth, `nettop`, `lsof` and `diskutil` at the pace
+/// `crate::demand` asks for; history write every ~10s.
 pub fn start_sampler() {
     thread::Builder::new()
         .name("tidegauge-sampler".into())
         .spawn(move || {
+            crate::demand::utility_thread();
             let eng = engine();
             let mut alerts = AlertEngine::new();
-            let mut bt = crate::engine::BtInfo::default();
             let mut tick = 0u64;
             loop {
+                let started = Instant::now();
                 let settings = Settings::load();
+                crate::demand::set_alerts(settings.alert_network_enabled, settings.alert_disk_health_enabled);
                 let procs_audio = crate::audio::audio_processes();
-                if tick % 10 == 0 {
-                    bt = crate::bluetooth::bt_info();
-                }
+                let bt = crate::bluetooth::bt_info(crate::demand::current().bluetooth_period());
                 {
                     let mut e = eng.lock().unwrap();
-                    e.sample(procs_audio, bt.clone());
+                    e.sample(procs_audio, bt);
                     crate::engine::publish(&e.snap);
                     let new_alerts = alerts.check(&e.snap, &settings);
                     if !new_alerts.is_empty() {
@@ -78,11 +80,14 @@ pub fn start_sampler() {
                     }
                     tick += 1;
                 }
-                thread::sleep(Duration::from_millis(2000));
+                // A steady 2 s from the start of one pass to the next.
+                thread::sleep(TICK.saturating_sub(started.elapsed()));
             }
         })
         .expect("sampler thread");
 }
+
+const TICK: Duration = Duration::from_millis(2000);
 
 /// Called once per UI frame-pump (~500ms) from main: applies toggles and
 /// pushes fresh numbers into the menu bar.

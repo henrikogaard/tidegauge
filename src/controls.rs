@@ -849,7 +849,7 @@ fn app_volume_action(this: &Entity<TideGaugeView>, cx: &mut App, action: impl Fn
             let (result, levels) = smol::unblock(move || (action(), crate::app_volume::levels())).await;
             let _ = this.update(cx, |view, cx| {
                 view.audio_error = result.err();
-                view.snap.audio.levels = levels;
+                std::sync::Arc::make_mut(&mut view.snap).audio.levels = levels;
                 cx.notify();
             });
         })
@@ -878,15 +878,16 @@ fn audio_action(
             let _ = this.update(cx, |view, cx| {
                 view.audio_pending = false;
                 view.audio_error = result.err();
-                view.snap.audio.output_id = output.id;
-                view.snap.audio.device_name = output.name;
-                view.snap.audio.device_volume = output.volume;
-                view.snap.audio.device_muted = output.muted;
-                view.snap.audio.can_volume = output.can_volume;
-                view.snap.audio.can_mute = output.can_mute;
-                view.snap.audio.input = input;
-                view.snap.audio.outputs = outputs;
-                view.snap.audio.inputs = inputs;
+                let audio = &mut std::sync::Arc::make_mut(&mut view.snap).audio;
+                audio.output_id = output.id;
+                audio.device_name = output.name;
+                audio.device_volume = output.volume;
+                audio.device_muted = output.muted;
+                audio.can_volume = output.can_volume;
+                audio.can_mute = output.can_mute;
+                audio.input = input;
+                audio.outputs = outputs;
+                audio.inputs = inputs;
                 cx.notify();
             });
         })

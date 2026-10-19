@@ -363,7 +363,7 @@ pub fn classify(p: &ProcInfo, args: &dyn Fn(i32) -> Option<Vec<String>>) -> Opti
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct ClaudeSessionFile {
     pid: i32,
     cwd: Option<String>,
@@ -406,6 +406,11 @@ fn same_start(proc_start: &str, start_unix: f64) -> bool {
         .any(|stamp| same_words(proc_start, &stamp))
 }
 
+/// Session files by path, each parsed again only when its modification time
+/// changes (`None` for a file that did not parse).
+type SessionCache = HashMap<PathBuf, (SystemTime, Option<ClaudeSessionFile>)>;
+static SESSION_FILES: Mutex<Option<SessionCache>> = Mutex::new(None);
+
 fn claude_sessions() -> HashMap<i32, ClaudeSessionFile> {
     let Some(dir) = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude/sessions")) else {
         return HashMap::new();
@@ -413,15 +418,70 @@ fn claude_sessions() -> HashMap<i32, ClaudeSessionFile> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return HashMap::new();
     };
-    entries
+    let listing: Vec<(PathBuf, SystemTime)> = entries
         .flatten()
         .take(64)
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-        .filter(|e| e.metadata().is_ok_and(|m| m.len() <= 64 * 1024))
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .filter_map(|text| serde_json::from_str::<ClaudeSessionFile>(&text).ok())
+        .filter_map(|e| {
+            let meta = e.metadata().ok().filter(|m| m.len() <= 64 * 1024)?;
+            Some((e.path(), meta.modified().ok()?))
+        })
+        .collect();
+    let mut cache = SESSION_FILES.lock().unwrap();
+    read_sessions(cache.get_or_insert_with(HashMap::new), listing, |path| {
+        let text = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str::<ClaudeSessionFile>(&text).ok()
+    })
+}
+
+/// The parsed session files in `listing`, by pid. `load` runs only for a file
+/// that is new or whose modification time differs from the cached one; files
+/// no longer listed leave the cache.
+fn read_sessions(
+    cache: &mut SessionCache,
+    listing: Vec<(PathBuf, SystemTime)>,
+    load: impl Fn(&Path) -> Option<ClaudeSessionFile>,
+) -> HashMap<i32, ClaudeSessionFile> {
+    let mut next = SessionCache::new();
+    for (path, modified) in listing {
+        let entry = match cache.remove(&path) {
+            Some((seen, parsed)) if seen == modified => (seen, parsed),
+            _ => (modified, load(&path)),
+        };
+        next.insert(path, entry);
+    }
+    *cache = next;
+    cache
+        .values()
+        .filter_map(|(_, file)| file.clone())
         .map(|file| (file.pid, file))
         .collect()
+}
+
+/// Command-line arguments by process, read once per process: a pid with the
+/// same start time and program keeps the arguments it was first read with.
+#[derive(Default)]
+struct ArgsCache(HashMap<i32, (u64, String, Option<Vec<String>>)>);
+
+static ARGS: Mutex<Option<ArgsCache>> = Mutex::new(None);
+
+impl ArgsCache {
+    fn get(&mut self, p: &ProcInfo, fetch: impl FnOnce(i32) -> Option<Vec<String>>) -> Option<Vec<String>> {
+        let start = p.start_unix.to_bits();
+        if let Some((seen, exe, args)) = self.0.get(&p.pid) {
+            if *seen == start && *exe == p.exe_path {
+                return args.clone();
+            }
+        }
+        let args = fetch(p.pid);
+        self.0.insert(p.pid, (start, p.exe_path.clone(), args.clone()));
+        args
+    }
+
+    fn retain_live(&mut self, procs: &[ProcInfo]) {
+        let live: HashSet<i32> = procs.iter().map(|p| p.pid).collect();
+        self.0.retain(|pid, _| live.contains(pid));
+    }
 }
 
 fn role_of(p: &ProcInfo, port: Option<u16>, args: &dyn Fn(i32) -> Option<Vec<String>>) -> Role {
@@ -598,7 +658,15 @@ pub fn claude_session_files() -> HashMap<i32, ClaudeSessionFileView> {
 
 /// Sessions on this Mac now, reading arguments only for programs that need it.
 pub fn sessions(procs: &[ProcInfo], projects: &[ProjectGroup]) -> Vec<Session> {
-    detect(procs, projects, &proc_args, &claude_session_files())
+    let mut guard = ARGS.lock().unwrap();
+    let cache = std::cell::RefCell::new(guard.get_or_insert_with(ArgsCache::default));
+    cache.borrow_mut().retain_live(procs);
+    let by_pid: HashMap<i32, &ProcInfo> = procs.iter().map(|p| (p.pid, p)).collect();
+    let args = |pid: i32| {
+        let p = by_pid.get(&pid)?;
+        cache.borrow_mut().get(p, proc_args)
+    };
+    detect(procs, projects, &args, &claude_session_files())
 }
 
 #[cfg(test)]
@@ -616,6 +684,54 @@ mod tests {
             mem_bytes: 100,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn session_files_are_parsed_again_only_when_they_change() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let file = |pid| ClaudeSessionFile { pid, cwd: None, status: None, name: None, status_updated_at: None, proc_start: None };
+        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let (a, b) = (PathBuf::from("a.json"), PathBuf::from("b.json"));
+        let loads = Cell::new(0);
+        let load = |path: &Path| {
+            loads.set(loads.get() + 1);
+            Some(file(if path == Path::new("a.json") { 1 } else { 2 }))
+        };
+        let mut cache = SessionCache::new();
+        let out = read_sessions(&mut cache, vec![(a.clone(), at(10)), (b.clone(), at(10))], load);
+        assert_eq!((loads.get(), out.len()), (2, 2));
+        let out = read_sessions(&mut cache, vec![(a.clone(), at(10)), (b.clone(), at(10))], load);
+        assert_eq!((loads.get(), out.len()), (2, 2), "unchanged files are not read");
+        let out = read_sessions(&mut cache, vec![(a.clone(), at(11)), (b.clone(), at(10))], load);
+        assert_eq!((loads.get(), out.len()), (3, 2), "a newer file is read again");
+        let out = read_sessions(&mut cache, vec![(b.clone(), at(10))], load);
+        assert_eq!((loads.get(), out.keys().copied().collect::<Vec<_>>()), (3, vec![2]));
+        assert_eq!(cache.len(), 1, "a removed file leaves the cache");
+    }
+
+    #[test]
+    fn arguments_are_read_once_per_process_start() {
+        use std::cell::Cell;
+        let reads = Cell::new(0);
+        let fetch = |_| {
+            reads.set(reads.get() + 1);
+            Some(vec!["node".to_string(), format!("run-{}", reads.get())])
+        };
+        let mut cache = ArgsCache::default();
+        let p = proc(7, 1, "/usr/local/bin/node");
+        assert_eq!(cache.get(&p, fetch).unwrap()[1], "run-1");
+        assert_eq!(cache.get(&p, fetch).unwrap()[1], "run-1");
+        assert_eq!(reads.get(), 1);
+        // The same pid started again (new start time) is read afresh.
+        let restarted = ProcInfo { start_unix: p.start_unix + 5., ..p.clone() };
+        assert_eq!(cache.get(&restarted, fetch).unwrap()[1], "run-2");
+        // So is the same process running another program.
+        let exec = ProcInfo { exe_path: "/usr/local/bin/bun".into(), ..restarted.clone() };
+        assert_eq!(cache.get(&exec, fetch).unwrap()[1], "run-3");
+        // A process that is gone is forgotten.
+        cache.retain_live(&[]);
+        assert!(cache.0.is_empty());
     }
 
     #[test]

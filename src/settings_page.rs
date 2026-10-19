@@ -84,7 +84,7 @@ impl Sliders {
             view.sliders.volume_touched = Some(std::time::Instant::now());
             let id = view.snap.audio.output_id;
             view.audio_error = crate::audio::set_output_volume(id, value / 100.).err();
-            view.snap.audio.device_volume = Some(value / 100.);
+            std::sync::Arc::make_mut(&mut view.snap).audio.device_volume = Some(value / 100.);
             cx.notify();
         })
         .detach();
@@ -95,7 +95,7 @@ impl Sliders {
             view.sliders.input_touched = Some(std::time::Instant::now());
             let id = view.snap.audio.input.id;
             view.audio_error = crate::audio::set_volume(crate::audio::Direction::Input, id, value / 100.).err();
-            view.snap.audio.input.volume = Some(value / 100.);
+            std::sync::Arc::make_mut(&mut view.snap).audio.input.volume = Some(value / 100.);
             cx.notify();
         })
         .detach();

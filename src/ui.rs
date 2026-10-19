@@ -119,7 +119,7 @@ pub struct TideGaugeView {
     pub dark: bool,
     pub scroll: ScrollHandle,
     pub focus: FocusHandle,
-    pub snap: Snapshot,
+    pub snap: std::sync::Arc<Snapshot>,
     pub window: Option<AnyWindowHandle>,
     pub show_settings: bool,
     pub show_processes: bool,
@@ -286,22 +286,45 @@ impl TideGaugeView {
             settings_scroll: ScrollHandle::new(),
             blurred: false,
         };
-        // 1s refresh loop
+        // 1s refresh loop. A hidden or minimized window does no work, and a
+        // page that only draws the snapshot redraws when there is a new one.
+        let handle = window.window_handle();
         cx.spawn(
             async move |this: WeakEntity<TideGaugeView>, cx: &mut AsyncApp| loop {
                 smol::Timer::after(std::time::Duration::from_millis(1000)).await;
                 let _ = cx.update(|cx: &mut App| {
+                    let visible = handle
+                        .update(cx, |_, window, _| crate::appearance::is_visible(window))
+                        .unwrap_or(false);
                     let mut app_history_due = None;
                     let history_due = this
                         .update(cx, |v: &mut TideGaugeView, cx: &mut Context<TideGaugeView>| {
+                            let destination = v.destination();
+                            crate::demand::set_window(visible.then(|| destination.demand_page()));
+                            if !visible {
+                                return false;
+                            }
                             app_history_due = crate::process_panel::app_history_due(v);
-                            v.snap = latest();
-                            if v.toast.as_ref().is_some_and(Toast::expired) {
+                            let fresh = latest();
+                            let new_sample = fresh.at != v.snap.at;
+                            if new_sample {
+                                v.snap = fresh;
+                            }
+                            let toast_expired = v.toast.as_ref().is_some_and(Toast::expired);
+                            if toast_expired {
                                 v.toast = None;
                             }
+                            let order = v.process_order.clone();
                             crate::process_panel::refresh_order(v);
-                            cx.notify();
-                            v.destination() == Destination::Tab(Tab::History)
+                            if new_sample
+                                || toast_expired
+                                || v.toast.is_some()
+                                || v.process_order != order
+                                || !destination.draws_only_the_snapshot()
+                            {
+                                cx.notify();
+                            }
+                            destination == Destination::Tab(Tab::History)
                                 && !v.history_loading
                                 && v.history_loaded_at.is_none_or(|at| at.elapsed().as_secs() >= 60)
                         })
@@ -973,6 +996,30 @@ impl Destination {
                 None => Tab::from_key(key).map(Self::Tab),
             },
         }
+    }
+    /// The page whose probes the samplers should run for.
+    fn demand_page(self) -> crate::demand::Page {
+        use crate::demand::Page;
+        match self {
+            Self::Tab(Tab::Cpu) => Page::Cpu,
+            Self::Tab(Tab::Disk) => Page::Disk,
+            Self::Tab(Tab::Network) => Page::Network,
+            Self::Tab(Tab::Bluetooth) => Page::Bluetooth,
+            Self::Tab(Tab::Projects) => Page::Projects,
+            Self::Agents => Page::Agents,
+            _ => Page::Other,
+        }
+    }
+    /// Pages that show nothing but the published snapshot, so a second with
+    /// no new sample needs no redraw. The others read live state (sensors,
+    /// disk counters, slider timers, loading history) and redraw each second.
+    fn draws_only_the_snapshot(self) -> bool {
+        matches!(
+            self,
+            Self::Tab(Tab::Overview | Tab::Memory | Tab::Network | Tab::Gpu | Tab::Battery | Tab::Bluetooth | Tab::Projects)
+                | Self::Apps
+                | Self::Agents
+        )
     }
     fn title(self) -> &'static str {
         match self {

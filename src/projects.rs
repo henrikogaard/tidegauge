@@ -169,8 +169,29 @@ pub fn select_server_state(cpu_pct: f64, idle_secs: u64, up_for: f64) -> ServerS
     }
 }
 
-pub fn detect_projects(procs: &[ProcInfo]) -> Vec<ProjectGroup> {
-    let listeners = listening_ports();
+/// The last `lsof` result, reused while it is younger than a caller's limit.
+type Listeners = HashMap<i32, Vec<u16>>;
+static LISTENERS: Mutex<Option<(Instant, Listeners)>> = Mutex::new(None);
+
+/// `fetch`'s result, or the one kept in `cache` if it is younger than `max_age`.
+fn cached_within<T: Clone>(
+    cache: &mut Option<(Instant, T)>,
+    max_age: Duration,
+    fetch: impl FnOnce() -> T,
+) -> T {
+    if let Some((at, value)) = cache.as_ref() {
+        if at.elapsed() < max_age {
+            return value.clone();
+        }
+    }
+    let value = fetch();
+    *cache = Some((Instant::now(), value.clone()));
+    value
+}
+
+/// Dev servers among `procs`. Listening ports may be up to `max_age` old.
+pub fn detect_projects(procs: &[ProcInfo], max_age: Duration) -> Vec<ProjectGroup> {
+    let listeners = cached_within(&mut LISTENERS.lock().unwrap(), max_age, listening_ports);
     let idle_map = IDLE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut seen_servers: HashSet<i32> = HashSet::new();
     let mut dirs: HashMap<String, Vec<DevServer>> = HashMap::new();
@@ -885,43 +906,102 @@ mod stop_tests {
     }
 }
 
-/// Per-process network bytes via `nettop -x` deltas applied to app groups.
-static NET_PREV: OnceLock<Mutex<HashMap<i32, (u64, u64, Instant)>>> = OnceLock::new();
+/// Per-process network rates, in bytes per second, from the latest `nettop`
+/// reading. The nettop worker writes them; sampling only looks them up, so a
+/// slow `nettop` never holds up a sample.
+static NET_RATES: Mutex<Option<HashMap<i32, (f64, f64)>>> = Mutex::new(None);
 
-pub fn apply_nettop(apps: &mut [AppGroup]) {
-    let map = NET_PREV.get_or_init(|| Mutex::new(HashMap::new()));
-    let Ok(out) = std::process::Command::new("nettop")
-        .args(["-x", "-P", "-L", "1", "-J", "bytes_in,bytes_out"])
-        .output()
-    else {
-        return;
-    };
-    if !out.status.success() {
-        return;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let now = Instant::now();
-    let Some(totals) = parse_nettop(&text) else {
-        return;
-    };
-    let mut prev = map.lock().unwrap();
+pub fn apply_net_rates(apps: &mut [AppGroup]) {
+    let rates = NET_RATES.lock().unwrap();
     for app in apps.iter_mut() {
-        let mut rin = 0.0;
-        let mut rout = 0.0;
-        for pid in &app.pids {
-            if let (Some(cur), Some(pv)) = (totals.get(pid), prev.get(pid)) {
-                let dt = now.duration_since(pv.2).as_secs_f64().max(0.1);
-                rin += cur.0.saturating_sub(pv.0) as f64 / dt;
-                rout += cur.1.saturating_sub(pv.1) as f64 / dt;
-            }
-            if let Some(cur) = totals.get(pid) {
-                prev.insert(*pid, (cur.0, cur.1, now));
-            }
+        let (mut rin, mut rout) = (0.0, 0.0);
+        for (r_in, r_out) in app.pids.iter().filter_map(|pid| rates.as_ref()?.get(pid)) {
+            rin += r_in;
+            rout += r_out;
         }
         app.net_in_rate = rin;
         app.net_out_rate = rout;
     }
-    prev.retain(|pid, _| totals.contains_key(pid));
+}
+
+/// Whether counters read `elapsed` apart still give a rate for a probe that
+/// runs every `period`. A longer gap (the probe was resting at a slower pace)
+/// only sets a new baseline instead of averaging over minutes.
+fn net_window_usable(elapsed: Duration, period: Duration) -> bool {
+    elapsed <= period * 2 + Duration::from_secs(5)
+}
+
+/// Fold one `nettop` reading into the previous counters and the rates. A
+/// process seen for the first time has no rate yet.
+fn advance_net(
+    previous: &mut HashMap<i32, (u64, u64, Instant)>,
+    rates: &mut HashMap<i32, (f64, f64)>,
+    totals: &HashMap<i32, (u64, u64)>,
+    now: Instant,
+    period: Duration,
+) {
+    for (pid, cur) in totals {
+        if let Some(pv) = previous.get(pid) {
+            let elapsed = now.duration_since(pv.2);
+            if net_window_usable(elapsed, period) {
+                let dt = elapsed.as_secs_f64().max(0.1);
+                rates.insert(
+                    *pid,
+                    (cur.0.saturating_sub(pv.0) as f64 / dt, cur.1.saturating_sub(pv.1) as f64 / dt),
+                );
+            }
+        }
+        previous.insert(*pid, (cur.0, cur.1, now));
+    }
+    previous.retain(|pid, _| totals.contains_key(pid));
+    rates.retain(|pid, _| totals.contains_key(pid));
+}
+
+/// Reads `nettop -x` and publishes per-process rates.
+#[derive(Default)]
+pub struct NetProbe {
+    previous: HashMap<i32, (u64, u64, Instant)>,
+    rates: HashMap<i32, (f64, f64)>,
+}
+
+impl NetProbe {
+    pub fn poll(&mut self, period: Duration) {
+        let Ok(out) = std::process::Command::new("nettop")
+            .args(["-x", "-P", "-L", "1", "-J", "bytes_in,bytes_out"])
+            .output()
+        else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let now = Instant::now();
+        let Some(totals) = parse_nettop(&String::from_utf8_lossy(&out.stdout)) else {
+            return;
+        };
+        advance_net(&mut self.previous, &mut self.rates, &totals, now, period);
+        *NET_RATES.lock().unwrap() = Some(self.rates.clone());
+    }
+}
+
+/// Run `nettop` on its own thread at the pace the screen and alerts ask for.
+pub fn start_nettop() {
+    std::thread::Builder::new()
+        .name("tidegauge-nettop".into())
+        .spawn(move || {
+            crate::demand::utility_thread();
+            let mut probe = NetProbe::default();
+            let mut last: Option<Instant> = None;
+            loop {
+                let period = crate::demand::current().nettop_period();
+                if last.is_none_or(|at| at.elapsed() + Duration::from_millis(500) >= period) {
+                    probe.poll(period);
+                    last = Some(Instant::now());
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        })
+        .expect("nettop worker");
 }
 
 fn parse_nettop(text: &str) -> Option<HashMap<i32, (u64, u64)>> {
@@ -1127,6 +1207,49 @@ mod tests {
     }
 
     #[test]
+    fn listening_ports_are_reused_only_while_young() {
+        let mut cache = None;
+        let mut runs = 0;
+        let mut fetch = |cache: &mut Option<(Instant, u32)>, max_age| {
+            cached_within(cache, max_age, || {
+                runs += 1;
+                runs
+            })
+        };
+        assert_eq!(fetch(&mut cache, Duration::from_secs(30)), 1);
+        assert_eq!(fetch(&mut cache, Duration::from_secs(30)), 1);
+        // A caller that wants fresh data (zero age) always fetches.
+        assert_eq!(fetch(&mut cache, Duration::ZERO), 2);
+        assert_eq!(fetch(&mut cache, Duration::from_secs(30)), 2);
+        cache = cache.map(|(at, v)| (at - Duration::from_secs(31), v));
+        assert_eq!(fetch(&mut cache, Duration::from_secs(30)), 3);
+    }
+
+    #[test]
+    fn net_rates_need_two_readings_a_period_apart() {
+        let period = Duration::from_secs(4);
+        let t0 = Instant::now();
+        let (mut previous, mut rates) = (HashMap::new(), HashMap::new());
+        advance_net(&mut previous, &mut rates, &HashMap::from([(7, (1000, 0))]), t0, period);
+        assert!(rates.is_empty(), "the first reading has no rate");
+        let t1 = t0 + Duration::from_secs(4);
+        advance_net(&mut previous, &mut rates, &HashMap::from([(7, (5000, 800))]), t1, period);
+        assert_eq!(rates[&7], (1000.0, 200.0));
+        // A reading long after the last one only sets a new baseline.
+        let t2 = t1 + Duration::from_secs(60);
+        advance_net(&mut previous, &mut rates, &HashMap::from([(7, (9000, 800))]), t2, period);
+        assert_eq!(rates[&7], (1000.0, 200.0));
+        assert_eq!(previous[&7].0, 9000);
+        // At the resting pace the same gap is a normal window.
+        let t3 = t2 + Duration::from_secs(60);
+        advance_net(&mut previous, &mut rates, &HashMap::from([(7, (9000 + 6000, 800))]), t3, Duration::from_secs(60));
+        assert_eq!(rates[&7], (100.0, 0.0));
+        // A process that is gone loses its entries.
+        advance_net(&mut previous, &mut rates, &HashMap::new(), t3, period);
+        assert!(rates.is_empty() && previous.is_empty());
+    }
+
+    #[test]
     fn csv_parser_accepts_native_header_and_trailing_empty_column() {
         let csv = ",bytes_in,bytes_out,\nworker.42,4096,1024,\n";
         assert_eq!(parse_nettop(csv).unwrap().get(&42), Some(&(4096, 1024)));
@@ -1162,7 +1285,8 @@ mod tests {
             pids: vec![std::process::id() as i32],
             ..Default::default()
         }];
-        apply_nettop(&mut apps);
+        let mut probe = NetProbe::default();
+        probe.poll(Duration::from_secs(4));
         let reader = std::thread::spawn(move || {
             let mut bytes = vec![0u8; 512 * 1024];
             server.read_exact(&mut bytes).unwrap();
@@ -1170,7 +1294,8 @@ mod tests {
         });
         client.write_all(&vec![1u8; 512 * 1024]).unwrap();
         let _server = reader.join().unwrap();
-        apply_nettop(&mut apps);
+        probe.poll(Duration::from_secs(4));
+        apply_net_rates(&mut apps);
         assert!(
             apps[0].net_in_rate > 0.0 || apps[0].net_out_rate > 0.0,
             "transferred bytes were not measured"

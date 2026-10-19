@@ -19,6 +19,21 @@ pub fn apply(window: &Window, dark: Option<bool>) {
     }
 }
 
+/// Whether the window can be watched: shown, on the active Space, and not
+/// fully covered (macOS's occlusion state also drops minimized windows and a
+/// hidden app).
+pub fn is_visible(window: &Window) -> bool {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return true };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return true };
+    // The borrowed GPUI window owns this AppKit view for the duration of this call.
+    let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+    view.window().is_none_or(|window| {
+        window.isVisible()
+            && window.isOnActiveSpace()
+            && window.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
+    })
+}
+
 /// Whether macOS has "Reduce transparency" on; the see-through settings give
 /// way to it.
 pub fn reduce_transparency() -> bool {
