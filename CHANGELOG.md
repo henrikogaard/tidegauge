@@ -6,6 +6,12 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- An About section at the end of Settings shows the app icon, version and
+  build, Check for Updates, and links to the project, the author, Buy me a
+  coffee and the license. The version and update check moved there from
+  General, and the menu-bar menu has an About Tidegauge item that opens it.
 ### Changed
 
 - The history database is about a tenth of its size. App names are stored once,

@@ -1643,6 +1643,7 @@ impl Render for TideGaugeView {
                     cx.stop_propagation();
                 } else if event.keystroke.modifiers.platform && event.keystroke.key == "," {
                     view.show_settings = true;
+                    view.reset_settings_scroll();
                     view.scroll = ScrollHandle::new();
                     view.settings_error = None;
                     cx.notify();
@@ -1682,12 +1683,26 @@ impl Render for TideGaugeView {
     }
 }
 
+impl TideGaugeView {
+    /// About is the last group in Settings; the menu item scrolls to it.
+    pub fn scroll_settings_to_about(&mut self) {
+        self.reset_settings_scroll();
+        self.settings_scroll.scroll_to_bottom();
+    }
+
+    /// Settings opens at the top; only the About menu item opens it lower.
+    pub fn reset_settings_scroll(&mut self) {
+        self.settings_scroll = ScrollHandle::new();
+    }
+}
+
 fn open_settings(this: &Entity<TideGaugeView>, cx: &mut App) {
     this.update(cx, |view, cx| {
         view.show_tools = false;
         view.show_processes = false;
         view.show_agents = false;
         view.show_settings = true;
+        view.reset_settings_scroll();
         view.scroll = ScrollHandle::new();
         view.settings_error = None;
         cx.notify();
