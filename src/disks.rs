@@ -6,8 +6,7 @@ use crate::metrics::{
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -327,50 +326,21 @@ fn number(value: &Value, key: &str) -> Option<u64> {
     value.get(key)?.as_u64()
 }
 
-// Drain both pipes while the parent enforces a deadline, including failed tools.
+static DISKUTIL: crate::bounded::Probe = crate::bounded::Probe::new();
+static PLUTIL: crate::bounded::Probe = crate::bounded::Probe::new();
+static SMARTCTL: crate::bounded::Probe = crate::bounded::Probe::new();
+
+// One probe per tool: a deadline on each run, and no new copy of a tool while
+// an earlier one that would not die is still alive.
 fn command(program: &str, args: &[&str], input: Option<Vec<u8>>) -> Option<(i32, Vec<u8>)> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout
-            .take(2 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        (bytes.len() <= 2 * 1024 * 1024).then_some(bytes)
-    });
-    let writer = input
-        .zip(child.stdin.take())
-        .map(|(bytes, mut stdin)| std::thread::spawn(move || stdin.write_all(&bytes)));
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if started.elapsed() < Duration::from_secs(5) => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
+    let probe = match program.rsplit('/').next() {
+        Some("diskutil") => &DISKUTIL,
+        Some("plutil") => &PLUTIL,
+        _ => &SMARTCTL,
     };
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-    let bytes = reader.join().ok().flatten()?;
-    Some((status?.code()?, bytes))
+    let mut command = Command::new(program);
+    command.args(args);
+    probe.run_with(command, input, Duration::from_secs(5))
 }
 
 fn diskutil(args: &[&str]) -> Option<Value> {

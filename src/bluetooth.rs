@@ -75,21 +75,46 @@ fn inner_battery(v: &serde_json::Value, keys: &[&str]) -> Option<f64> {
     None
 }
 
-/// Bluetooth state, read again when the last reading is older than `max_age`.
+/// How long `system_profiler` may take before it is given up on.
+const READ_TIMEOUT: Duration = Duration::from_secs(20);
+static PROBE: crate::bounded::Probe = crate::bounded::Probe::new();
+static READING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The last Bluetooth state, at once. When it is older than `max_age` a read
+/// starts on its own thread, so the sampler never waits on `system_profiler`;
+/// the new state shows from the next sample. A read that fails keeps the
+/// last state.
 pub fn bt_info(max_age: Duration) -> BtInfo {
+    use std::sync::atomic::Ordering;
     let cache = CACHE.get_or_init(|| Mutex::new((None, BtInfo::default())));
-    {
+    let (stale, info) = {
         let g = cache.lock().unwrap();
-        if g.0.is_some_and(|at| at.elapsed() < max_age) {
-            return g.1.clone();
-        }
-    }
-    let mut info = BtInfo::default();
-    if let Ok(out) = std::process::Command::new("system_profiler")
-        .args(["-json", "SPBluetoothDataType"])
-        .output()
+        (g.0.is_none_or(|at| at.elapsed() >= max_age), g.1.clone())
+    };
+    if stale
+        && !READING.swap(true, Ordering::SeqCst)
+        && std::thread::Builder::new()
+            .name("tidegauge-bluetooth".into())
+            .spawn(|| {
+                let read = read_info();
+                let mut g = CACHE.get().unwrap().lock().unwrap();
+                *g = (Some(Instant::now()), read.unwrap_or_else(|| g.1.clone()));
+                READING.store(false, Ordering::SeqCst);
+            })
+            .is_err()
     {
-        if let Ok(root) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+        READING.store(false, Ordering::SeqCst);
+    }
+    info
+}
+
+fn read_info() -> Option<BtInfo> {
+    let mut info = BtInfo::default();
+    let mut command = std::process::Command::new("system_profiler");
+    command.args(["-json", "SPBluetoothDataType"]);
+    let stdout = PROBE.run(command, READ_TIMEOUT)?;
+    {
+        if let Ok(root) = serde_json::from_slice::<serde_json::Value>(&stdout) {
             if let Some(arr) = root.get("SPBluetoothDataType").and_then(|x| x.as_array()) {
                 if let Some(first) = arr.first() {
                     let state = first
@@ -123,7 +148,5 @@ pub fn bt_info(max_age: Duration) -> BtInfo {
             }
         }
     }
-    let mut g = cache.lock().unwrap();
-    *g = (Some(Instant::now()), info.clone());
-    info
+    Some(info)
 }

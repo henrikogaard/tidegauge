@@ -83,7 +83,7 @@ pub static REFRESH: std::sync::LazyLock<Wake> = std::sync::LazyLock::new(Wake::n
 
 /// Background sampler: light metrics every ~2s; the process list, projects
 /// and agents every 2s while a window or the panel is open and every ~8s
-/// otherwise; Bluetooth, `nettop`, `lsof` and `diskutil` at the pace
+/// otherwise; Bluetooth, `nettop` and `diskutil` at the pace
 /// `crate::demand` asks for; history write every ~10s.
 pub fn start_sampler() {
     thread::Builder::new()

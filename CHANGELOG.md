@@ -6,6 +6,19 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Fixed
+
+- A stuck `lsof` can no longer freeze every reading at zero. On a Mac whose
+  kernel left `lsof` hanging in uninterruptible state (`kill -9` does not remove
+  it), the sampler waited on it forever and never published a first sample, so
+  the menu bar, panel and dashboard showed zeros until a restart, and each
+  restart left another stuck `lsof` behind. Listening TCP ports now come
+  straight from libproc, which never touches files. The two remaining helper
+  tools the sampler or its workers waited on, `system_profiler` (Bluetooth) and
+  `nettop`, run with a time limit and are never started again while a previous
+  run is still alive. Bluetooth is read on its own thread, so a slow reading
+  shows up a sample later instead of delaying the core metrics.
+
 ## [0.5.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.1) — 2026-10-19
 
 ### Changed

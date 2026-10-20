@@ -88,30 +88,64 @@ fn development_project(process: &ProcInfo, cwd: &str, current_uid: u32) -> Optio
     }
 }
 
-/// pid -> set of listening TCP ports, via `lsof` (batch, cached per tick).
+/// pid -> listening TCP ports, read from the kernel through libproc. Unlike
+/// `lsof` this never stats a file, so a wedged volume cannot block it. Only
+/// the current user's processes can be inspected, which is what `lsof` showed
+/// a non-root user too.
 pub fn listening_ports() -> HashMap<i32, Vec<u16>> {
     let mut out: HashMap<i32, Vec<u16>> = HashMap::new();
-    if let Ok(o) = std::process::Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pLn"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&o.stdout);
-        let mut pid = 0i32;
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix('p') {
-                pid = rest.parse().unwrap_or(0);
-            } else if let Some(rest) = line.strip_prefix('n') {
-                if pid > 0 {
-                    if let Some(port_str) = rest.rsplit(':').next() {
-                        if let Ok(port) = port_str.parse::<u16>() {
-                            out.entry(pid).or_default().push(port);
-                        }
-                    }
+    for pid in list_pids() {
+        let ports = listening_ports_of(pid);
+        if !ports.is_empty() {
+            out.insert(pid, ports);
+        }
+    }
+    out
+}
+
+/// The listening TCP ports of one process, ascending and without repeats.
+pub fn listening_ports_of(pid: i32) -> Vec<u16> {
+    use crate::ffi::*;
+    use std::ffi::c_void;
+    let mut ports = Vec::new();
+    unsafe {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0);
+        if size <= 0 {
+            return ports;
+        }
+        // Room for descriptors opened between the two calls.
+        let count = size as usize / size_of::<proc_fdinfo>() + 16;
+        let mut fds = vec![proc_fdinfo::default(); count];
+        let got = proc_pidinfo(
+            pid,
+            PROC_PIDLISTFDS,
+            0,
+            fds.as_mut_ptr() as *mut c_void,
+            (count * size_of::<proc_fdinfo>()) as i32,
+        );
+        if got <= 0 {
+            return ports;
+        }
+        fds.truncate(got as usize / size_of::<proc_fdinfo>());
+        let mut info = socket_fdinfo::zeroed();
+        for fd in fds.iter().filter(|fd| fd.proc_fdtype == PROX_FDTYPE_SOCKET) {
+            let read = proc_pidfdinfo(
+                pid,
+                fd.proc_fd,
+                PROC_PIDFDSOCKETINFO,
+                &mut info as *mut socket_fdinfo as *mut c_void,
+                SOCKET_FDINFO_SIZE as i32,
+            );
+            if read as usize == SOCKET_FDINFO_SIZE {
+                if let Some(port) = info.listening_tcp_port() {
+                    ports.push(port);
                 }
             }
         }
     }
-    out
+    ports.sort_unstable();
+    ports.dedup();
+    ports
 }
 
 fn runtime_of(comm: &str, exe: &str) -> String {
@@ -169,7 +203,7 @@ pub fn select_server_state(cpu_pct: f64, idle_secs: u64, up_for: f64) -> ServerS
     }
 }
 
-/// The last `lsof` result, reused while it is younger than a caller's limit.
+/// The last listening-port scan, reused while it is younger than a caller's limit.
 type Listeners = HashMap<i32, Vec<u16>>;
 static LISTENERS: Mutex<Option<(Instant, Listeners)>> = Mutex::new(None);
 
@@ -957,6 +991,8 @@ fn advance_net(
     rates.retain(|pid, _| totals.contains_key(pid));
 }
 
+static NETTOP: crate::bounded::Probe = crate::bounded::Probe::new();
+
 /// Reads `nettop -x` and publishes per-process rates.
 #[derive(Default)]
 pub struct NetProbe {
@@ -966,17 +1002,13 @@ pub struct NetProbe {
 
 impl NetProbe {
     pub fn poll(&mut self, period: Duration) {
-        let Ok(out) = std::process::Command::new("nettop")
-            .args(["-x", "-P", "-L", "1", "-J", "bytes_in,bytes_out"])
-            .output()
-        else {
+        let mut command = std::process::Command::new("nettop");
+        command.args(["-x", "-P", "-L", "1", "-J", "bytes_in,bytes_out"]);
+        let Some(stdout) = NETTOP.run(command, Duration::from_secs(20)) else {
             return;
         };
-        if !out.status.success() {
-            return;
-        }
         let now = Instant::now();
-        let Some(totals) = parse_nettop(&String::from_utf8_lossy(&out.stdout)) else {
+        let Some(totals) = parse_nettop(&String::from_utf8_lossy(&stdout)) else {
             return;
         };
         advance_net(&mut self.previous, &mut self.rates, &totals, now, period);
@@ -1275,6 +1307,18 @@ mod tests {
         let totals = parse_nettop(csv).unwrap();
         assert!(!totals.contains_key(&42));
         assert_eq!(totals.get(&43), Some(&(512, 256)));
+    }
+
+    #[test]
+    #[ignore = "reads this process's sockets through libproc on macOS"]
+    fn native_libproc_finds_a_listening_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pid = std::process::id() as i32;
+        assert!(listening_ports_of(pid).contains(&port));
+        assert!(listening_ports().get(&pid).is_some_and(|p| p.contains(&port)));
+        drop(listener);
+        assert!(!listening_ports_of(pid).contains(&port));
     }
 
     #[test]
