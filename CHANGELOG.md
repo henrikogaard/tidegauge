@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
+
 ### Fixed
 
 - A stuck `lsof` can no longer freeze every reading at zero. On a Mac whose
@@ -17,7 +19,9 @@ hardware acceptance checks. A merge and a published release are separate events.
   tools the sampler or its workers waited on, `system_profiler` (Bluetooth) and
   `nettop`, run with a time limit and are never started again while a previous
   run is still alive. Bluetooth is read on its own thread, so a slow reading
-  shows up a sample later instead of delaying the core metrics.
+  shows up a sample later instead of delaying the core metrics. The disk
+  helpers (`diskutil`, `plutil`, `smartctl`) get the same limit
+  ([#108](https://github.com/henrikogaard/tidegauge/pull/108)).
 
 ## [0.5.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.1) — 2026-10-19
 
