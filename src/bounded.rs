@@ -2,7 +2,7 @@
 //! uninterruptible kernel sleep, where even `kill -9` does not remove it, so
 //! waiting on it forever, or starting it again on top of it, is not an option.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -25,7 +25,20 @@ impl Probe {
     /// The standard output of `command` if it exits successfully within
     /// `timeout`. None means unavailable: it failed, it timed out (and was
     /// killed), a previous run is still alive, or another run is in progress.
-    pub fn run(&self, mut command: Command, timeout: Duration) -> Option<Vec<u8>> {
+    pub fn run(&self, command: Command, timeout: Duration) -> Option<Vec<u8>> {
+        let (code, bytes) = self.run_with(command, None, timeout)?;
+        (code == 0).then_some(bytes)
+    }
+
+    /// Like [`Probe::run`], but feeds `input` to the command and returns the
+    /// exit code with the output whatever the code is. At most 2 MiB of
+    /// output is accepted.
+    pub fn run_with(
+        &self,
+        mut command: Command,
+        input: Option<Vec<u8>>,
+        timeout: Duration,
+    ) -> Option<(i32, Vec<u8>)> {
         let mut stuck = self.stuck.try_lock().ok()?;
         if let Some(old) = stuck.as_mut() {
             match old.try_wait() {
@@ -37,35 +50,51 @@ impl Probe {
             }
         }
         let mut child = command
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
-        let mut pipe = child.stdout.take()?;
+        let Some(pipe) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        };
         let (tx, rx) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("tidegauge-probe-read".into())
             .spawn(move || {
                 let mut bytes = Vec::new();
-                let _ = tx.send(pipe.read_to_end(&mut bytes).ok().map(|_| bytes));
+                let read = pipe
+                    .take(MAX_OUTPUT as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .ok();
+                let _ = tx.send(read.filter(|_| bytes.len() <= MAX_OUTPUT).map(|_| bytes));
             });
-        if spawned.is_err() {
-            let _ = child.kill();
-            if !matches!(child.try_wait(), Ok(Some(_))) {
-                *stuck = Some(child);
-            }
-            return None;
+        if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+            let _ = std::thread::Builder::new()
+                .name("tidegauge-probe-write".into())
+                .spawn(move || {
+                    let _ = stdin.write_all(&bytes);
+                });
         }
         let deadline = Instant::now() + timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10))
+        let status = if spawned.is_ok() {
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    _ => break None,
                 }
-                _ => break None,
             }
+        } else {
+            None
         };
         let Some(status) = status else {
             // Stop waiting. A child that survives the kill is kept so the
@@ -85,9 +114,11 @@ impl Probe {
         let bytes = rx
             .recv_timeout(remaining.max(Duration::from_secs(1)))
             .ok()??;
-        status.success().then_some(bytes)
+        Some((status.code()?, bytes))
     }
 }
+
+const MAX_OUTPUT: usize = 2 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -125,6 +156,17 @@ mod tests {
         assert_eq!(
             probe.run(command, Duration::from_secs(5)),
             Some(b"again\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn input_and_nonzero_exit_codes_are_returned() {
+        let probe = Probe::new();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "cat; exit 3"]);
+        assert_eq!(
+            probe.run_with(command, Some(b"data".to_vec()), Duration::from_secs(5)),
+            Some((3, b"data".to_vec()))
         );
     }
 
