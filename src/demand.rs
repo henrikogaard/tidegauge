@@ -189,7 +189,7 @@ impl Demand {
         }
     }
 
-    /// How old the `lsof` list of listening ports may get: fresh where dev
+    /// How old the list of listening ports may get: fresh where dev
     /// servers are listed, otherwise only counts and badges use it.
     pub fn listeners_period(&self) -> Duration {
         if self.page(Page::Projects) || self.page(Page::Agents) {

@@ -360,9 +360,13 @@ fn command(program: &str, args: &[&str], input: Option<Vec<u8>>) -> Option<(i32,
                 std::thread::sleep(Duration::from_millis(20))
             }
             _ => {
+                // Do not wait for the child or its pipes: a tool stuck in the
+                // kernel never answers, and must not hold this thread.
                 let _ = child.kill();
-                let _ = child.wait();
-                break None;
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return None;
             }
         }
     };

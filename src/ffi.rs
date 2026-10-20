@@ -34,8 +34,12 @@ pub const KERN_SUCCESS: kern_return_t = 0;
 pub const PROC_ALL_PIDS: u32 = 1;
 pub const PROC_PIDTBSDINFO: c_int = 3;
 pub const PROC_PIDVNODEPATHINFO: c_int = 9;
-pub const PROC_PIDFDSOCKETINFO: c_int = 11;
+pub const PROC_PIDFDSOCKETINFO: c_int = 3;
 pub const PROC_PIDLISTFDS: c_int = 1;
+pub const PROX_FDTYPE_SOCKET: u32 = 2;
+pub const SOCKINFO_IN: i32 = 1;
+pub const SOCKINFO_TCP: i32 = 2;
+pub const TSI_S_LISTEN: i32 = 1;
 pub const RUSAGE_INFO_V4: c_int = 4;
 pub const RUSAGE_INFO_V6: c_int = 6;
 pub const PROCESSOR_CPU_LOAD_INFO: c_int = 2;
@@ -315,6 +319,13 @@ extern "C" {
         buffer: *mut c_void,
         size: c_int,
     ) -> c_int;
+    pub fn proc_pidfdinfo(
+        pid: c_int,
+        fd: c_int,
+        flavor: c_int,
+        buffer: *mut c_void,
+        size: c_int,
+    ) -> c_int;
     pub fn proc_pidpath(pid: c_int, buffer: *mut c_void, size: u32) -> c_int;
     pub fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut rusage_info_v4) -> c_int;
 
@@ -428,9 +439,103 @@ pub const fn fcc(s: &[u8; 4]) -> u32 {
     u32::from_be_bytes(*s)
 }
 
+/// `struct proc_fdinfo` from <sys/proc_info.h>: one entry per open descriptor.
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct proc_fdinfo {
+    pub proc_fd: i32,
+    pub proc_fdtype: u32,
+}
+
+/// `struct socket_fdinfo` (792 bytes), kept as raw bytes: only a few fields
+/// are read, at the offsets below, checked against the macOS SDK in tests.
+#[repr(C, align(8))]
+pub struct socket_fdinfo {
+    pub bytes: [u8; SOCKET_FDINFO_SIZE],
+}
+
+pub const SOCKET_FDINFO_SIZE: usize = 792;
+/// `soi_family` holds AF_INET (2) or AF_INET6 (30).
+const SOI_FAMILY: usize = 24 + 160;
+const SOI_KIND: usize = 24 + 232;
+const TCP_LOCAL_PORT: usize = 24 + 240 + 4;
+const TCP_STATE: usize = 24 + 240 + 80;
+
+impl socket_fdinfo {
+    pub fn zeroed() -> Self {
+        Self {
+            bytes: [0; SOCKET_FDINFO_SIZE],
+        }
+    }
+
+    fn int(&self, at: usize) -> i32 {
+        i32::from_ne_bytes(self.bytes[at..at + 4].try_into().unwrap())
+    }
+
+    /// The local port when this is a TCP socket in the LISTEN state over IPv4
+    /// or IPv6. The kernel stores the port in network byte order.
+    pub fn listening_tcp_port(&self) -> Option<u16> {
+        if self.int(SOI_KIND) != SOCKINFO_TCP
+            || self.int(TCP_STATE) != TSI_S_LISTEN
+            || !matches!(self.int(SOI_FAMILY), 2 | 30)
+        {
+            return None;
+        }
+        let port = u16::from_be(self.int(TCP_LOCAL_PORT) as u16);
+        (port != 0).then_some(port)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_fdinfo_offsets_match_macos_sdk() {
+        // From <sys/proc_info.h>: sizeof(socket_fdinfo) 792, psi at 24,
+        // soi_family 160, soi_kind 232, soi_proto 240, insi_lport 4 and
+        // tcpsi_state 80 inside it.
+        assert_eq!(SOCKET_FDINFO_SIZE, 792);
+        assert_eq!(std::mem::size_of::<proc_fdinfo>(), 8);
+        assert_eq!((SOI_FAMILY, SOI_KIND), (184, 256));
+        assert_eq!((TCP_LOCAL_PORT, TCP_STATE), (268, 344));
+    }
+
+    fn socket(kind: i32, state: i32, family: i32, port_net: u16) -> socket_fdinfo {
+        let mut s = socket_fdinfo::zeroed();
+        let mut put = |at: usize, v: i32| s.bytes[at..at + 4].copy_from_slice(&v.to_ne_bytes());
+        put(SOI_KIND, kind);
+        put(TCP_STATE, state);
+        put(SOI_FAMILY, family);
+        put(TCP_LOCAL_PORT, port_net as i32);
+        s
+    }
+
+    #[test]
+    fn listening_port_is_converted_from_network_order() {
+        let s = socket(SOCKINFO_TCP, TSI_S_LISTEN, 2, 3000u16.to_be());
+        assert_eq!(s.listening_tcp_port(), Some(3000));
+        let s = socket(SOCKINFO_TCP, TSI_S_LISTEN, 30, 80u16.to_be());
+        assert_eq!(s.listening_tcp_port(), Some(80));
+    }
+
+    #[test]
+    fn only_listening_tcp_sockets_count() {
+        let net = 8080u16.to_be();
+        assert_eq!(
+            socket(SOCKINFO_IN, TSI_S_LISTEN, 2, net).listening_tcp_port(),
+            None
+        );
+        assert_eq!(socket(SOCKINFO_TCP, 4, 2, net).listening_tcp_port(), None);
+        assert_eq!(
+            socket(SOCKINFO_TCP, TSI_S_LISTEN, 1, net).listening_tcp_port(),
+            None
+        );
+        assert_eq!(
+            socket(SOCKINFO_TCP, TSI_S_LISTEN, 2, 0).listening_tcp_port(),
+            None
+        );
+    }
 
     #[test]
     fn vnode_path_layout_matches_macos_sdk() {
