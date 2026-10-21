@@ -1138,7 +1138,7 @@ impl AppVolumeSliders {
                             SliderEvent::Change(value) | SliderEvent::Release(value) => value.end(),
                         };
                         view.app_sliders.touched.insert(object, std::time::Instant::now());
-                        spawn_app_volume(view, cx, move || crate::app_volume::set_volume(object, (value / 100.).clamp(0., 1.)));
+                        request_app_volume(view, cx, object, (value / 100.).clamp(0., 1.));
                     })
                     .detach();
                     self.states.insert(object, state);
@@ -1183,7 +1183,7 @@ pub fn app_volume_controls(
     );
     mute.aria = Some(format!("{} {}", if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") }, app.name));
     row = row.child(control(mute, move |_, cx| {
-        app_volume_action(&toggle, cx, move || crate::app_volume::set_volume(object, target));
+        toggle.update(cx, |view, cx| request_app_volume(view, cx, object, target));
     }));
     if let Some(slider) = slider {
         let state = slider.clone();
@@ -1206,7 +1206,7 @@ pub fn app_volume_controls(
                     }
                     let percent = nudged_percent(state.read(cx).value().end(), key == "right");
                     state.update(cx, |s, cx| s.set_value(percent, window, cx));
-                    app_volume_action(&this, cx, move || crate::app_volume::set_volume(object, percent / 100.));
+                    this.update(cx, |view, cx| request_app_volume(view, cx, object, percent / 100.));
                     window.prevent_default();
                     cx.stop_propagation();
                 })
@@ -1216,16 +1216,56 @@ pub fn app_volume_controls(
     row.child(div().w(px(40.)).flex().justify_end().text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(crate::engine::fmt_pct(volume as f64 * 100.)))
 }
 
-fn app_volume_action(this: &Entity<TideGaugeView>, cx: &mut App, action: impl FnOnce() -> Result<(), String> + Send + 'static) {
-    this.update(cx, |view, cx| spawn_app_volume(view, cx, action));
+/// Volume changes waiting for an app's worker. Changes to one app are applied
+/// one at a time, in order, and only the newest of those that queued up while
+/// the worker was busy (a drag, or the first tap waiting on a permission
+/// prompt) is applied, so the last value always wins.
+#[derive(Default)]
+struct Coalescer {
+    pending: std::collections::HashMap<u32, f32>,
+    running: std::collections::HashSet<u32>,
 }
 
-/// Run an app volume change off the main thread and show what Tidegauge holds
+impl Coalescer {
+    /// Queue `value` for `key`, replacing one not yet applied. True when no
+    /// worker is running for `key`, so the caller must start one.
+    fn submit(&mut self, key: u32, value: f32) -> bool {
+        self.pending.insert(key, value);
+        self.running.insert(key)
+    }
+
+    /// The value the worker for `key` applies next. `None` ends the worker.
+    fn next(&mut self, key: u32) -> Option<f32> {
+        let value = self.pending.remove(&key);
+        if value.is_none() {
+            self.running.remove(&key);
+        }
+        value
+    }
+}
+
+static APP_VOLUME_QUEUE: std::sync::Mutex<Option<Coalescer>> = std::sync::Mutex::new(None);
+
+fn with_queue<R>(f: impl FnOnce(&mut Coalescer) -> R) -> R {
+    f(APP_VOLUME_QUEUE.lock().unwrap().get_or_insert_with(Coalescer::default))
+}
+
+/// Set an app's volume off the main thread and show what Tidegauge holds
 /// afterwards, or why it could not.
-fn spawn_app_volume(view: &mut TideGaugeView, cx: &mut Context<TideGaugeView>, action: impl FnOnce() -> Result<(), String> + Send + 'static) {
+fn request_app_volume(view: &mut TideGaugeView, cx: &mut Context<TideGaugeView>, object: u32, volume: f32) {
     view.audio_error = None;
+    if !with_queue(|q| q.submit(object, volume)) {
+        return; // the running worker will pick this value up
+    }
     cx.spawn(async move |this, cx| {
-        let (result, levels) = smol::unblock(move || (action(), crate::app_volume::levels())).await;
+        let (result, levels) = smol::unblock(move || {
+            let mut result = Ok(());
+            while let Some(volume) = with_queue(|q| q.next(object)) {
+                result = crate::app_volume::set_volume(object, volume);
+            }
+            (result, crate::app_volume::levels())
+        })
+        .await;
         let _ = this.update(cx, |view, cx| {
             view.audio_error = result.err();
             std::sync::Arc::make_mut(&mut view.snap).audio.levels = levels;
@@ -1275,7 +1315,27 @@ fn audio_action(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_activation_key, nudged_percent};
+    use super::{is_activation_key, nudged_percent, Coalescer};
+
+    #[test]
+    fn a_busy_worker_applies_only_the_newest_value_and_in_order() {
+        let mut q = Coalescer::default();
+        assert!(q.submit(7, 0.9), "the first change starts a worker");
+        assert!(!q.submit(7, 0.5) && !q.submit(7, 0.2), "later ones wait for it");
+        assert_eq!(q.next(7), Some(0.2), "the intermediate values are dropped");
+        assert!(!q.submit(7, 1.0), "the worker is still running");
+        assert_eq!(q.next(7), Some(1.0), "the final value wins");
+        assert_eq!(q.next(7), None);
+        assert!(q.submit(7, 0.4), "once it has ended, the next change starts a new worker");
+    }
+
+    #[test]
+    fn apps_are_queued_separately() {
+        let mut q = Coalescer::default();
+        assert!(q.submit(1, 0.1) && q.submit(2, 0.2));
+        assert_eq!(q.next(2), Some(0.2));
+        assert_eq!(q.next(1), Some(0.1));
+    }
 
     #[test]
     fn arrow_keys_move_an_app_volume_one_step_inside_zero_to_hundred() {
