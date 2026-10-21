@@ -6,6 +6,28 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings is grouped into General, Alerts, Menu bar & panel, Look and About,
+  with a row of buttons at the top that jumps to each section. "Pick alerts" in
+  the welcome still lands on Alerts.
+- Alerts show whether macOS allows notifications (allowed, not asked yet, or
+  blocked), with "Allow notifications" or "Open Notification Settings" where
+  that helps, and a "Send test alert" button that sends a real notification.
+- The heavy-disk (50 to 2000 MB/s, default 400) and heavy-network (1 to 500
+  MB/s, default 80) alert levels are adjustable with sliders. Existing settings
+  keep today's levels.
+- Menu-bar presets "Icon only", "CPU + Memory" and "Full" (CPU, memory, GPU,
+  network and, where there is one, battery) apply at once. The one that matches
+  the current readings is marked.
+
+### Changed
+
+- The appearance, colors and charts rows moved from General to Look. The
+  Overview reset row is now "Dashboard layout" with a "Reset layout" button, the
+  menu-bar colors row is named "Menu-bar colors", and the panel tile group is
+  "Panel contents". "Reset to icon only" is now the "Icon only" preset.
+
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 
 ### Fixed
