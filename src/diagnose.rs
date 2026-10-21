@@ -3,7 +3,7 @@
 //! It measures nothing itself and never guesses: a check whose reading is
 //! missing is skipped, not reported as fine or as a problem.
 
-use crate::engine::{fmt_bytes, fmt_celsius, fmt_pct, fmt_rate, fmt_up, Hist, Snapshot};
+use crate::engine::{fmt_bytes, fmt_disk_bytes, fmt_celsius, fmt_pct, fmt_rate, fmt_up, Hist, Snapshot};
 use crate::locale::text as l;
 use crate::metrics::Pressure;
 use crate::process_control::Force;
@@ -281,8 +281,22 @@ fn cpu(s: &Snapshot) -> Option<Finding> {
     )
 }
 
+/// macOS reports a thermal state of "serious" or worse: it is holding the
+/// chip back to cool off.
+pub fn throttled(s: &Snapshot) -> bool {
+    s.thermal_level.is_some_and(|level| level >= 2)
+}
+
+/// The startup disk has too little free space, as macOS reports it. Without
+/// a total there is nothing to compare, so it is not called low.
+pub fn startup_disk_low(s: &Snapshot) -> bool {
+    let d = &s.disk;
+    d.total != 0
+        && !(d.free as f64 >= d.total as f64 * DISK_LOW_FRACTION && d.free >= DISK_LOW_BYTES)
+}
+
 fn heat(s: &Snapshot) -> Option<Finding> {
-    let throttled = s.thermal_level.is_some_and(|level| level >= 2);
+    let throttled = throttled(s);
     let chip_hot = s.temps.chip.filter(|c| *c >= CHIP_HOT_C);
     if !throttled && chip_hot.is_none() {
         return None;
@@ -316,11 +330,7 @@ fn heat(s: &Snapshot) -> Option<Finding> {
 
 fn disk_space(s: &Snapshot) -> Option<Finding> {
     let d = &s.disk;
-    // Without a total there is nothing to compare.
-    if d.total == 0 {
-        return None;
-    }
-    if d.free as f64 >= d.total as f64 * DISK_LOW_FRACTION && d.free >= DISK_LOW_BYTES {
+    if !startup_disk_low(s) {
         return None;
     }
     Some(
@@ -334,9 +344,9 @@ fn disk_space(s: &Snapshot) -> Option<Finding> {
         )
         .detail(format!(
             "{} {} {} {}",
-            fmt_bytes(d.free as f64),
+            fmt_disk_bytes(d.free as f64),
             l("free of", "ledig av"),
-            fmt_bytes(d.total as f64),
+            fmt_disk_bytes(d.total as f64),
             l("(as macOS reports it)", "(slik macOS melder det)")
         ))
         .action(Some(Action::Open {

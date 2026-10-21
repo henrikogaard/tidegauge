@@ -207,7 +207,7 @@ impl AlertEngine {
         if let Some(alert) = self.disk.check(
             at,
             settings.alert_disk_enabled,
-            400e6,
+            settings.alert_disk_mbps * 1e6,
             disk_value,
             IO_DURATION,
             |value| Alert {
@@ -234,7 +234,7 @@ impl AlertEngine {
         if let Some(alert) = self.network.check(
             at,
             settings.alert_network_enabled,
-            80e6,
+            settings.alert_network_mbps * 1e6,
             network_value,
             IO_DURATION,
             |value| Alert {
@@ -269,7 +269,7 @@ impl AlertEngine {
                 message: format!(
                     "{}: {} {}",
                     crate::locale::text("Startup disk almost full", "Oppstartsdisken er nesten full"),
-                    crate::engine::fmt_bytes(free),
+                    crate::engine::fmt_disk_bytes(free),
                     crate::locale::text("free", "ledig")
                 ),
                 at,
