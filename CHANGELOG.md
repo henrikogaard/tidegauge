@@ -6,6 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Overview shows a "needs attention" strip when something is wrong right now:
+  an internal disk with failing SMART health, a thermal state of serious or
+  worse or a very hot chip, critical memory pressure, a nearly full startup
+  disk, an app whose memory keeps growing, or a battery that needs service or
+  holds under 80 % of its design capacity. It lists up to three issues, worst
+  first, each opening the page that explains it, and is hidden when all is fine.
+  It uses the same thresholds as "Why is my Mac slow?".
+
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 
 ### Fixed

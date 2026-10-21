@@ -2428,6 +2428,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .flex()
         .flex_col()
         .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
+        .when_some(crate::attention::strip(s, dark, this.clone()), |d, strip| d.child(strip))
         .when(settings.show_welcome(), |d| d.child(welcome_card(&settings, dark, this.clone())))
         .when_some(crate::agents_panel::plan_strip(&s.plans, dark, this.clone()), |d, strip| d.child(strip))
         .when(crate::keepawake::status().active, |d| {
