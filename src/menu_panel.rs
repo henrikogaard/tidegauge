@@ -3,7 +3,7 @@
 //! and the way into the full window.
 
 use crate::app_cpu::AppCpu;
-use crate::engine::{fmt_bytes, fmt_pct, fmt_rate, Snapshot};
+use crate::engine::{fmt_bytes, fmt_disk_bytes, fmt_pct, fmt_rate, Snapshot};
 use crate::locale::text as l;
 use crate::processes::AppGroup;
 use crate::theme as t;
@@ -34,7 +34,10 @@ pub struct Layout {
 impl Layout {
     /// The layout for a panel opened now.
     pub fn now() -> Self {
-        Self::new(&crate::settings::Settings::load(), &crate::engine::latest().plans, crate::metrics::now_unix())
+        let latest = crate::engine::latest();
+        let mut layout = Self::new(&crate::settings::Settings::load(), &latest.plans, crate::metrics::now_unix());
+        layout.tiles = crate::settings::panel_tiles_shown(&layout.tiles, latest.battery.confirmed_absent());
+        layout
     }
 
     fn new(settings: &crate::settings::Settings, plans: &crate::agents::Plans, now: f64) -> Self {
@@ -197,7 +200,7 @@ fn tile_data(card: Card, s: &Snapshot) -> (String, String, Vec<f64>, Option<f64>
         ),
         Card::Tab(Tab::Disk) => (
             fmt_rate(s.disk.read_rate + s.disk.write_rate),
-            format!("{} {}", fmt_bytes(s.disk.free as f64), l("free", "ledig")),
+            format!("{} {}", fmt_disk_bytes(s.disk.free as f64), l("free", "ledig")),
             sum(&s.disk_r_hist.pts, &s.disk_w_hist.pts),
             None,
         ),

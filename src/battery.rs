@@ -38,6 +38,16 @@ impl BatteryStats {
         self.available && !self.present
     }
 
+    /// What the page for this Mac is called: a Mac with no battery has only
+    /// power to show.
+    pub fn page_name(&self) -> &'static str {
+        if self.confirmed_absent() {
+            l("Power", "Effekt")
+        } else {
+            l("Battery", "Batteri")
+        }
+    }
+
     pub fn status(&self) -> &'static str {
         if !self.available {
             l(
@@ -308,6 +318,14 @@ mod tests {
         assert!(stats(true, false).confirmed_absent());
         assert!(!stats(false, false).confirmed_absent(), "a failed reading is not absence");
         assert!(!stats(true, true).confirmed_absent());
+    }
+
+    #[test]
+    fn a_mac_without_a_battery_gets_a_power_page() {
+        let stats = |available, present| BatteryStats { available, present, ..Default::default() };
+        assert_eq!(stats(true, false).page_name(), l("Power", "Effekt"));
+        assert_eq!(stats(true, true).page_name(), l("Battery", "Batteri"));
+        assert_eq!(stats(false, false).page_name(), l("Battery", "Batteri"), "an unknown Mac keeps its battery page");
     }
 
     #[test]

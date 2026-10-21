@@ -309,8 +309,35 @@ fn statfs_free_total(path: &str) -> Option<(u64, u64)> {
     }
 }
 
+/// Free space the way Finder counts it: what is free plus what macOS would
+/// purge on demand (`NSURLVolumeAvailableCapacityForImportantUsageKey`).
+fn important_usage_free(path: &str) -> Option<u64> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::msg_send;
+    use objc2_foundation::{NSArray, NSDictionary, NSError, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let key = NSString::from_str("NSURLVolumeAvailableCapacityForImportantUsageKey");
+    let keys = NSArray::from_slice(&[&*key]);
+    let values: Result<Retained<NSDictionary<NSString, AnyObject>>, Retained<NSError>> =
+        unsafe { msg_send![&*url, resourceValuesForKeys: &*keys, error: _] };
+    let value = values.ok()?.objectForKey(&key)?;
+    let bytes: i64 = unsafe { msg_send![&*value, longLongValue] };
+    u64::try_from(bytes).ok()
+}
+
+/// Pick the free-space figure: the Finder-style one when macOS gave a usable
+/// value, otherwise what `statfs` reports.
+fn choose_free(statfs_free: u64, important: Option<u64>, total: u64) -> u64 {
+    match important {
+        Some(free) if free > 0 && free <= total => free,
+        _ => statfs_free,
+    }
+}
+
 pub fn disk_stats() -> DiskStats {
-    let (free, total) = statfs_free_total("/").unwrap_or((0, 0));
+    let (statfs_free, total) = statfs_free_total("/").unwrap_or((0, 0));
+    let free = choose_free(statfs_free, important_usage_free("/"), total);
     let (count, names) = DiskStats::volumes();
     DiskStats {
         total,
@@ -319,6 +346,23 @@ pub fn disk_stats() -> DiskStats {
         volume_count: count,
         volume_names: names,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod disk_free_tests {
+    use super::choose_free;
+
+    #[test]
+    fn finder_style_free_space_wins_when_macos_reports_it() {
+        assert_eq!(choose_free(100, Some(150), 500), 150);
+    }
+
+    #[test]
+    fn statfs_is_the_fallback() {
+        assert_eq!(choose_free(100, None, 500), 100);
+        assert_eq!(choose_free(100, Some(0), 500), 100);
+        assert_eq!(choose_free(100, Some(900), 500), 100, "more than the disk is not believable");
     }
 }
 
@@ -688,6 +732,19 @@ mod tests {
     fn cpu_time_conversion_uses_the_platform_timebase() {
         assert_eq!(super::ticks_to_ns(24_000_000, 125, 3), 1_000_000_000);
         assert_eq!(super::ticks_to_ns(1_000_000_000, 1, 1), 1_000_000_000);
+    }
+
+    #[test]
+    #[ignore = "requires a Mac with a startup volume"]
+    fn native_disk_free_space_includes_purgeable_space() {
+        let (statfs_free, total) = super::statfs_free_total("/").expect("statfs");
+        let important = super::important_usage_free("/");
+        let stats = super::disk_stats();
+        println!("total {total} statfs free {statfs_free} important-usage free {important:?} chosen {}", stats.free);
+        assert!(stats.total > 0 && stats.free <= stats.total);
+        if let Some(important) = important {
+            assert_eq!(stats.free, important, "Finder-style free space is used when macOS reports it");
+        }
     }
 
     #[test]

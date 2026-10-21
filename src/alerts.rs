@@ -269,7 +269,7 @@ impl AlertEngine {
                 message: format!(
                     "{}: {} {}",
                     crate::locale::text("Startup disk almost full", "Oppstartsdisken er nesten full"),
-                    crate::engine::fmt_bytes(free),
+                    crate::engine::fmt_disk_bytes(free),
                     crate::locale::text("free", "ledig")
                 ),
                 at,

@@ -453,6 +453,31 @@ fn normalize_choices(choices: &mut Vec<String>, supported: &[&str]) {
     choices.retain(|s| supported.contains(&s.as_str()) && seen.insert(s.clone()));
 }
 
+/// The favorite or panel-tile choices to offer: a Mac macOS says has no
+/// battery is not offered a battery card.
+pub fn offered_choices(all: &'static [&'static str], battery_absent: bool) -> Vec<&'static &'static str> {
+    all.iter().filter(|key| !(battery_absent && **key == "battery")).collect()
+}
+
+/// The panel tiles to draw: on a Mac with no battery the battery tile gives
+/// way to Power, so a saved choice never leaves the panel empty.
+pub fn panel_tiles_shown(saved: &[String], battery_absent: bool) -> Vec<String> {
+    let mut shown: Vec<String> = Vec::new();
+    for tile in saved {
+        let tile = if battery_absent && tile == "battery" { "power" } else { tile.as_str() };
+        if !shown.iter().any(|t| t == tile) {
+            shown.push(tile.to_string());
+        }
+    }
+    shown
+}
+
+/// How many of the saved tiles are on offer, which is what "keep at least
+/// one" counts.
+pub fn offered_tile_count(saved: &[String], battery_absent: bool) -> usize {
+    saved.iter().filter(|t| !(battery_absent && *t == "battery")).count()
+}
+
 pub const MENU_METRICS: [(&str, &str); 7] = [
     ("cpu", "CPU"),
     ("memory", "Memory"),
@@ -588,6 +613,30 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_battery_tile_never_empties_the_panel_without_a_battery() {
+        let tiles = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(panel_tiles_shown(&tiles(&["battery"]), true), tiles(&["power"]));
+        assert_eq!(panel_tiles_shown(&tiles(&["battery", "cpu"]), true), tiles(&["power", "cpu"]));
+        assert_eq!(panel_tiles_shown(&tiles(&["battery", "power"]), true), tiles(&["power"]));
+        assert_eq!(panel_tiles_shown(&tiles(&["battery"]), false), tiles(&["battery"]));
+    }
+
+    #[test]
+    fn the_last_tile_check_counts_only_offered_tiles() {
+        let tiles = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(offered_tile_count(&tiles(&["battery", "cpu"]), true), 1);
+        assert_eq!(offered_tile_count(&tiles(&["battery", "cpu"]), false), 2);
+    }
+
+    #[test]
+    fn no_battery_choice_is_offered_without_a_battery() {
+        assert!(offered_choices(&FAVORITE_METRICS, false).iter().any(|k| **k == "battery"));
+        let without = offered_choices(&PANEL_TILES, true);
+        assert!(!without.iter().any(|k| **k == "battery") && without.iter().any(|k| **k == "power"));
+        assert_eq!(without.len(), PANEL_TILES.len() - 1);
+    }
 
     #[test]
     fn presets_apply_and_are_detected() {

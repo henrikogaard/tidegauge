@@ -59,6 +59,22 @@ hardware acceptance checks. A merge and a published release are separate events.
   holds under 80 % of its design capacity. It lists up to three issues, worst
   first, each opening the page that explains it, and is hidden when all is fine.
   It uses the same thresholds as "Why is my Mac slow?".
+- Disk capacity, free and used space use decimal units like Finder (a 500 GB
+  disk reads 500 GB, not 466 GB) on the Overview, the Disk page, the menu-bar
+  panel and the nearly-full messages; memory stays binary. Free space now
+  includes space macOS can purge on demand, as Finder's "available" does, and
+  falls back to the plain filesystem figure when macOS does not report it. The
+  Disk page shows a used-versus-free bar, and the Overview Disk card now shows
+  disk activity throughout, with free, used and total space beneath, so its
+  headline matches its graph.
+
+### Fixed
+
+- A Mac without a battery (Mac mini, Mac Studio, iMac) no longer opens an empty
+  Battery page from the Power card. The page is named Power there, stays in the
+  sidebar, and shows system power when macOS reports it, GPU power and the apps
+  using the most CPU power. The Battery choices are no longer offered for the
+  Overview and the menu-bar panel on such a Mac.
 
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 
