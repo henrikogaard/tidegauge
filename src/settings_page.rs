@@ -793,6 +793,13 @@ fn notifications(dark: bool) -> Div {
     let permission = notifications::permission();
     let (status, detail) = match permission {
         Permission::Allowed => (l("Allowed", "Tillatt"), l("Alerts appear as banners.", "Varsler vises som bannere.")),
+        Permission::NoBanners => (
+            l("Allowed, but banners are off", "Tillatt, men bannere er av"),
+            l(
+                "Alerts are delivered silently. Turn on banners or alerts in System Settings.",
+                "Varsler leveres uten å vises. Slå på bannere eller varsler i Systeminnstillinger.",
+            ),
+        ),
         Permission::NotAsked => (
             l("Not asked yet", "Ikke spurt ennå"),
             l("macOS asks the first time an alert is sent.", "macOS spør første gang et varsel sendes."),
@@ -814,7 +821,7 @@ fn notifications(dark: bool) -> Div {
             })
             .into_any_element(),
         ),
-        Permission::Blocked => Some(
+        Permission::Blocked | Permission::NoBanners => Some(
             button_indexed(
                 "notifications-open-settings",
                 l("Open Notification Settings", "Åpne varselinnstillinger"),

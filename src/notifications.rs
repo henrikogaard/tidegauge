@@ -104,6 +104,9 @@ pub enum Permission {
     Unavailable,
     NotAsked,
     Allowed,
+    /// Allowed, but the alert style is None in System Settings, so nothing
+    /// shows on screen.
+    NoBanners,
     /// Turned off in System Settings, or declined at the prompt.
     Blocked,
 }
@@ -119,6 +122,15 @@ impl Permission {
         }
     }
 
+    /// From the authorization status and `alertSetting` (0 not supported,
+    /// 1 disabled, 2 enabled): permission without alerts shows nothing.
+    pub fn from_settings(status: isize, alert_setting: isize) -> Permission {
+        match Permission::from_status(status) {
+            Permission::Allowed if alert_setting == 1 => Permission::NoBanners,
+            other => other,
+        }
+    }
+
     fn code(self) -> u8 {
         self as u8
     }
@@ -129,6 +141,7 @@ impl Permission {
             Permission::Unavailable,
             Permission::NotAsked,
             Permission::Allowed,
+            Permission::NoBanners,
             Permission::Blocked,
         ]
         .get(code as usize)
@@ -160,8 +173,10 @@ pub fn refresh_permission(force: bool) {
         *last = Some(std::time::Instant::now());
     }
     let completion = RcBlock::new(|settings: std::ptr::NonNull<UNNotificationSettings>| {
-        let status = unsafe { settings.as_ref() }.authorizationStatus().0;
-        PERMISSION.store(Permission::from_status(status).code(), Ordering::Relaxed);
+        let settings = unsafe { settings.as_ref() };
+        let permission =
+            Permission::from_settings(settings.authorizationStatus().0, settings.alertSetting().0);
+        PERMISSION.store(permission.code(), Ordering::Relaxed);
         crate::app::PUMP.notify();
     });
     UNUserNotificationCenter::currentNotificationCenter()
@@ -244,12 +259,27 @@ mod tests {
             assert_eq!(Permission::from_status(allowed), Permission::Allowed);
         }
         assert_eq!(Permission::from_status(99), Permission::NotAsked);
+        assert_eq!(Permission::from_settings(2, 2), Permission::Allowed);
+        assert_eq!(
+            Permission::from_settings(2, 1),
+            Permission::NoBanners,
+            "authorized with alerts off"
+        );
+        assert_eq!(Permission::from_settings(3, 1), Permission::NoBanners);
+        assert_eq!(
+            Permission::from_settings(2, 0),
+            Permission::Allowed,
+            "unsupported is not off"
+        );
+        assert_eq!(Permission::from_settings(1, 1), Permission::Blocked);
+        assert_eq!(Permission::from_settings(0, 1), Permission::NotAsked);
         for p in [
             Permission::Checking,
             Permission::Unavailable,
             Permission::NotAsked,
             Permission::Allowed,
             Permission::Blocked,
+            Permission::NoBanners,
         ] {
             assert_eq!(Permission::from_code(p.code()), p);
         }
