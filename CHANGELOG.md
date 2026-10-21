@@ -6,6 +6,12 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Changed
+
+- On the Agents page the running servers are headed **Dev servers**, with the
+  per-project list under **By project**, instead of "Development servers" over a
+  second "Projects" heading.
+
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 
 ### Fixed
