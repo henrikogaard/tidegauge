@@ -168,11 +168,14 @@ impl Demand {
     }
 
     /// How often `diskutil` runs; `None` after the first run when nothing
-    /// shows or checks the inventory.
+    /// shows or checks the inventory. Every ten minutes while the dashboard
+    /// is open or the disk-health alert is on, every 30 s on the Disk page.
     pub fn inventory_period(&self) -> Option<Duration> {
         if self.page(Page::Disk) {
             Some(Duration::from_secs(30))
-        } else if self.disk_health_alert {
+        } else if self.disk_health_alert || self.window.is_some() {
+            // The alert watches in the background; the dashboard's Needs
+            // attention strip shows a failing disk while the window is open.
             Some(Duration::from_secs(600))
         } else {
             None
@@ -367,7 +370,20 @@ mod tests {
             Some(Duration::from_secs(30))
         );
         assert_eq!(Demand::default().inventory_period(), None);
-        assert_eq!(window(Page::Network).inventory_period(), None);
+        // Any open dashboard page refreshes slowly, for the attention strip.
+        assert_eq!(
+            window(Page::Network).inventory_period(),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            window(Page::Other).inventory_period(),
+            Some(Duration::from_secs(600))
+        );
+        let panel = Demand {
+            panel: true,
+            ..Default::default()
+        };
+        assert_eq!(panel.inventory_period(), None);
         let alert = Demand {
             disk_health_alert: true,
             ..Default::default()

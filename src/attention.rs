@@ -49,6 +49,8 @@ pub struct Issue {
     pub text: String,
     /// The page that explains it.
     pub to: Destination,
+    /// The disk to show there, when the issue is about one.
+    pub disk: Option<String>,
 }
 
 /// Up to [`MAX_ISSUES`] problems, worst first. Empty when nothing is wrong.
@@ -94,6 +96,7 @@ fn disk_failing(devices: &[Device]) -> Option<Issue> {
             )
         ),
         to: Destination::Tab(Tab::Disk),
+        disk: Some(device.id.clone()),
     })
 }
 
@@ -125,6 +128,7 @@ fn thermal(s: &Snapshot) -> Option<Issue> {
         icon: "icons/thermometer.svg",
         text,
         to: Destination::Tab(Tab::Cpu),
+        disk: None,
     })
 }
 
@@ -135,6 +139,7 @@ fn memory_pressure(s: &Snapshot) -> Option<Issue> {
         icon: "icons/memory-stick.svg",
         text: l("Memory pressure is critical", "Minnetrykket er kritisk").to_string(),
         to: Destination::Tab(Tab::Memory),
+        disk: None,
     })
 }
 
@@ -149,6 +154,7 @@ fn disk_full(s: &Snapshot) -> Option<Issue> {
         )
         .to_string(),
         to: Destination::Tool(Page::Storage),
+        disk: None,
     })
 }
 
@@ -167,6 +173,7 @@ fn growing_memory(s: &Snapshot) -> Option<Issue> {
             l("keeps using more memory", "bruker stadig mer minne")
         ),
         to: Destination::Tab(Tab::Memory),
+        disk: None,
     })
 }
 
@@ -202,6 +209,7 @@ fn battery(s: &Snapshot) -> Option<Issue> {
         icon: "icons/battery-charging.svg",
         text,
         to: Destination::Tab(Tab::Battery),
+        disk: None,
     })
 }
 
@@ -225,6 +233,7 @@ pub fn strip(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Option<Di
             Severity::Warning => t::caution(dark),
         };
         let (target, keyboard, to) = (this.clone(), this.clone(), issue.to);
+        let (disk_click, disk_key) = (issue.disk.clone(), issue.disk.clone());
         strip = strip.child(
             div()
                 .id(SharedString::from(format!("attention-{index}")))
@@ -256,17 +265,25 @@ pub fn strip(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Option<Di
                         .text_color(t::ink(dark))
                         .child(issue.text),
                 )
-                .on_click(move |_, _, cx| navigate(&target, to, cx))
+                .on_click(move |_, _, cx| open(&target, to, disk_click.as_deref(), cx))
                 .capture_key_down(move |event, window, cx| {
                     if crate::controls::is_activation_key(&event.keystroke) {
                         window.prevent_default();
-                        navigate(&keyboard, to, cx);
+                        open(&keyboard, to, disk_key.as_deref(), cx);
                         cx.stop_propagation();
                     }
                 }),
         );
     }
     Some(strip)
+}
+
+/// Open the page for an issue, with its disk picked first when it names one.
+fn open(this: &Entity<TideGaugeView>, to: Destination, disk: Option<&str>, cx: &mut App) {
+    if let Some(id) = disk {
+        this.update(cx, |view, _| view.selected_disk = Some(id.to_string()));
+    }
+    navigate(this, to, cx);
 }
 
 #[cfg(test)]
@@ -332,6 +349,7 @@ mod tests {
         assert_eq!(issues[0].severity, Severity::Critical);
         assert!(issues[0].to == Destination::Tab(Tab::Disk));
         assert!(issues[0].text.starts_with("Apple SSD"));
+        assert_eq!(issues[0].disk.as_deref(), Some("disk0"));
         // An external drive is not the Mac's own health.
         assert!(attention_with(&healthy(), &[disk(false, Health::Failed)]).is_empty());
     }
