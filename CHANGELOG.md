@@ -6,80 +6,47 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
-### Changed
+## [0.6.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.6.0) — 2026-10-21
 
-- On the Agents page the running servers are headed **Dev servers**, with the
-  per-project list under **By project**, instead of "Development servers" over a
-  second "Projects" heading.
 ### Added
 
 - Settings is grouped into General, Alerts, Menu bar & panel, Look and About,
-  with a row of buttons at the top that jumps to each section. "Pick alerts" in
-  the welcome still lands on Alerts.
-- Alerts show whether macOS allows notifications (allowed, not asked yet, or
-  blocked), with "Allow notifications" or "Open Notification Settings" where
-  that helps, and a "Send test alert" button that sends a real notification.
-- The heavy-disk (50 to 2000 MB/s, default 400) and heavy-network (1 to 500
-  MB/s, default 80) alert levels are adjustable with sliders. Existing settings
-  keep today's levels.
-- Menu-bar presets "Icon only", "CPU + Memory" and "Full" (CPU, memory, GPU,
-  network and, where there is one, battery) apply at once. The one that matches
-  the current readings is marked.
+  with buttons at the top that jump to each section ([#111](https://github.com/henrikogaard/tidegauge/pull/111)).
+- Alerts show whether macOS allows notifications (allowed, banners off, not
+  asked yet, or blocked) with a button to fix it, and a "Send test alert"
+  button. The heavy-disk (50–2000 MB/s, default 400) and heavy-network (1–500
+  MB/s, default 80) alert levels have sliders ([#111](https://github.com/henrikogaard/tidegauge/pull/111)).
+- Menu-bar presets "Icon only", "CPU + Memory" and "Full"; the one that matches
+  the current readings is marked ([#111](https://github.com/henrikogaard/tidegauge/pull/111)).
+- Keyboard shortcuts: ⌘1 to ⌘9 open the first nine sidebar pages, ⌘W closes the
+  window, and the sidebar works with Up, Down and Return ([#112](https://github.com/henrikogaard/tidegauge/pull/112)).
+- A "needs attention" strip on Overview when something is wrong right now: a
+  failing internal disk, serious heat, critical memory pressure, a nearly full
+  startup disk, an app whose memory keeps growing, or a battery that needs
+  service. It lists up to three issues and opens the page that explains each;
+  it is hidden when all is fine ([#113](https://github.com/henrikogaard/tidegauge/pull/113)).
 
 ### Changed
 
-- The appearance, colors and charts rows moved from General to Look. The
-  Overview reset row is now "Dashboard layout" with a "Reset layout" button, the
-  menu-bar colors row is named "Menu-bar colors", and the panel tile group is
-  "Panel contents". "Reset to icon only" is now the "Icon only" preset.
-### Added
-
-- Keyboard shortcuts for the dashboard: ⌘1 to ⌘9 open the first nine pages in
-  the sidebar, in the order shown (Overview is ⌘1, and a page hidden in
-  Settings does not take a number), and ⌘W closes the window like the red
-  button. Each sidebar entry's hover tip shows its shortcut.
-- The Sound page explains per-app volume in one line, including that macOS asks
-  for audio-capture permission the first time.
-
-### Changed
-
-- The sidebar is a keyboard list: Up and Down move between entries, Return or
-  Space opens one, and only the open page is a Tab stop, so Tab no longer
-  walks every entry before reaching the content.
-- Per-app volume on the Sound page is a 0–100% slider (arrow keys move it in
-  steps of 5) in place of the − and + buttons, and Mute stays a toggle. The
-  controls are named after the app for VoiceOver ("Spotify volume", "Mute
-  Spotify").
-### Added
-
-- Overview shows a "needs attention" strip when something is wrong right now:
-  an internal disk with failing SMART health, a thermal state of serious or
-  worse or a very hot chip, critical memory pressure, a nearly full startup
-  disk, an app whose memory keeps growing, or a battery that needs service or
-  holds under 80 % of its design capacity. It lists up to three issues, worst
-  first, each opening the page that explains it, and is hidden when all is fine.
-  It uses the same thresholds as "Why is my Mac slow?".
-- Disk capacity, free and used space use decimal units like Finder (a 500 GB
-  disk reads 500 GB, not 466 GB) on the Overview, the Disk page, the menu-bar
-  panel and the nearly-full messages; memory stays binary. Free space now
-  includes space macOS can purge on demand, as Finder's "available" does, and
-  falls back to the plain filesystem figure when macOS does not report it. The
-  Disk page shows a used-versus-free bar, and the Overview Disk card now shows
-  disk activity throughout, with free, used and total space beneath, so its
-  headline matches its graph.
+- Per-app volume on the Sound page is a slider per app (arrow keys move it),
+  with Mute as a toggle; the newest value always wins during a drag ([#112](https://github.com/henrikogaard/tidegauge/pull/112)).
+- Disk sizes use decimal units like Finder (a 500 GB disk reads 500 GB), and
+  free space includes space macOS can purge on demand. The Disk page has a
+  used-versus-free bar, and the Overview Disk card shows activity with free,
+  used and total beneath ([#114](https://github.com/henrikogaard/tidegauge/pull/114)).
+- AI plans that are not updating stay on Overview and in the menu-bar panel,
+  greyed out with "as of 12:01"; a plan is left out only when it was never
+  fetched or is over 24 hours old ([#115](https://github.com/henrikogaard/tidegauge/pull/115)).
+- The Agents page heads running servers **Dev servers**, listed **By project**
+  ([#110](https://github.com/henrikogaard/tidegauge/pull/110)).
+- Settings rows have clearer names, and "Reset to icon only" became the "Icon
+  only" preset ([#111](https://github.com/henrikogaard/tidegauge/pull/111)).
 
 ### Fixed
 
-- A Mac without a battery (Mac mini, Mac Studio, iMac) no longer opens an empty
-  Battery page from the Power card. The page is named Power there, stays in the
-  sidebar, and shows system power when macOS reports it, GPU power and the apps
-  using the most CPU power. The Battery choices are no longer offered for the
-  Overview and the menu-bar panel on such a Mac.
-- AI plans that are not updating now stay on the Overview and in the menu-bar
-  panel instead of disappearing: greyed out, with "as of 12:01" (or "as of Tue
-  12:01" from an earlier day) in place of the pace. A plan is left out only
-  when it was never fetched or its last fetch is over 24 hours old. The Agents
-  page lists every plan, as before.
+- On a Mac without a battery the Power card opens a Power page with GPU and
+  per-app power (and system power when macOS reports it) instead of an empty
+  Battery page, and the panel never ends up without tiles ([#114](https://github.com/henrikogaard/tidegauge/pull/114)).
 
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 
