@@ -76,7 +76,7 @@ impl Tab {
             Tab::Disk => "Disk",
             Tab::Network => l("Network", "Nettverk"),
             Tab::Gpu => "GPU",
-            Tab::Battery => l("Battery", "Batteri"),
+            Tab::Battery => crate::engine::latest().battery.page_name(),
             Tab::Sound => l("Sound", "Lyd"),
             Tab::Bluetooth => "Bluetooth",
             Tab::Projects => l("Projects", "Prosjekter"),
@@ -91,6 +91,7 @@ impl Tab {
             Tab::Disk => "icons/hard-drive.svg",
             Tab::Network => "icons/globe.svg",
             Tab::Gpu => "icons/gpu.svg",
+            Tab::Battery if crate::engine::latest().battery.confirmed_absent() => "icons/zap.svg",
             Tab::Battery => "icons/battery-charging.svg",
             Tab::Sound => "icons/volume-2.svg",
             Tab::Bluetooth => "icons/bluetooth.svg",
@@ -1146,6 +1147,7 @@ fn sidebar_reading(tab: Tab, s: &Snapshot) -> Option<String> {
         Tab::Disk => Some(fmt_rate(s.disk.read_rate + s.disk.write_rate)),
         Tab::Network => Some(fmt_rate(s.net.rate_in + s.net.rate_out)),
         Tab::Gpu => s.gpu.utilization.map(fmt_pct),
+        Tab::Battery if s.battery.confirmed_absent() => s.power_w.map(crate::engine::fmt_watts),
         Tab::Battery => s.battery.percent.map(fmt_pct),
         Tab::Sound => match (s.audio.device_muted, s.audio.device_volume) {
             (Some(true), _) => Some(l("Muted", "Dempet").into()),
@@ -1265,11 +1267,8 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
         .iter()
         .copied()
         .filter(|tab| !matches!(tab, Tab::Overview | Tab::Projects | Tab::History))
-        // Battery only where there is one (or a preview of one).
-        // Hidden only when macOS confirmed there is none; a failed reading
-        // keeps the entry so its page can say so.
-        .filter(|tab| *tab != Tab::Battery || !s.battery.confirmed_absent() || crate::battery::preview().is_some())
     {
+        // Without a battery the entry is the Power page (see `battery_tab`).
         let reading = sidebar_reading(tab, s);
         let available = reading.is_some();
         add(&mut items, Destination::Tab(tab), Some(reading.unwrap_or_else(|| "–".into())), available);
@@ -2286,6 +2285,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         (l("Remaining", "Gjenstår"), String::new())
     };
     let mem_pct = s.mem.used as f64 / s.mem.total.max(1) as f64 * 100.0;
+    let disk_io_hist = disk_io_hist(s);
     let settings = crate::settings::Settings::load();
     let favorites = &settings.favorite_metrics;
     let cards = vec![
@@ -2348,20 +2348,18 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             &s.gpu_hist,
             Some(100.),
         ),
+        // The headline, stats and sparkline all describe activity, so the
+        // card never mixes a free-space number with a write-rate graph.
         (
             Tab::Disk,
-            format!(
-                "{} {}",
-                l("Free of", "Ledig av"),
-                fmt_bytes(s.disk.total as f64)
-            ),
-            fmt_bytes(s.disk.free as f64),
+            l("Disk activity", "Diskaktivitet").into(),
+            fmt_rate(s.disk.read_rate + s.disk.write_rate),
             [
-                (l("Reading", "Leser"), fmt_rate(s.disk.read_rate)),
-                (l("Writing", "Skriver"), fmt_rate(s.disk.write_rate)),
-                (l("Used", "Brukt"), fmt_bytes(s.disk.used as f64)),
+                (l("Free", "Ledig"), crate::engine::fmt_disk_bytes(s.disk.free as f64)),
+                (l("Used", "Brukt"), crate::engine::fmt_disk_bytes(s.disk.used as f64)),
+                (l("Total", "Totalt"), crate::engine::fmt_disk_bytes(s.disk.total as f64)),
             ],
-            &s.disk_w_hist,
+            &disk_io_hist,
             None,
         ),
         (
@@ -3193,6 +3191,46 @@ fn growing_memory(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div 
     list.child(sub(l("Memory that climbs steadily for hours is usually a leak. Quitting and reopening the app frees it.", "Minne som øker jevnt i flere timer er som regel en lekkasje. Å avslutte og åpne appen på nytt frigjør det.")).text_color(t::ink_dim(dark)))
 }
 
+/// Read plus write rate over time: what the Disk card and page chart.
+fn disk_io_hist(s: &Snapshot) -> Hist {
+    let mut pts = s.disk_r_hist.pts.clone();
+    for (i, v) in pts.iter_mut().enumerate() {
+        *v += s.disk_w_hist.pts.get(i).copied().unwrap_or(0.0);
+    }
+    Hist { pts, max_len: 360 }
+}
+
+/// Used against free of the whole disk, with the sizes beneath it.
+fn capacity_bar(s: &Snapshot, color: Hsla, dark: bool) -> Div {
+    let used = if s.disk.total > 0 { s.disk.used as f64 / s.disk.total as f64 } else { 0. };
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .h(px(8.))
+                .w_full()
+                .rounded_full()
+                .bg(color.opacity(0.15))
+                .child(div().h_full().w(relative(used.clamp(0., 1.) as f32)).rounded_full().bg(color)),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .text_size(t::TEXT_CAPTION)
+                .text_color(t::ink_dim(dark))
+                .child(format!("{} {}", crate::engine::fmt_disk_bytes(s.disk.used as f64), l("used", "brukt")))
+                .child(format!(
+                    "{} {} {}",
+                    crate::engine::fmt_disk_bytes(s.disk.free as f64),
+                    l("free of", "ledig av"),
+                    crate::engine::fmt_disk_bytes(s.disk.total as f64)
+                )),
+        )
+}
+
 fn disk_tab(
     s: &Snapshot,
     dark: bool,
@@ -3222,14 +3260,7 @@ fn disk_tab(
         .map(|a| a.disk_read_rate + a.disk_write_rate)
         .unwrap_or(1.0)
         .max(1.0);
-    let mut combined = s.disk_r_hist.pts.clone();
-    for (i, v) in combined.iter_mut().enumerate() {
-        *v += s.disk_w_hist.pts.get(i).copied().unwrap_or(0.0);
-    }
-    let io_hist = Hist {
-        pts: combined,
-        max_len: 360,
-    };
+    let io_hist = disk_io_hist(s);
     div()
         .flex()
         .flex_col()
@@ -3246,7 +3277,7 @@ fn disk_tab(
                 (l("Writing", "Skriver").into(), fmt_rate(s.disk.write_rate)),
             ],
             None,
-        ))
+        ).when(s.disk.total > 0, |d| d.child(capacity_bar(s, m.accent(dark), dark))))
         .child(section_header(l("Storage devices", "Lagringsenheter"), "", dark))
         .when(is_preview, |d| d.child(card(dark).child(sub(l("DEVELOPMENT PREVIEW · Sample disk values, not hardware readings", "UTVIKLINGSVISNING · Eksempelverdier, ikke diskmålinger")).text_color(t::ink_dim(dark)))))
         // One drive needs no picker: its card below already names it. A
@@ -3300,7 +3331,7 @@ fn disk_detail(
     use crate::disks::Health;
     use crate::locale::text as l;
     let unknown = || l("Unavailable", "Utilgjengelig").to_string();
-    let bytes = |value: Option<u64>| value.map(|v| fmt_bytes(v as f64)).unwrap_or_else(unknown);
+    let bytes = |value: Option<u64>| value.map(|v| crate::engine::fmt_disk_bytes(v as f64)).unwrap_or_else(unknown);
     let count = |value: Option<u64>| value.map(|v| v.to_string()).unwrap_or_else(unknown);
     let health = match device.smart.health {
         Health::Passed => l("Passed", "Bestått"),
@@ -3795,15 +3826,29 @@ fn battery_tab(s: &Snapshot, dark: bool) -> Div {
             ],
             Some(100.0),
         )))
-        .when(!b.present, |d| d.child(empty_state(
+        // A Mac with no battery still has power to show: the whole Mac when
+        // macOS reports it, and what the apps and GPU draw.
+        .when(b.confirmed_absent(), |d| d.child(hero(
+            l("Power", "Effekt"),
+            s.power_w.map(crate::engine::fmt_watts).unwrap_or("—".into()),
+            if s.power_w.is_some() { l("Whole Mac · measured", "Hele Macen · målt") } else { l("This Mac does not report whole-Mac power", "Denne Macen melder ikke effekt for hele Macen") }.into(),
+            &s.power_hist,
+            Metric::Power.accent(dark),
+            dark,
+            vec![
+                ("GPU".into(), s.gpu.power_w.map(crate::engine::fmt_watts).unwrap_or("—".into())),
+                (l("CPU · apps", "CPU · apper").into(), crate::engine::fmt_watts(s.apps.iter().map(|a| a.power_w).sum())),
+            ],
+            None,
+        )))
+        .when(!b.present && !b.confirmed_absent(), |d| d.child(empty_state(
             "icons/battery-charging.svg",
             m.accent(dark),
             status.into(),
-            if b.available { l("This Mac has no internal battery. Battery health and charge readings do not apply.", "Denne Macen har ikke et internt batteri. Batterihelse og lademålinger er ikke relevante.").into() }
-            else { l("macOS did not provide battery information. No charge or health values are assumed.", "macOS ga ingen batteriinformasjon. Ingen verdier for ladenivå eller helse blir antatt.").into() },
+            l("macOS did not provide battery information. No charge or health values are assumed.", "macOS ga ingen batteriinformasjon. Ingen verdier for ladenivå eller helse blir antatt.").into(),
             dark,
         )))
-        .when(b.present, |d| d
+        .when(b.present || b.confirmed_absent(), |d| d
             .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("CPU power from macOS", "CPU-effekt fra macOS"), dark))
             // Below a milliwatt reads as zero, so those apps are left out.
             .child(if s.apps.iter().any(|a| a.power_w >= 0.001) {

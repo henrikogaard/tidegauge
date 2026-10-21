@@ -661,16 +661,24 @@ pub fn latest() -> Arc<Snapshot> {
 }
 
 pub fn fmt_bytes(n: f64) -> String {
+    fmt_scaled(n, 1024.0)
+}
+/// Disk capacity and free space, in the decimal units Finder uses
+/// (1 GB = 1000³ bytes). Memory stays binary through `fmt_bytes`.
+pub fn fmt_disk_bytes(n: f64) -> String {
+    fmt_scaled(n, 1000.0)
+}
+fn fmt_scaled(n: f64, base: f64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if n < 1.0 {
         return "0 B".into();
     }
     let mut v = n;
     let mut i = 0;
-    // Divide by 1024 but move up a unit once the shown value would reach
+    // Divide by the base but move up a unit once the shown value would reach
     // four digits ("1007 B", "1010 KB" become "0.98 KB", "0.99 MB").
     while v >= if i == 0 { 1000.0 } else { 999.5 } && i < 4 {
-        v /= 1024.0;
+        v /= base;
         i += 1;
     }
     if i == 0 {
@@ -804,6 +812,11 @@ mod tests {
         let (point, pct, hours) = if nb { (',', " %", "t") } else { ('.', "%", "h") };
         assert_eq!(fmt_bytes(6.74 * 1024. * 1024. * 1024.), format!("6{point}74 GB"));
         assert_eq!(fmt_bytes(512.0 * 1024.), "512 KB");
+        // Disks use decimal units like Finder; memory stays binary.
+        assert_eq!(fmt_disk_bytes(500e9), "500 GB");
+        assert_eq!(fmt_disk_bytes(994.66e9), "995 GB");
+        assert_eq!(fmt_disk_bytes(1e12), format!("1{point}00 TB"));
+        assert_eq!(fmt_bytes(500e9), format!("466 GB"));
         assert_eq!(fmt_rate(1.5 * 1024. * 1024.), format!("1{point}50 MB/s"));
         assert_eq!(fmt_watts(12.34), format!("12{point}3 W"));
         assert_eq!(fmt_signed_watts(-1.25), format!("-1{point}2 W"));

@@ -423,6 +423,12 @@ fn normalize_choices(choices: &mut Vec<String>, supported: &[&str]) {
     choices.retain(|s| supported.contains(&s.as_str()) && seen.insert(s.clone()));
 }
 
+/// The favorite or panel-tile choices to offer: a Mac macOS says has no
+/// battery is not offered a battery card.
+pub fn offered_choices(all: &'static [&'static str], battery_absent: bool) -> Vec<&'static &'static str> {
+    all.iter().filter(|key| !(battery_absent && **key == "battery")).collect()
+}
+
 pub const MENU_METRICS: [(&str, &str); 7] = [
     ("cpu", "CPU"),
     ("memory", "Memory"),
@@ -494,6 +500,14 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_battery_choice_is_offered_without_a_battery() {
+        assert!(offered_choices(&FAVORITE_METRICS, false).iter().any(|k| **k == "battery"));
+        let without = offered_choices(&PANEL_TILES, true);
+        assert!(!without.iter().any(|k| **k == "battery") && without.iter().any(|k| **k == "power"));
+        assert_eq!(without.len(), PANEL_TILES.len() - 1);
+    }
 
     #[test]
     fn only_a_missing_file_is_a_first_run() {

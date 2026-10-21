@@ -3,7 +3,7 @@
 //! It measures nothing itself and never guesses: a check whose reading is
 //! missing is skipped, not reported as fine or as a problem.
 
-use crate::engine::{fmt_bytes, fmt_celsius, fmt_pct, fmt_rate, fmt_up, Hist, Snapshot};
+use crate::engine::{fmt_bytes, fmt_disk_bytes, fmt_celsius, fmt_pct, fmt_rate, fmt_up, Hist, Snapshot};
 use crate::locale::text as l;
 use crate::metrics::Pressure;
 use crate::process_control::Force;
@@ -334,9 +334,9 @@ fn disk_space(s: &Snapshot) -> Option<Finding> {
         )
         .detail(format!(
             "{} {} {} {}",
-            fmt_bytes(d.free as f64),
+            fmt_disk_bytes(d.free as f64),
             l("free of", "ledig av"),
-            fmt_bytes(d.total as f64),
+            fmt_disk_bytes(d.total as f64),
             l("(as macOS reports it)", "(slik macOS melder det)")
         ))
         .action(Some(Action::Open {

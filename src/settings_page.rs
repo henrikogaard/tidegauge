@@ -794,8 +794,9 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
 /// panel always has a reading.
 fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let only_one = settings.panel_tiles.len() <= 1;
-    let rows = crate::settings::PANEL_TILES
-        .iter()
+    let tiles = crate::settings::offered_choices(&crate::settings::PANEL_TILES, crate::engine::latest().battery.confirmed_absent());
+    let rows = tiles
+        .into_iter()
         .enumerate()
         .map(|(i, key)| {
             let enabled = settings.panel_tiles.iter().any(|x| x == key);
@@ -844,7 +845,8 @@ fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> 
 
 fn overview(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut rows = Vec::new();
-    for (i, key) in crate::settings::FAVORITE_METRICS.iter().enumerate() {
+    let favorites = crate::settings::offered_choices(&crate::settings::FAVORITE_METRICS, crate::engine::latest().battery.confirmed_absent());
+    for (i, key) in favorites.into_iter().enumerate() {
         let enabled = settings.favorite_metrics.iter().any(|x| x == key);
         let label = crate::ui::Card::from_key(key).map(|c| c.label()).unwrap_or(key);
         rows.push(row(
