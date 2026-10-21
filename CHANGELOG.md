@@ -6,6 +6,50 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Changed
+
+- On the Agents page the running servers are headed **Dev servers**, with the
+  per-project list under **By project**, instead of "Development servers" over a
+  second "Projects" heading.
+### Added
+
+- Settings is grouped into General, Alerts, Menu bar & panel, Look and About,
+  with a row of buttons at the top that jumps to each section. "Pick alerts" in
+  the welcome still lands on Alerts.
+- Alerts show whether macOS allows notifications (allowed, not asked yet, or
+  blocked), with "Allow notifications" or "Open Notification Settings" where
+  that helps, and a "Send test alert" button that sends a real notification.
+- The heavy-disk (50 to 2000 MB/s, default 400) and heavy-network (1 to 500
+  MB/s, default 80) alert levels are adjustable with sliders. Existing settings
+  keep today's levels.
+- Menu-bar presets "Icon only", "CPU + Memory" and "Full" (CPU, memory, GPU,
+  network and, where there is one, battery) apply at once. The one that matches
+  the current readings is marked.
+
+### Changed
+
+- The appearance, colors and charts rows moved from General to Look. The
+  Overview reset row is now "Dashboard layout" with a "Reset layout" button, the
+  menu-bar colors row is named "Menu-bar colors", and the panel tile group is
+  "Panel contents". "Reset to icon only" is now the "Icon only" preset.
+### Added
+
+- Keyboard shortcuts for the dashboard: ⌘1 to ⌘9 open the first nine pages in
+  the sidebar, in the order shown (Overview is ⌘1, and a page hidden in
+  Settings does not take a number), and ⌘W closes the window like the red
+  button. Each sidebar entry's hover tip shows its shortcut.
+- The Sound page explains per-app volume in one line, including that macOS asks
+  for audio-capture permission the first time.
+
+### Changed
+
+- The sidebar is a keyboard list: Up and Down move between entries, Return or
+  Space opens one, and only the open page is a Tab stop, so Tab no longer
+  walks every entry before reaching the content.
+- Per-app volume on the Sound page is a 0–100% slider (arrow keys move it in
+  steps of 5) in place of the − and + buttons, and Mute stays a toggle. The
+  controls are named after the app for VoiceOver ("Spotify volume", "Mute
+  Spotify").
 ### Added
 
 - Overview shows a "needs attention" strip when something is wrong right now:

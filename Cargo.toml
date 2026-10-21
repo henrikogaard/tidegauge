@@ -41,7 +41,7 @@ objc2-core-wlan = { version = "0.3.2", default-features = false, features = [
 block2 = "0.6"
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = [
     "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse",
-    "UNNotificationTrigger", "UNUserNotificationCenter", "block2",
+    "UNNotificationTrigger", "UNNotificationSettings", "UNUserNotificationCenter", "block2",
 ] }
 
 [dev-dependencies]

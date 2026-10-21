@@ -65,7 +65,7 @@ mod widget_export;
 use gpui_kit::*;
 use std::time::Duration;
 
-actions!(tidegauge, [Quit]);
+actions!(tidegauge, [Quit, CloseWindow]);
 
 fn main() {
     let _instance = match instance::acquire() {
@@ -100,6 +100,9 @@ fn main() {
         .detach();
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        // Like the red button: the dashboard hides, the menu-bar item reopens it.
+        cx.bind_keys([KeyBinding::new("cmd-w", CloseWindow, None)]);
+        cx.on_action(|_: &CloseWindow, cx| cx.hide());
         #[cfg(target_os = "macos")]
         {
             // Hide Dock icon & menu bar — we're a status item app.
