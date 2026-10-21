@@ -1844,7 +1844,7 @@ impl TideGaugeView {
                 .gap(t::SECTION_GAP)
                 .child(crate::agents_panel::panel(self, dark, this.clone()))
                 .when(servers, |d| {
-                    d.child(section_header(l("Development servers", "Utviklingsservere"), "", dark))
+                    d.child(section_header(l("Dev servers", "Utviklingsservere"), "", dark))
                         .when_some(self.project_error.as_ref(), |d, error| {
                             d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed { t::warn(dark) } else { t::ink_dim(dark) })))
                         })
@@ -4366,7 +4366,7 @@ pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>
             ),
         )
         .child(section_header(
-            l("Projects", "Prosjekter"),
+            l("By project", "Etter prosjekt"),
             &crate::locale::count(total as u64, "server", "servers", "server", "servere"),
             dark,
         ));

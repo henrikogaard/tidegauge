@@ -110,7 +110,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | App grouping | CPU, memory, disk counters, and processor power grouped by executable bundle or parent app |
 | Sound | Choose the output and input device; volume and mute for both where the device supports them; per-app volume and mute (macOS 14.2+) with a level meter |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
-| Development servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
+| Dev servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
 | History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends (including chip, SSD and battery temperatures) with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour; Export CSV saves the samples to Downloads |
 | Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
