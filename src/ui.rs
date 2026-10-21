@@ -184,6 +184,8 @@ pub struct TideGaugeView {
     settings_scroll: ScrollHandle,
     /// The Alerts group in Settings, for "Pick alerts" in the welcome.
     pub(crate) alerts_anchor: ScrollAnchor,
+    /// Where each Settings section starts, for the jump list at its top.
+    pub(crate) section_anchors: Vec<ScrollAnchor>,
     /// Settings was opened to show Alerts: scroll there once it is drawn.
     scroll_to_alerts: bool,
     /// Whether the window is showing its frosted background right now.
@@ -295,7 +297,8 @@ impl TideGaugeView {
             app_history: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: settings_scroll.clone(),
-            alerts_anchor: ScrollAnchor::for_handle(settings_scroll),
+            alerts_anchor: crate::settings_page::section_anchors(&settings_scroll)[crate::settings_page::ALERTS].clone(),
+            section_anchors: crate::settings_page::section_anchors(&settings_scroll),
             scroll_to_alerts: false,
             blurred: false,
         };
@@ -1896,7 +1899,8 @@ impl TideGaugeView {
     /// Settings opens at the top; only the About menu item opens it lower.
     pub fn reset_settings_scroll(&mut self) {
         self.settings_scroll = ScrollHandle::new();
-        self.alerts_anchor = ScrollAnchor::for_handle(self.settings_scroll.clone());
+        self.section_anchors = crate::settings_page::section_anchors(&self.settings_scroll);
+        self.alerts_anchor = self.section_anchors[crate::settings_page::ALERTS].clone();
     }
 }
 
@@ -1954,7 +1958,7 @@ impl TideGaugeView {
                 .gap(t::SECTION_GAP)
                 .child(crate::agents_panel::panel(self, dark, this.clone()))
                 .when(servers, |d| {
-                    d.child(section_header(l("Development servers", "Utviklingsservere"), "", dark))
+                    d.child(section_header(l("Dev servers", "Utviklingsservere"), "", dark))
                         .when_some(self.project_error.as_ref(), |d, error| {
                             d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed { t::warn(dark) } else { t::ink_dim(dark) })))
                         })
@@ -4489,7 +4493,7 @@ pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>
             ),
         )
         .child(section_header(
-            l("Projects", "Prosjekter"),
+            l("By project", "Etter prosjekt"),
             &crate::locale::count(total as u64, "server", "servers", "server", "servere"),
             dark,
         ));
