@@ -56,6 +56,14 @@ pub fn set_language(choice: Option<&str>) {
     LANGUAGE.store(if decide(choice) { 2 } else { 1 }, Ordering::Relaxed);
 }
 
+/// The short weekday name in the UI language; 0 is Sunday, 6 Saturday.
+pub fn weekday(index: usize) -> &'static str {
+    const ENGLISH: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const NORWEGIAN: [&str; 7] = ["søn", "man", "tir", "ons", "tor", "fre", "lør"];
+    let names = if is_norwegian() { NORWEGIAN } else { ENGLISH };
+    names[index % 7]
+}
+
 pub fn text(english: &'static str, norwegian: &'static str) -> &'static str {
     if is_norwegian() {
         norwegian

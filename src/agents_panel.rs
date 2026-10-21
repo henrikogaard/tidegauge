@@ -128,11 +128,15 @@ pub(crate) fn current_plans(plans: &[Plan], now: f64) -> Vec<&Plan> {
 
 /// "as of 12:01" for a reading from today, "as of Tue 12:01" for an older one.
 fn as_of(at: f64, now: f64) -> String {
-    use crate::history_browser::{local_clock, local_day, local_weekday_clock};
+    use crate::history_browser::{local_clock, local_day, local_weekday};
     let when = if local_day(at) == local_day(now) {
         local_clock(at)
     } else {
-        local_weekday_clock(at)
+        format!(
+            "{} {}",
+            crate::locale::weekday(local_weekday(at)),
+            local_clock(at)
+        )
     };
     format!("{} {when}", l("as of", "per"))
 }
@@ -184,6 +188,21 @@ pub(crate) fn left_text(left: Option<f64>) -> String {
     left.map(percent).unwrap_or_default()
 }
 
+/// What a screen reader says for a plan: a plan that is not updating also
+/// says "as of …", so its percentage is not heard as current.
+fn plan_label(provider: &str, left: Option<f64>, note: &str, old: bool) -> String {
+    let base = format!(
+        "{} {}",
+        provider_name(provider),
+        left.map(percent).unwrap_or_default()
+    );
+    if old && !note.is_empty() {
+        format!("{base}, {note}")
+    } else {
+        base
+    }
+}
+
 pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
     let Plans::Loaded(plans) = plans else { return None };
     let now = now();
@@ -194,6 +213,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
     let mut strip = div().flex().flex_wrap().gap_2();
     for plan in plans {
         let PlanGlance { left, color, ring, note, name_color, note_color, .. } = plan_glance(plan, now, dark);
+        let old = plan_not_updating(plan, now);
         let target = this.clone();
         let keyboard = this.clone();
         let provider = plan.provider.clone();
@@ -201,7 +221,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
             div()
                 .id(SharedString::from(format!("plan-chip-{provider}")))
                 .role(gpui_kit::Role::Button)
-                .aria_label(SharedString::from(format!("{} {}", provider_name(&provider), left.map(percent).unwrap_or_default())))
+                .aria_label(SharedString::from(plan_label(&provider, left, &note, old)))
                 .tab_index(0)
                 .flex()
                 .items_center()
@@ -768,14 +788,35 @@ mod tests {
     }
 
     #[test]
+    fn weekday_names_follow_the_ui_language() {
+        let names: Vec<&str> = (0..7).map(crate::locale::weekday).collect();
+        if crate::locale::is_norwegian() {
+            assert_eq!(names, ["søn", "man", "tir", "ons", "tor", "fre", "lør"]);
+        } else {
+            assert_eq!(names, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
+        }
+        // 2025-10-14 12:00 UTC is a Tuesday in every time zone.
+        assert_eq!(crate::history_browser::local_weekday(1_760_443_200.), 2);
+    }
+
+    #[test]
+    fn a_plan_not_updating_says_so_to_a_screen_reader() {
+        let fresh = super::plan_label("claude", Some(0.5), "on pace", false);
+        assert!(!fresh.contains("on pace"));
+        let old = super::plan_label("claude", Some(0.5), "as of 12:01", true);
+        assert!(old.ends_with(", as of 12:01"), "{old}");
+    }
+
+    #[test]
     fn as_of_gives_the_clock_today_and_the_weekday_on_older_days() {
-        use crate::history_browser::{local_clock, local_weekday_clock};
+        use crate::history_browser::{local_clock, local_weekday};
         // Noon-ish UTC keeps "today" and "two days ago" apart in any zone.
         let now = 1_760_000_000.;
         let earlier = now - 2. * 86_400.;
         assert_eq!(as_of(now, now), format!("{} {}", l("as of", "per"), local_clock(now)));
         let old = as_of(earlier, now);
-        assert_eq!(old, format!("{} {}", l("as of", "per"), local_weekday_clock(earlier)));
+        let when = format!("{} {}", crate::locale::weekday(local_weekday(earlier)), local_clock(earlier));
+        assert_eq!(old, format!("{} {when}", l("as of", "per")));
         assert!(old.len() > as_of(now, now).len(), "weekday adds a word: {old}");
     }
 }

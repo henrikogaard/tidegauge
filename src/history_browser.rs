@@ -529,9 +529,9 @@ pub fn local_clock(ts: f64) -> String {
     format_time(ts, c"%H:%M")
 }
 
-/// The local clock time of `ts` with its abbreviated weekday, "Tue 12:01".
-pub fn local_weekday_clock(ts: f64) -> String {
-    format_time(ts, c"%a %H:%M")
+/// The local weekday of `ts`, 0 for Sunday to 6 for Saturday.
+pub fn local_weekday(ts: f64) -> usize {
+    format_time(ts, c"%w").parse().unwrap_or(0) % 7
 }
 
 fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
