@@ -64,6 +64,10 @@ pub struct Settings {
     pub alert_mem_enabled: bool,
     pub alert_disk_enabled: bool,
     pub alert_network_enabled: bool,
+    /// Heavy disk activity: read plus write, in MB/s, held for 30 seconds.
+    pub alert_disk_mbps: f64,
+    /// Heavy network activity: in plus out, in MB/s, held for 30 seconds.
+    pub alert_network_mbps: f64,
     /// Alert when one app stays above `alert_app_cpu_pct` (of one core) for
     /// five minutes.
     pub alert_app_enabled: bool,
@@ -141,6 +145,8 @@ impl Default for Settings {
             alert_mem_enabled: false,
             alert_disk_enabled: false,
             alert_network_enabled: false,
+            alert_disk_mbps: DISK_ALERT_DEFAULT,
+            alert_network_mbps: NETWORK_ALERT_DEFAULT,
             alert_app_enabled: false,
             alert_app_cpu_pct: APP_CPU_DEFAULT,
             alert_app_mem_enabled: false,
@@ -272,6 +278,8 @@ impl Settings {
     pub fn normalize(&mut self) {
         self.alert_cpu_pct = valid_threshold(self.alert_cpu_pct, 90.);
         self.alert_mem_pct = valid_threshold(self.alert_mem_pct, 92.);
+        self.alert_disk_mbps = valid_disk_mbps(self.alert_disk_mbps);
+        self.alert_network_mbps = valid_network_mbps(self.alert_network_mbps);
         self.alert_app_cpu_pct = valid_app_threshold(self.alert_app_cpu_pct);
         self.alert_app_mem_gb = valid_app_memory_gb(self.alert_app_mem_gb);
         self.alert_temp_c = valid_chip_temp(self.alert_temp_c);
@@ -407,6 +415,28 @@ pub fn valid_transparency_amount(value: f64) -> f64 {
     }
 }
 
+pub const DISK_ALERT_DEFAULT: f64 = 400.;
+pub const DISK_ALERT_RANGE: (f64, f64) = (50., 2000.);
+
+pub fn valid_disk_mbps(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(DISK_ALERT_RANGE.0, DISK_ALERT_RANGE.1)
+    } else {
+        DISK_ALERT_DEFAULT
+    }
+}
+
+pub const NETWORK_ALERT_DEFAULT: f64 = 80.;
+pub const NETWORK_ALERT_RANGE: (f64, f64) = (1., 500.);
+
+pub fn valid_network_mbps(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(NETWORK_ALERT_RANGE.0, NETWORK_ALERT_RANGE.1)
+    } else {
+        NETWORK_ALERT_DEFAULT
+    }
+}
+
 pub const APP_MEMORY_DEFAULT: f64 = 4.;
 pub const APP_MEMORY_RANGE: (f64, f64) = (1., 64.);
 
@@ -455,6 +485,70 @@ pub fn style_fits(metric: &str, style: &str) -> bool {
     }
 }
 
+/// A ready-made set of menu-bar readings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuPreset {
+    IconOnly,
+    CpuMemory,
+    Full,
+}
+
+impl MenuPreset {
+    pub const ALL: [MenuPreset; 3] = [MenuPreset::IconOnly, MenuPreset::CpuMemory, MenuPreset::Full];
+
+    pub fn label(self) -> &'static str {
+        use crate::locale::text as l;
+        match self {
+            MenuPreset::IconOnly => l("Icon only", "Bare ikon"),
+            MenuPreset::CpuMemory => l("CPU + Memory", "CPU + minne"),
+            MenuPreset::Full => l("Full", "Alle"),
+        }
+    }
+
+    /// The readings as (metric, style), in menu order. Battery is left out
+    /// on a Mac that has none.
+    fn readings(self, has_battery: bool) -> Vec<(&'static str, &'static str)> {
+        match self {
+            MenuPreset::IconOnly => Vec::new(),
+            MenuPreset::CpuMemory => vec![("cpu", "value"), ("memory", "value")],
+            MenuPreset::Full => {
+                let mut items = vec![("cpu", "value"), ("memory", "value"), ("gpu", "value"), ("network", "value")];
+                if has_battery {
+                    items.push(("battery", "value"));
+                }
+                items
+            }
+        }
+    }
+}
+
+impl Settings {
+    /// Replace the menu-bar readings with a preset's. Icon only also brings
+    /// the icon back, so the bar is never empty.
+    pub fn apply_menu_preset(&mut self, preset: MenuPreset, has_battery: bool) {
+        self.menu_items = preset
+            .readings(has_battery)
+            .into_iter()
+            .map(|(metric, style)| MenuItem { metric: metric.into(), style: style.into() })
+            .collect();
+        if preset == MenuPreset::IconOnly {
+            self.show_app_icon = true;
+        }
+    }
+
+    /// The preset the current readings amount to, if any.
+    pub fn menu_preset(&self, has_battery: bool) -> Option<MenuPreset> {
+        MenuPreset::ALL.into_iter().find(|&preset| {
+            let wanted = preset.readings(has_battery);
+            self.menu_items.len() == wanted.len()
+                && wanted
+                    .iter()
+                    .all(|(metric, style)| self.menu_items.iter().any(|i| i.metric == *metric && i.style == *style))
+                && (preset != MenuPreset::IconOnly || self.show_app_icon)
+        })
+    }
+}
+
 pub fn localized_metric_label(metric: &str) -> Option<&'static str> {
     use crate::locale::text as l;
     Some(match metric {
@@ -494,6 +588,59 @@ pub fn mutate(f: impl FnOnce(&mut Settings)) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presets_apply_and_are_detected() {
+        let mut s = Settings::default();
+        assert_eq!(s.menu_preset(true), Some(MenuPreset::IconOnly), "a new install is icon only");
+        s.apply_menu_preset(MenuPreset::CpuMemory, true);
+        assert_eq!(s.menu_preset(true), Some(MenuPreset::CpuMemory));
+        s.apply_menu_preset(MenuPreset::Full, true);
+        let metrics: Vec<_> = s.menu_items.iter().map(|i| i.metric.as_str()).collect();
+        assert_eq!(metrics, ["cpu", "memory", "gpu", "network", "battery"]);
+        assert!(s.menu_items.iter().all(|i| style_fits(&i.metric, &i.style)));
+        assert_eq!(s.menu_preset(true), Some(MenuPreset::Full));
+        s.apply_menu_preset(MenuPreset::IconOnly, true);
+        assert!(s.menu_items.is_empty() && s.show_app_icon);
+    }
+
+    #[test]
+    fn full_preset_skips_battery_on_a_mac_without_one() {
+        let mut s = Settings::default();
+        s.apply_menu_preset(MenuPreset::Full, false);
+        assert!(!s.menu_items.iter().any(|i| i.metric == "battery"));
+        assert_eq!(s.menu_preset(false), Some(MenuPreset::Full));
+    }
+
+    #[test]
+    fn a_changed_reading_matches_no_preset() {
+        let mut s = Settings::default();
+        s.apply_menu_preset(MenuPreset::CpuMemory, true);
+        s.set_menu_style("cpu", Some("graph"));
+        assert_eq!(s.menu_preset(true), None);
+        s.set_menu_style("cpu", Some("value"));
+        s.set_menu_style("disk", Some("value"));
+        assert_eq!(s.menu_preset(true), None);
+        let mut hidden = Settings { show_app_icon: false, ..Settings::default() };
+        assert_eq!(hidden.menu_preset(true), None, "no readings and no icon is not icon only");
+        hidden.apply_menu_preset(MenuPreset::IconOnly, true);
+        assert_eq!(hidden.menu_preset(true), Some(MenuPreset::IconOnly));
+    }
+
+    #[test]
+    fn io_alert_thresholds_default_clamp_and_load_from_old_files() {
+        let old: Settings = serde_json::from_str(r#"{"alert_disk_enabled":true}"#).unwrap();
+        assert_eq!((old.alert_disk_mbps, old.alert_network_mbps), (400., 80.));
+        assert_eq!(valid_disk_mbps(10.), 50.);
+        assert_eq!(valid_disk_mbps(9000.), 2000.);
+        assert_eq!(valid_disk_mbps(f64::NAN), 400.);
+        assert_eq!(valid_network_mbps(0.), 1.);
+        assert_eq!(valid_network_mbps(900.), 500.);
+        assert_eq!(valid_network_mbps(f64::INFINITY), 80.);
+        let mut wild: Settings = serde_json::from_str(r#"{"alert_disk_mbps":-5,"alert_network_mbps":1e9}"#).unwrap();
+        wild.normalize();
+        assert_eq!((wild.alert_disk_mbps, wild.alert_network_mbps), (50., 500.));
+    }
 
     #[test]
     fn only_a_missing_file_is_a_first_run() {
