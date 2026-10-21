@@ -111,11 +111,34 @@ fn plan_not_updating(plan: &Plan, now: f64) -> bool {
     plan.stale || plan.failed || plan.fetched_at.is_none_or(|at| now - at > FRESH_SECS)
 }
 
+/// A plan fetched longer ago than this, or never, is left off the glance.
+const HIDE_SECS: f64 = 86_400.;
+
+/// Whether a plan appears at a glance: fetched at some point in the last 24
+/// hours, even if it is not updating now (it is then greyed out).
+fn plan_shown(plan: &Plan, now: f64) -> bool {
+    plan.fetched_at.is_some_and(|at| now - at <= HIDE_SECS)
+}
+
 /// The plans worth showing at a glance (the Overview strip and the menu-bar
-/// panel): exactly those not labelled "not updating". The Agents page still
-/// lists every plan with its age.
+/// panel). The Agents page still lists every plan.
 pub(crate) fn current_plans(plans: &[Plan], now: f64) -> Vec<&Plan> {
-    plans.iter().filter(|plan| !plan_not_updating(plan, now)).collect()
+    plans.iter().filter(|plan| plan_shown(plan, now)).collect()
+}
+
+/// "as of 12:01" for a reading from today, "as of Tue 12:01" for an older one.
+fn as_of(at: f64, now: f64) -> String {
+    use crate::history_browser::{local_clock, local_day, local_weekday};
+    let when = if local_day(at) == local_day(now) {
+        local_clock(at)
+    } else {
+        format!(
+            "{} {}",
+            crate::locale::weekday(local_weekday(at)),
+            local_clock(at)
+        )
+    };
+    format!("{} {when}", l("as of", "per"))
 }
 
 /// Plan rings for the Overview: one compact chip per provider, opening Agents.
@@ -127,6 +150,8 @@ pub(crate) struct PlanGlance {
     pub color: Hsla,
     pub ring: Vec<(f64, Hsla)>,
     pub note: String,
+    /// The provider name: dimmed along with the ring when not updating.
+    pub name_color: Hsla,
     /// The note stands out only when the plan is running out.
     pub note_color: Hsla,
 }
@@ -148,18 +173,34 @@ pub(crate) fn plan_glance(plan: &Plan, now: f64, dark: bool) -> PlanGlance {
     };
     let ring = left.map(|left| vec![(left, color), (1. - left, t::card_hi(dark))]).unwrap_or_default();
     let note = match (old, &pace) {
-        (true, _) => l("not updating", "oppdateres ikke").to_string(),
+        (true, _) => plan.fetched_at.map(|at| as_of(at, now)).unwrap_or_default(),
         (false, Pace::RunsOut { in_secs }) => format!("{} {}", l("out in", "tom om"), duration(*in_secs)),
         (false, Pace::UsedUp) => l("used up", "brukt opp").to_string(),
         (false, Pace::OnPace { .. }) => l("on pace", "i rute").to_string(),
         (false, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
     };
     let note_color = if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) };
-    PlanGlance { name: provider_name(&plan.provider), left, color, ring, note, note_color }
+    let name_color = if old { t::ink_dim(dark) } else { t::ink(dark) };
+    PlanGlance { name: provider_name(&plan.provider), left, color, ring, note, name_color, note_color }
 }
 
 pub(crate) fn left_text(left: Option<f64>) -> String {
     left.map(percent).unwrap_or_default()
+}
+
+/// What a screen reader says for a plan: a plan that is not updating also
+/// says "as of …", so its percentage is not heard as current.
+fn plan_label(provider: &str, left: Option<f64>, note: &str, old: bool) -> String {
+    let base = format!(
+        "{} {}",
+        provider_name(provider),
+        left.map(percent).unwrap_or_default()
+    );
+    if old && !note.is_empty() {
+        format!("{base}, {note}")
+    } else {
+        base
+    }
 }
 
 pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Option<Div> {
@@ -171,7 +212,8 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
     }
     let mut strip = div().flex().flex_wrap().gap_2();
     for plan in plans {
-        let PlanGlance { left, color, ring, note, note_color, .. } = plan_glance(plan, now, dark);
+        let PlanGlance { left, color, ring, note, name_color, note_color, .. } = plan_glance(plan, now, dark);
+        let old = plan_not_updating(plan, now);
         let target = this.clone();
         let keyboard = this.clone();
         let provider = plan.provider.clone();
@@ -179,7 +221,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
             div()
                 .id(SharedString::from(format!("plan-chip-{provider}")))
                 .role(gpui_kit::Role::Button)
-                .aria_label(SharedString::from(format!("{} {}", provider_name(&provider), left.map(percent).unwrap_or_default())))
+                .aria_label(SharedString::from(plan_label(&provider, left, &note, old)))
                 .tab_index(0)
                 .flex()
                 .items_center()
@@ -204,7 +246,7 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                                 .flex()
                                 .gap_1()
                                 .text_size(t::TEXT_BODY)
-                                .child(div().font_weight(FontWeight::SEMIBOLD).child(provider_name(&plan.provider)))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(name_color).child(provider_name(&plan.provider)))
                                 .child(div().text_color(color).child(format!(
                                     "{} {}",
                                     left.map(percent).unwrap_or_else(|| "–".into()),
@@ -684,7 +726,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
 #[cfg(test)]
 mod tests {
     // Named imports: the UI kit's glob export includes its own `test`.
-    use super::{credits_left, current_plans, plan_not_updating, Plan, FRESH_SECS};
+    use super::{as_of, credits_left, current_plans, plan_not_updating, Plan, FRESH_SECS};
     use crate::locale::{number, text as l, whole};
 
     #[test]
@@ -716,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn only_plans_that_are_updating_are_shown_at_a_glance() {
+    fn plans_are_hidden_only_when_never_fetched_or_over_a_day_old() {
         let plan = |provider: &str, stale, failed, fetched_at| Plan {
             provider: provider.into(),
             plan: None,
@@ -726,17 +768,55 @@ mod tests {
             stale,
             failed,
         };
-        let now = 10_000.;
+        let now = 200_000.;
         let plans = vec![
-            plan("claude", false, false, Some(now - 60.)),
-            plan("codex", true, false, Some(now - 60.)),
-            plan("old", false, false, Some(now - FRESH_SECS - 1.)),
-            plan("never", false, false, None),
+            plan("fresh", false, false, Some(now - 60.)),
+            plan("stale", true, false, Some(now - 60.)),
+            plan("idle", false, false, Some(now - FRESH_SECS - 1.)),
             plan("broken", false, true, Some(now - 60.)),
+            plan("day", false, false, Some(now - 86_400.)),
+            plan("ancient", false, false, Some(now - 86_401.)),
+            plan("never", true, false, None),
         ];
         let shown: Vec<&str> = current_plans(&plans, now).iter().map(|p| p.provider.as_str()).collect();
-        assert_eq!(shown, ["claude"]);
-        assert!(current_plans(&plans[1..], now).is_empty(), "all stale: nothing to show, so no section");
+        assert_eq!(shown, ["fresh", "stale", "idle", "broken", "day"]);
+        let greyed: Vec<&str> =
+            current_plans(&plans, now).iter().filter(|p| plan_not_updating(p, now)).map(|p| p.provider.as_str()).collect();
+        assert_eq!(greyed, ["stale", "idle", "broken", "day"], "only the fresh one keeps its colours");
+        assert!(current_plans(&plans[5..], now).is_empty(), "nothing recent: no section");
         assert!(current_plans(&[], now).is_empty());
+    }
+
+    #[test]
+    fn weekday_names_follow_the_ui_language() {
+        let names: Vec<&str> = (0..7).map(crate::locale::weekday).collect();
+        if crate::locale::is_norwegian() {
+            assert_eq!(names, ["søn", "man", "tir", "ons", "tor", "fre", "lør"]);
+        } else {
+            assert_eq!(names, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
+        }
+        // 2025-10-14 12:00 UTC is a Tuesday in every time zone.
+        assert_eq!(crate::history_browser::local_weekday(1_760_443_200.), 2);
+    }
+
+    #[test]
+    fn a_plan_not_updating_says_so_to_a_screen_reader() {
+        let fresh = super::plan_label("claude", Some(0.5), "on pace", false);
+        assert!(!fresh.contains("on pace"));
+        let old = super::plan_label("claude", Some(0.5), "as of 12:01", true);
+        assert!(old.ends_with(", as of 12:01"), "{old}");
+    }
+
+    #[test]
+    fn as_of_gives_the_clock_today_and_the_weekday_on_older_days() {
+        use crate::history_browser::{local_clock, local_weekday};
+        // Noon-ish UTC keeps "today" and "two days ago" apart in any zone.
+        let now = 1_760_000_000.;
+        let earlier = now - 2. * 86_400.;
+        assert_eq!(as_of(now, now), format!("{} {}", l("as of", "per"), local_clock(now)));
+        let old = as_of(earlier, now);
+        let when = format!("{} {}", crate::locale::weekday(local_weekday(earlier)), local_clock(earlier));
+        assert_eq!(old, format!("{} {when}", l("as of", "per")));
+        assert!(old.len() > as_of(now, now).len(), "weekday adds a word: {old}");
     }
 }

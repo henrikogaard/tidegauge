@@ -75,6 +75,11 @@ hardware acceptance checks. A merge and a published release are separate events.
   sidebar, and shows system power when macOS reports it, GPU power and the apps
   using the most CPU power. The Battery choices are no longer offered for the
   Overview and the menu-bar panel on such a Mac.
+- AI plans that are not updating now stay on the Overview and in the menu-bar
+  panel instead of disappearing: greyed out, with "as of 12:01" (or "as of Tue
+  12:01" from an earlier day) in place of the pace. A plan is left out only
+  when it was never fetched or its last fetch is over 24 hours old. The Agents
+  page lists every plan, as before.
 
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 

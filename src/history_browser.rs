@@ -524,6 +524,16 @@ pub fn local_time(ts: f64) -> String {
     format_time(ts, c"%Y-%m-%d %H:%M")
 }
 
+/// The local clock time of `ts`, "HH:MM".
+pub fn local_clock(ts: f64) -> String {
+    format_time(ts, c"%H:%M")
+}
+
+/// The local weekday of `ts`, 0 for Sunday to 6 for Saturday.
+pub fn local_weekday(ts: f64) -> usize {
+    format_time(ts, c"%w").parse().unwrap_or(0) % 7
+}
+
 fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
     let time = ts as libc::time_t;
     let mut date = unsafe { std::mem::zeroed::<libc::tm>() };

@@ -58,7 +58,7 @@ impl Layout {
     }
 
     /// The plans to draw now: none unless the section was open for, else the
-    /// first three that are being updated at this moment.
+    /// first three shown at this moment.
     fn plans<'a>(&self, plans: &'a crate::agents::Plans, now: f64) -> Vec<&'a crate::agents::Plan> {
         if self.plans {
             current_plans(plans, now)
@@ -74,7 +74,7 @@ fn spans_both_columns(index: usize, count: usize) -> bool {
     count % 2 == 1 && index + 1 == count
 }
 
-/// The first three plans that are being updated.
+/// The first three plans worth showing (fetched within the day).
 fn current_plans(plans: &crate::agents::Plans, now: f64) -> Vec<&crate::agents::Plan> {
     match plans {
         crate::agents::Plans::Loaded(plans) => crate::agents_panel::current_plans(plans, now).into_iter().take(3).collect(),
@@ -385,7 +385,7 @@ impl Render for MenuPanel {
                             .items_center()
                             .gap(t::SPACE_2)
                             .child(div().size(px(18.)).flex_shrink_0().child(crate::ui::donut(&plan.ring, 18., t::card_hi(dark))))
-                            .child(div().flex_1().min_w_0().text_size(t::TEXT_BODY).truncate().child(plan.name))
+                            .child(div().flex_1().min_w_0().text_size(t::TEXT_BODY).truncate().text_color(plan.name_color).child(plan.name))
                             .child(div().text_size(t::TEXT_SMALL).text_color(plan.note_color).child(plan.note))
                             .child(
                                 div()
@@ -533,8 +533,8 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_that_is_not_updating_leaves_no_section() {
-        let stale = Plans::Loaded(vec![plan("claude", 7200.)]);
+    fn a_plan_older_than_a_day_leaves_no_section() {
+        let stale = Plans::Loaded(vec![plan("claude", 90_000.)]);
         let layout = Layout::new(&settings(4, true, true), &stale, NOW);
         assert!(!layout.plans);
         assert_eq!(layout.height(), BASE_HEIGHT - SECTION);
@@ -542,12 +542,21 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_that_is_not_updating_still_counts_toward_the_section() {
+        let idle = Plans::Loaded(vec![plan("claude", 7200.)]);
+        let layout = Layout::new(&settings(4, true, true), &idle, NOW);
+        assert!(layout.plans);
+        assert_eq!(layout.height(), BASE_HEIGHT);
+        assert_eq!(layout.plans(&idle, NOW).len(), 1);
+    }
+
+    #[test]
     fn the_layout_stays_as_decided_when_plans_change_while_open() {
         let fresh = Plans::Loaded(vec![plan("claude", 60.), plan("codex", 60.)]);
-        let stale = Plans::Loaded(vec![plan("claude", 7200.)]);
+        let stale = Plans::Loaded(vec![plan("claude", 90_000.)]);
 
         // Opened with a plan: the section keeps its room and draws nothing
-        // once the plan goes stale; the height never changes.
+        // once the plan is over a day old; the height never changes.
         let open_with = Layout::new(&settings(4, true, true), &fresh, NOW);
         let height = open_with.height();
         assert_eq!(open_with.plans(&fresh, NOW).len(), 2);
