@@ -6,6 +6,11 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Changed
+
+- On the Agents page the running servers are headed **Dev servers**, with the
+  per-project list under **By project**, instead of "Development servers" over a
+  second "Projects" heading.
 ### Added
 
 - Settings is grouped into General, Alerts, Menu bar & panel, Look and About,
