@@ -6,6 +6,25 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Keyboard shortcuts for the dashboard: ⌘1 to ⌘9 open the first nine pages in
+  the sidebar, in the order shown (Overview is ⌘1, and a page hidden in
+  Settings does not take a number), and ⌘W closes the window like the red
+  button. Each sidebar entry's hover tip shows its shortcut.
+- The Sound page explains per-app volume in one line, including that macOS asks
+  for audio-capture permission the first time.
+
+### Changed
+
+- The sidebar is a keyboard list: Up and Down move between entries, Return or
+  Space opens one, and only the open page is a Tab stop, so Tab no longer
+  walks every entry before reaching the content.
+- Per-app volume on the Sound page is a 0–100% slider (arrow keys move it in
+  steps of 5) in place of the − and + buttons, and Mute stays a toggle. The
+  controls are named after the app for VoiceOver ("Spotify volume", "Mute
+  Spotify").
+
 ## [0.5.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.5.2) — 2026-10-20
 
 ### Fixed

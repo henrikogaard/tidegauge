@@ -1082,31 +1082,84 @@ pub fn audio_input(
     card
 }
 
-/// Per-app volume: mute, a step down, the level and a step up, plus a meter
-/// of the app's own sound while Tidegauge carries it.
+/// The slider state of each app's volume on the Sound page, kept between
+/// renders. A state is made the first time an app is listed.
+#[derive(Default)]
+pub struct AppVolumeSliders {
+    states: std::collections::HashMap<u32, Entity<gpui_kit::component::slider::SliderState>>,
+    /// When each slider was last moved, so a reading does not pull it back
+    /// while it is being dragged.
+    touched: std::collections::HashMap<u32, std::time::Instant>,
+}
+
+/// Percent step of the app volume sliders and of their arrow keys.
+const APP_VOLUME_STEP: f32 = 5.;
+
+/// The volume after an arrow key: one step up or down, kept on the step grid
+/// and inside 0–100.
+pub(crate) fn nudged_percent(percent: f32, up: bool) -> f32 {
+    let steps = percent / APP_VOLUME_STEP;
+    let next = if up { steps.floor() + 1. } else { steps.ceil() - 1. };
+    (next * APP_VOLUME_STEP).clamp(0., 100.)
+}
+
+impl AppVolumeSliders {
+    pub fn get(&self, object: u32) -> Option<&Entity<gpui_kit::component::slider::SliderState>> {
+        self.states.get(&object)
+    }
+
+    /// Make a slider for each listed app and bring the others in line with
+    /// the volume Tidegauge holds, unless one is being dragged right now. An
+    /// app without a tap plays at 100%.
+    pub fn sync(
+        &mut self,
+        apps: &[crate::engine::AudioApp],
+        levels: &std::collections::HashMap<u32, crate::app_volume::Level>,
+        window: &mut Window,
+        cx: &mut Context<TideGaugeView>,
+    ) {
+        use gpui_kit::component::slider::{SliderEvent, SliderState};
+        self.states.retain(|object, _| apps.iter().any(|a| a.object == *object));
+        self.touched.retain(|object, _| self.states.contains_key(object));
+        for app in apps {
+            let object = app.object;
+            let percent = levels.get(&object).map_or(1.0, |l| l.volume) * 100.;
+            match self.states.get(&object) {
+                Some(state) => {
+                    let settling = self.touched.get(&object).is_some_and(|at| at.elapsed().as_millis() < 1500);
+                    if !settling && (state.read(cx).value().end() - percent).abs() > 0.5 {
+                        state.update(cx, |s, cx| s.set_value(percent, window, cx));
+                    }
+                }
+                None => {
+                    let state = cx.new(|_| SliderState::new().min(0.).max(100.).step(APP_VOLUME_STEP).default_value(percent));
+                    cx.subscribe(&state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
+                        let value = match event {
+                            SliderEvent::Change(value) | SliderEvent::Release(value) => value.end(),
+                        };
+                        view.app_sliders.touched.insert(object, std::time::Instant::now());
+                        spawn_app_volume(view, cx, move || crate::app_volume::set_volume(object, (value / 100.).clamp(0., 1.)));
+                    })
+                    .detach();
+                    self.states.insert(object, state);
+                }
+            }
+        }
+    }
+}
+
+/// Per-app volume: mute, a slider and the level, plus a meter of the app's
+/// own sound while Tidegauge carries it.
 pub fn app_volume_controls(
     app: &crate::engine::AudioApp,
     level: Option<crate::app_volume::Level>,
+    slider: Option<&Entity<gpui_kit::component::slider::SliderState>>,
     dark: bool,
     this: Entity<TideGaugeView>,
 ) -> Div {
     let accent = t::Metric::Sound.accent(dark);
     let volume = level.map(|l| l.volume).unwrap_or(1.0);
     let object = app.object;
-    // Steps read the volume when clicked, so quick clicks each count.
-    let step = move |target: Entity<TideGaugeView>, delta: f32| {
-        move |_: &mut Window, cx: &mut App| {
-            app_volume_action(&target, cx, move || {
-                let now = crate::app_volume::levels().get(&object).map(|l| l.volume).unwrap_or(1.0);
-                crate::app_volume::set_volume(object, ((now + delta).clamp(0., 1.) * 10.).round() / 10.)
-            });
-        }
-    };
-    let set = move |target: Entity<TideGaugeView>, value: f32| {
-        move |_: &mut Window, cx: &mut App| {
-            app_volume_action(&target, cx, move || crate::app_volume::set_volume(object, value));
-        }
-    };
     let muted = volume <= 0.;
     let mut row = div().flex().items_center().gap_2();
     if let Some(level) = level.filter(|l| l.live) {
@@ -1119,25 +1172,67 @@ pub fn app_volume_controls(
                 .child(div().h_full().rounded(t::RADIUS_CHIP).bg(accent).w(relative(level.peak.clamp(0., 1.)))),
         );
     }
-    row.child(button_accent(format!("app-mute-{object}"), if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") }, muted, dark, accent, set(this.clone(), if muted { 1.0 } else { 0.0 })))
-        .child(button(format!("app-down-{object}"), "−", false, dark, step(this.clone(), -0.1)))
-        .child(div().w(px(40.)).flex().justify_center().text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(crate::engine::fmt_pct(volume as f64 * 100.)))
-        .child(button(format!("app-up-{object}"), "+", false, dark, step(this, 0.1)))
+    let target = if muted { 1.0 } else { 0.0 };
+    let toggle = this.clone();
+    let mut mute = spec(
+        format!("app-mute-{object}"),
+        if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") },
+        muted,
+        dark,
+        accent,
+    );
+    mute.aria = Some(format!("{} {}", if muted { l("Unmute", "Slå på lyden") } else { l("Mute", "Demp") }, app.name));
+    row = row.child(control(mute, move |_, cx| {
+        app_volume_action(&toggle, cx, move || crate::app_volume::set_volume(object, target));
+    }));
+    if let Some(slider) = slider {
+        let state = slider.clone();
+        row = row.child(
+            div()
+                .id(SharedString::from(format!("app-volume-{object}")))
+                .role(Role::Slider)
+                .aria_label(SharedString::from(format!("{} {}", app.name, l("volume", "volum"))))
+                .tab_index(0)
+                .rounded(t::RADIUS_CONTROL)
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .focus_visible(move |d| d.border_color(accent))
+                // The kit slider takes only the pointer; the arrows move it
+                // one step.
+                .capture_key_down(move |event, window, cx| {
+                    let key = event.keystroke.key.as_str();
+                    if event.keystroke.modifiers.modified() || !matches!(key, "left" | "right") {
+                        return;
+                    }
+                    let percent = nudged_percent(state.read(cx).value().end(), key == "right");
+                    state.update(cx, |s, cx| s.set_value(percent, window, cx));
+                    app_volume_action(&this, cx, move || crate::app_volume::set_volume(object, percent / 100.));
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+                .child(crate::settings_page::slider(slider, 140., accent)),
+        );
+    }
+    row.child(div().w(px(40.)).flex().justify_end().text_size(t::TEXT_ROW).font_weight(FontWeight::MEDIUM).child(crate::engine::fmt_pct(volume as f64 * 100.)))
 }
 
 fn app_volume_action(this: &Entity<TideGaugeView>, cx: &mut App, action: impl FnOnce() -> Result<(), String> + Send + 'static) {
-    this.update(cx, |view, cx| {
-        view.audio_error = None;
-        cx.spawn(async move |this, cx| {
-            let (result, levels) = smol::unblock(move || (action(), crate::app_volume::levels())).await;
-            let _ = this.update(cx, |view, cx| {
-                view.audio_error = result.err();
-                std::sync::Arc::make_mut(&mut view.snap).audio.levels = levels;
-                cx.notify();
-            });
-        })
-        .detach();
-    });
+    this.update(cx, |view, cx| spawn_app_volume(view, cx, action));
+}
+
+/// Run an app volume change off the main thread and show what Tidegauge holds
+/// afterwards, or why it could not.
+fn spawn_app_volume(view: &mut TideGaugeView, cx: &mut Context<TideGaugeView>, action: impl FnOnce() -> Result<(), String> + Send + 'static) {
+    view.audio_error = None;
+    cx.spawn(async move |this, cx| {
+        let (result, levels) = smol::unblock(move || (action(), crate::app_volume::levels())).await;
+        let _ = this.update(cx, |view, cx| {
+            view.audio_error = result.err();
+            std::sync::Arc::make_mut(&mut view.snap).audio.levels = levels;
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 fn audio_action(
@@ -1180,7 +1275,18 @@ fn audio_action(
 
 #[cfg(test)]
 mod tests {
-    use super::is_activation_key;
+    use super::{is_activation_key, nudged_percent};
+
+    #[test]
+    fn arrow_keys_move_an_app_volume_one_step_inside_zero_to_hundred() {
+        assert_eq!(nudged_percent(50., true), 55.);
+        assert_eq!(nudged_percent(50., false), 45.);
+        assert_eq!(nudged_percent(33., true), 35., "off-grid values land on the grid");
+        assert_eq!(nudged_percent(100., true), 100.);
+        assert_eq!(nudged_percent(0., false), 0.);
+        assert_eq!(nudged_percent(33., false), 30.);
+        assert_eq!(nudged_percent(2., false), 0.);
+    }
     use gpui_kit::Keystroke;
 
     #[test]
