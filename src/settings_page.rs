@@ -793,7 +793,7 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
 /// Which tiles the menu-bar panel shows. At least one stays on, so the
 /// panel always has a reading.
 fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    let only_one = settings.panel_tiles.len() <= 1;
+    let only_one = crate::settings::offered_tile_count(&settings.panel_tiles, crate::engine::latest().battery.confirmed_absent()) <= 1;
     let tiles = crate::settings::offered_choices(&crate::settings::PANEL_TILES, crate::engine::latest().battery.confirmed_absent());
     let rows = tiles
         .into_iter()

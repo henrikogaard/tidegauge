@@ -36,9 +36,7 @@ impl Layout {
     pub fn now() -> Self {
         let latest = crate::engine::latest();
         let mut layout = Self::new(&crate::settings::Settings::load(), &latest.plans, crate::metrics::now_unix());
-        if latest.battery.confirmed_absent() {
-            layout.tiles.retain(|tile| tile != "battery");
-        }
+        layout.tiles = crate::settings::panel_tiles_shown(&layout.tiles, latest.battery.confirmed_absent());
         layout
     }
 
