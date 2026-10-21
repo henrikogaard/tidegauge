@@ -291,7 +291,8 @@ pub fn throttled(s: &Snapshot) -> bool {
 /// a total there is nothing to compare, so it is not called low.
 pub fn startup_disk_low(s: &Snapshot) -> bool {
     let d = &s.disk;
-    d.total != 0 && !(d.free as f64 >= d.total as f64 * DISK_LOW_FRACTION && d.free >= DISK_LOW_BYTES)
+    d.total != 0
+        && !(d.free as f64 >= d.total as f64 * DISK_LOW_FRACTION && d.free >= DISK_LOW_BYTES)
 }
 
 fn heat(s: &Snapshot) -> Option<Finding> {
