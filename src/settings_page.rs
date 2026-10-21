@@ -5,7 +5,7 @@
 use crate::controls::{button_indexed, segment, segment_group, switch};
 use crate::locale::text as l;
 use crate::settings::{
-    localized_metric_label, localized_style_label, style_fits, ChartStyle, ColorMode, Settings, MENU_METRICS,
+    localized_metric_label, localized_style_label, style_fits, ChartStyle, ColorMode, MenuPreset, Settings, MENU_METRICS,
     MENU_STYLES,
 };
 use crate::theme as t;
@@ -26,6 +26,10 @@ pub struct Sliders {
     pub chip_temp: Entity<SliderState>,
     /// The low-battery alert's charge level, in %.
     pub battery_low: Entity<SliderState>,
+    /// Heavy disk activity, in MB/s.
+    pub disk_alert: Entity<SliderState>,
+    /// Heavy network activity, in MB/s.
+    pub network_alert: Entity<SliderState>,
     /// How see-through the window and the menu-bar panel are, in percent.
     pub transparency: Entity<SliderState>,
     pub volume: Entity<SliderState>,
@@ -55,7 +59,11 @@ impl Sliders {
         let battery_low = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.alert_battery_low_pct as f32));
         let (low, high) = crate::settings::TRANSPARENCY_RANGE;
         let transparency = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(5.).default_value(settings.transparency_amount as f32));
-        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 7] = [
+        let (low, high) = crate::settings::DISK_ALERT_RANGE;
+        let disk_alert = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(10.).default_value(settings.alert_disk_mbps as f32));
+        let (low, high) = crate::settings::NETWORK_ALERT_RANGE;
+        let network_alert = cx.new(|_| SliderState::new().min(low as f32).max(high as f32).step(1.).default_value(settings.alert_network_mbps as f32));
+        let setters: [(&Entity<SliderState>, fn(&mut Settings, f64)); 9] = [
             (&cpu, |s, v| s.alert_cpu_pct = v),
             (&mem, |s, v| s.alert_mem_pct = v),
             (&app, |s, v| s.alert_app_cpu_pct = v),
@@ -63,6 +71,8 @@ impl Sliders {
             (&chip_temp, |s, v| s.alert_temp_c = v),
             (&battery_low, |s, v| s.alert_battery_low_pct = v),
             (&transparency, |s, v| s.transparency_amount = v),
+            (&disk_alert, |s, v| s.alert_disk_mbps = v),
+            (&network_alert, |s, v| s.alert_network_mbps = v),
         ];
         for (state, set) in setters {
             cx.subscribe(state, move |view: &mut TideGaugeView, _, event: &SliderEvent, cx| {
@@ -99,7 +109,7 @@ impl Sliders {
             cx.notify();
         })
         .detach();
-        Self { cpu, mem, app, app_memory, chip_temp, battery_low, transparency, volume, volume_touched: None, input_volume, input_touched: None }
+        Self { cpu, mem, app, app_memory, chip_temp, battery_low, disk_alert, network_alert, transparency, volume, volume_touched: None, input_volume, input_touched: None }
     }
 
     /// Bring the sliders back in line with what is saved or reported, unless
@@ -114,6 +124,8 @@ impl Sliders {
             (&self.chip_temp, settings.alert_temp_c as f32),
             (&self.battery_low, settings.alert_battery_low_pct as f32),
             (&self.transparency, settings.transparency_amount as f32),
+            (&self.disk_alert, settings.alert_disk_mbps as f32),
+            (&self.network_alert, settings.alert_network_mbps as f32),
         ] {
             if (state.read(cx).value().end() - value).abs() > 0.5 {
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -162,6 +174,60 @@ pub(crate) fn row(name: impl Into<SharedString>, detail: Option<String>, control
                 }),
         )
         .child(div().flex_shrink_0().flex().items_center().gap(t::SPACE_3).child(control))
+}
+
+/// The Settings sections in page order, for the jump list and its anchors.
+pub const SECTION_COUNT: usize = 5;
+pub const ALERTS: usize = 1;
+
+fn section_label(index: usize) -> &'static str {
+    match index {
+        0 => l("General", "Generelt"),
+        1 => l("Alerts", "Varsler"),
+        2 => l("Menu bar & panel", "Menylinje og panel"),
+        3 => l("Look", "Utseende"),
+        _ => l("About", "Om"),
+    }
+}
+
+/// One scroll anchor per section, tied to the Settings scroll area.
+pub fn section_anchors(handle: &ScrollHandle) -> Vec<ScrollAnchor> {
+    (0..SECTION_COUNT).map(|_| ScrollAnchor::for_handle(handle.clone())).collect()
+}
+
+/// Buttons at the top of Settings that scroll to each section.
+fn jump_list(view: &TideGaugeView, dark: bool) -> Div {
+    div().flex().flex_wrap().gap(t::SPACE_2).children((0..SECTION_COUNT).map(|i| {
+        let anchor = view.section_anchors[i].clone();
+        button_indexed(format!("settings-jump-{i}"), section_label(i), false, dark, 0, move |window, cx| {
+            anchor.scroll_to(window, cx);
+            window.refresh();
+        })
+    }))
+}
+
+/// A section: a heading, then its groups. The anchor is where the jump list
+/// scrolls to.
+fn section(index: usize, view: &TideGaugeView, groups: Vec<Div>) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(format!("settings-section-{index}")))
+        .anchor_scroll(Some(view.section_anchors[index].clone()))
+        .flex()
+        .flex_col()
+        .gap(t::SPACE_4)
+        .child(
+            div()
+                .px(t::SPACE_4)
+                .text_size(t::TEXT_EMPH)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(section_label(index)),
+        )
+        .children(groups)
+}
+
+/// Rows in a card with no caption of their own, under a section heading.
+fn plain_group(rows: Vec<Div>, dark: bool) -> Div {
+    card(dark).p_0().gap_0().children(rows)
 }
 
 /// A titled group of rows, like a section of macOS System Settings.
@@ -271,7 +337,8 @@ pub(crate) fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, c
     });
 }
 
-fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+/// The General rows and the Look rows (appearance, colors, charts).
+fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> (Div, Div) {
     let appearance = segment_group("appearance-options", l("Appearance", "Utseende"), dark).children(
         [(None, l("System", "System")), (Some(false), l("Light", "Lyst")), (Some(true), l("Dark", "Mørkt"))]
             .into_iter()
@@ -388,13 +455,17 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             .child(l("Unavailable", "Utilgjengelig"))
             .into_any_element()
     };
-    group(
-        l("General", "Generelt"),
+    let look = plain_group(
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
             row(l("Colors", "Farger"), None, colors, false, dark),
             row(l("Charts", "Diagrammer"), None, charts, false, dark),
-            row(l("Language", "Språk"), None, language, false, dark),
+        ],
+        dark,
+    );
+    let general = plain_group(
+        vec![
+            row(l("Language", "Språk"), None, language, true, dark),
             row(
                 l("App CPU shown as", "App-CPU vises som"),
                 Some(l("In every list of apps and processes. 100% of one core is what Activity Monitor shows.", "I alle lister over apper og prosesser. 100 % av én kjerne er det Aktivitetsmonitor viser.").to_string()),
@@ -426,7 +497,8 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             keep_awake_row(view, dark, this),
         ],
         dark,
-    )
+    );
+    (general, look)
 }
 
 /// Where the windows are see-through, and by how much. The amount is shared by
@@ -554,6 +626,7 @@ fn keep_awake_row(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>)
 }
 
 fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let mbps = |value: f64| format!("{} MB/s", crate::locale::number(value, 0));
     let pct = crate::engine::fmt_pct;
     let rows = vec![
         (
@@ -577,12 +650,18 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
             None,
             settings.alert_pressure_enabled,
         ),
-        ("disk", "Disk", l("Above 400 MB/s for 30 seconds", "Over 400 MB/s i 30 sekunder").to_string(), None, settings.alert_disk_enabled),
+        (
+            "disk",
+            "Disk",
+            format!("{} {} {}", l("Above", "Over"), mbps(settings.alert_disk_mbps), l("for 30 seconds", "i 30 sekunder")),
+            Some(&view.sliders.disk_alert),
+            settings.alert_disk_enabled,
+        ),
         (
             "net",
             l("Network", "Nettverk"),
-            l("Above 80 MB/s for 30 seconds", "Over 80 MB/s i 30 sekunder").to_string(),
-            None,
+            format!("{} {} {}", l("Above", "Over"), mbps(settings.alert_network_mbps), l("for 30 seconds", "i 30 sekunder")),
+            Some(&view.sliders.network_alert),
             settings.alert_network_enabled,
         ),
         (
@@ -660,7 +739,7 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
     let no_battery = view.snap.battery.confirmed_absent();
     let rows = rows.into_iter().filter(|(key, ..)| !(no_battery && key.starts_with("battery-")));
     group(
-        l("Alerts", "Varsler"),
+        l("Triggers", "Utløsere"),
         rows.enumerate()
             .map(|(i, (key, name, detail, threshold, on))| {
                 let control = div()
@@ -668,7 +747,12 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                     .items_center()
                     .gap(t::SPACE_4)
                     .when_some(threshold, |d, state| {
-                        let metric = if matches!(key, "mem" | "app-memory") { t::Metric::Memory } else { t::Metric::Cpu };
+                        let metric = match key {
+                            "mem" | "app-memory" => t::Metric::Memory,
+                            "disk" => t::Metric::Disk,
+                            "net" => t::Metric::Network,
+                            _ => t::Metric::Cpu,
+                        };
                         d.child(slider(state, 140., metric.accent(dark)))
                     })
                     .child(preference_switch(
@@ -702,7 +786,119 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
     )
 }
 
-fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+/// Whether alerts can reach the person, and a way to try one.
+fn notifications(dark: bool) -> Div {
+    use crate::notifications::{self, Permission};
+    notifications::refresh_permission(false);
+    let permission = notifications::permission();
+    let (status, detail) = match permission {
+        Permission::Allowed => (l("Allowed", "Tillatt"), l("Alerts appear as banners.", "Varsler vises som bannere.")),
+        Permission::NoBanners => (
+            l("Allowed, but banners are off", "Tillatt, men bannere er av"),
+            l(
+                "Alerts are delivered silently. Turn on banners or alerts in System Settings.",
+                "Varsler leveres uten å vises. Slå på bannere eller varsler i Systeminnstillinger.",
+            ),
+        ),
+        Permission::NotAsked => (
+            l("Not asked yet", "Ikke spurt ennå"),
+            l("macOS asks the first time an alert is sent.", "macOS spør første gang et varsel sendes."),
+        ),
+        Permission::Blocked => (
+            l("Blocked", "Blokkert"),
+            l("Alerts are dropped until notifications are allowed in System Settings.", "Varsler forkastes til varsler er tillatt i Systeminnstillinger."),
+        ),
+        Permission::Unavailable => (
+            l("Unavailable", "Utilgjengelig"),
+            l("Only the installed app can send notifications.", "Bare den installerte appen kan sende varsler."),
+        ),
+        Permission::Checking => (l("Checking…", "Sjekker …"), ""),
+    };
+    let action: Option<AnyElement> = match permission {
+        Permission::NotAsked => Some(
+            button_indexed("notifications-allow", l("Allow notifications", "Tillat varsler"), false, dark, 0, |_, _| {
+                notifications::request_permission()
+            })
+            .into_any_element(),
+        ),
+        Permission::Blocked | Permission::NoBanners => Some(
+            button_indexed(
+                "notifications-open-settings",
+                l("Open Notification Settings", "Åpne varselinnstillinger"),
+                false,
+                dark,
+                0,
+                |_, _| notifications::open_system_settings(),
+            )
+            .into_any_element(),
+        ),
+        _ => None,
+    };
+    let control = div()
+        .flex()
+        .items_center()
+        .gap(t::SPACE_3)
+        .child(div().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(status))
+        .children(action);
+    let test = button_indexed(
+        "notifications-test",
+        l("Send test alert", "Send testvarsel"),
+        false,
+        dark,
+        0,
+        |_, _| notifications::send_test(),
+    );
+    group(
+        l("Delivery", "Levering"),
+        vec![
+            row(
+                l("Notification permission", "Tillatelse til varsler"),
+                (!detail.is_empty()).then(|| detail.to_string()),
+                control,
+                true,
+                dark,
+            ),
+            row(
+                l("Test alert", "Testvarsel"),
+                Some(l("Sends a real notification now.", "Sender et ekte varsel nå.").to_string()),
+                test,
+                false,
+                dark,
+            ),
+        ],
+        dark,
+    )
+}
+
+fn menu_bar(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let has_battery = !view.snap.battery.confirmed_absent();
+    let current = settings.menu_preset(has_battery);
+    let presets = segment_group("menu-presets", l("Preset", "Forhåndsvalg"), dark).children(
+        MenuPreset::ALL.into_iter().enumerate().map(|(i, preset)| {
+            choice(
+                format!("menu-preset-{i}"),
+                preset.label(),
+                format!("{}: {}", l("Preset", "Forhåndsvalg"), preset.label()),
+                current == Some(preset),
+                dark,
+                this.clone(),
+                move |settings| settings.apply_menu_preset(preset, has_battery),
+            )
+        }),
+    );
+    let preset_row = row(
+        l("Preset", "Forhåndsvalg"),
+        Some(
+            match current {
+                Some(_) => l("Replaces the readings below.", "Erstatter målingene under."),
+                None => l("Your own mix of readings. Pick a preset to replace it.", "Din egen blanding av målinger. Velg et forhåndsvalg for å erstatte den."),
+            }
+            .to_string(),
+        ),
+        presets,
+        true,
+        dark,
+    );
     let icon_name = l("Tidegauge icon", "Tidegauge-ikon");
     let mut rows = vec![row(
         icon_name,
@@ -710,9 +906,10 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         preference_switch("launcher".into(), icon_name.into(), settings.show_app_icon, dark, this.clone(), |s, on| {
             s.show_app_icon = on
         }),
-        true,
+        false,
         dark,
     )];
+    rows.insert(0, preset_row);
     for &(key, _) in MENU_METRICS.iter() {
         let name = localized_metric_label(key).expect("menu metric has a localized label");
         let selected = settings
@@ -742,12 +939,12 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         ));
         rows.push(row(name, None, group, false, dark));
     }
-    let colors = segment_group("settings-menu-colors", l("Colors", "Farger"), dark).children(
+    let colors = segment_group("settings-menu-colors", l("Menu-bar colors", "Menylinjefarger"), dark).children(
         [(false, l("Monochrome", "Ensfarget")), (true, l("Colored", "Farget"))].into_iter().map(|(colored, label)| {
             choice(
                 format!("menu-colors-{colored}"),
                 label,
-                format!("{}: {label}", l("Colors", "Farger")),
+                format!("{}: {label}", l("Menu-bar colors", "Menylinjefarger")),
                 settings.menu_colored == colored,
                 dark,
                 this.clone(),
@@ -756,34 +953,9 @@ fn menu_bar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
         }),
     );
     rows.push(row(
-        l("Colors", "Farger"),
+        l("Menu-bar colors", "Menylinjefarger"),
         Some(l("Colored readings turn orange or red at warning levels.", "Farget visning blir oransje eller rød ved advarsler.").into()),
         colors,
-        false,
-        dark,
-    ));
-    let target = this.clone();
-    rows.push(row(
-        l("Readings", "Målinger"),
-        None,
-        button_indexed(
-            "settings-icon-only",
-            l("Reset to icon only", "Tilbakestill til bare ikon"),
-            false,
-            dark,
-            0,
-            move |window, cx| {
-                update_preference(
-                    &target,
-                    |settings| {
-                        settings.show_app_icon = true;
-                        settings.menu_items.clear();
-                    },
-                    window,
-                    cx,
-                )
-            },
-        ),
         false,
         dark,
     ));
@@ -840,7 +1012,7 @@ fn panel_tiles(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> 
             row(label, detail, control, false, dark)
         }))
         .collect();
-    group(l("Menu-bar panel", "Menylinjepanel"), rows, dark)
+    group(l("Panel contents", "Innhold i panelet"), rows, dark)
 }
 
 fn overview(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
@@ -874,9 +1046,9 @@ fn overview(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div
     ));
     let target = this.clone();
     rows.push(row(
-        l("Overview", "Oversikt"),
-        None,
-        button_indexed("reset-dashboard", l("Reset dashboard only", "Tilbakestill kun oversikten"), false, dark, 0, move |window, cx| {
+        l("Dashboard layout", "Oppsett for oversikten"),
+        Some(l("Cards, sidebar order and compact layout. Other settings stay.", "Kort, rekkefølge i sidefeltet og kompakt oppsett. Andre innstillinger beholdes.").to_string()),
+        button_indexed("reset-dashboard", l("Reset layout", "Tilbakestill oppsett"), false, dark, 0, move |window, cx| {
             update_preference(&target, Settings::reset_dashboard, window, cx)
         }),
         false,
@@ -973,6 +1145,7 @@ fn sidebar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
 
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let settings = Settings::load();
+    let (general_rows, look_rows) = general(view, &settings, dark, this.clone());
     div()
         .flex()
         .flex_col()
@@ -980,19 +1153,34 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         .when_some(view.settings_error.clone(), |d, error| {
             d.child(div().text_size(t::TEXT_BODY).text_color(t::warn(dark)).child(error))
         })
-        .child(general(view, &settings, dark, this.clone()))
-        .child(transparency(view, &settings, dark, this.clone()))
+        .child(jump_list(view, dark))
+        .child(section(
+            0,
+            view,
+            vec![
+                general_rows,
+                div()
+                    .grid()
+                    .grid_cols(2)
+                    .gap(t::SPACE_4)
+                    .items_start()
+                    .child(overview(&settings, dark, this.clone()))
+                    .child(sidebar(&settings, dark, this.clone())),
+            ],
+        ))
+        .child(section(ALERTS, view, vec![notifications(dark), alerts(view, &settings, dark, this.clone())]))
+        .child(section(
+            2,
+            view,
+            vec![menu_bar(view, &settings, dark, this.clone()), panel_tiles(&settings, dark, this.clone())],
+        ))
+        .child(section(3, view, vec![look_rows, transparency(view, &settings, dark, this.clone())]))
         .child(
-            alerts(view, &settings, dark, this.clone())
-                .id("settings-alerts")
-                .anchor_scroll(Some(view.alerts_anchor.clone())),
+            div()
+                .id("settings-section-4")
+                .anchor_scroll(Some(view.section_anchors[4].clone()))
+                .child(crate::about::section(dark)),
         )
-        .child(menu_bar(&settings, dark, this.clone()))
-        .child(panel_tiles(&settings, dark, this.clone()))
-        .child(div().grid().grid_cols(2).gap(t::SPACE_4).items_start()
-            .child(overview(&settings, dark, this.clone()))
-            .child(sidebar(&settings, dark, this.clone())))
-        .child(crate::about::section(dark))
         .child(
             div()
                 .flex()

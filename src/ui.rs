@@ -134,6 +134,10 @@ pub struct TideGaugeView {
     /// The answer to "Why is my Mac slow?" while Overview shows it.
     pub(crate) slow_check: Option<Vec<crate::diagnose::Finding>>,
     pub(crate) sliders: crate::settings_page::Sliders,
+    /// The volume slider of each app on the Sound page.
+    pub(crate) app_sliders: crate::controls::AppVolumeSliders,
+    /// One focus handle per sidebar entry (Settings last), for the arrow keys.
+    sidebar_focus: Vec<FocusHandle>,
     /// How long Keep awake lasts when switched on; `None` until stopped.
     pub(crate) awake_choice: Option<u64>,
     /// Where the window was last drawn, to close notes when that changes.
@@ -181,6 +185,8 @@ pub struct TideGaugeView {
     settings_scroll: ScrollHandle,
     /// The Alerts group in Settings, for "Pick alerts" in the welcome.
     pub(crate) alerts_anchor: ScrollAnchor,
+    /// Where each Settings section starts, for the jump list at its top.
+    pub(crate) section_anchors: Vec<ScrollAnchor>,
     /// Settings was opened to show Alerts: scroll there once it is drawn.
     scroll_to_alerts: bool,
     /// Whether the window is showing its frosted background right now.
@@ -250,6 +256,8 @@ impl TideGaugeView {
             info_for: None,
             slow_check: None,
             sliders,
+            app_sliders: Default::default(),
+            sidebar_focus: (0..24).map(|_| cx.focus_handle()).collect(),
             awake_choice: Some(60),
             last_here: None,
             agents_scroll: ScrollHandle::new(),
@@ -290,7 +298,8 @@ impl TideGaugeView {
             app_history: None,
             tab_scrolls: Tab::ALL.iter().map(|_| ScrollHandle::new()).collect(),
             settings_scroll: settings_scroll.clone(),
-            alerts_anchor: ScrollAnchor::for_handle(settings_scroll),
+            alerts_anchor: crate::settings_page::section_anchors(&settings_scroll)[crate::settings_page::ALERTS].clone(),
+            section_anchors: crate::settings_page::section_anchors(&settings_scroll),
             scroll_to_alerts: false,
             blurred: false,
         };
@@ -1166,11 +1175,17 @@ fn sidebar_item(
     here: Destination,
     reading: Option<String>,
     available: bool,
-    tab_index: isize,
+    focus: ItemFocus,
+    shortcut: Option<String>,
     dark: bool,
     this: Entity<TideGaugeView>,
 ) -> impl IntoElement {
     let selected = to == here;
+    let ItemFocus { handle, prev, next, tab_stop, index } = focus;
+    let tip_text = match &shortcut {
+        Some(keys) => format!("{} · {keys}", to.title()),
+        None => to.title().to_string(),
+    };
     let accent = to.accent(dark);
     let keyboard = this.clone();
     let leading = if to.swatch() {
@@ -1196,7 +1211,8 @@ fn sidebar_item(
         .role(Role::Tab)
         .aria_label(to.title())
         .aria_selected(selected)
-        .tab_index(tab_index)
+        .when_some(handle, |d, handle| d.track_focus(&handle.tab_index(index).tab_stop(tab_stop)))
+        .tooltip(crate::controls::tip(tip_text, dark))
         .h(t::CONTROL_H)
         .flex_shrink_0()
         .px(t::SPACE_2)
@@ -1233,6 +1249,14 @@ fn sidebar_item(
                 window.prevent_default();
                 navigate(&keyboard, to, cx);
                 cx.stop_propagation();
+            } else if !event.keystroke.modifiers.modified() && matches!(event.keystroke.key.as_str(), "up" | "down") {
+                // Arrows move between entries; Enter or Space opens one.
+                let target = if event.keystroke.key == "up" { &prev } else { &next };
+                if let Some(target) = target {
+                    target.focus(window, cx);
+                }
+                window.prevent_default();
+                cx.stop_propagation();
             }
         })
 }
@@ -1248,49 +1272,112 @@ fn sidebar_group(label: &str, dark: bool) -> Div {
         .child(label.to_uppercase())
 }
 
-/// Every place in the app, grouped by what you are doing: watching live
-/// readings, looking at your own work, looking back, or tidying up.
-fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+/// One captioned stretch of the sidebar and the pages in it, in order.
+struct SidebarGroup {
+    label: Option<&'static str>,
+    pages: Vec<Destination>,
+}
+
+/// Whether the Battery page is listed. Always: without a battery it is the
+/// Power page (see `battery_tab`), which still shows GPU and per-app power.
+fn battery_listed(_s: &Snapshot) -> bool {
+    true
+}
+
+/// Every page in the sidebar above Settings, grouped by what you are doing:
+/// watching live readings, looking at your own work, looking back, or tidying
+/// up. Pages hidden in Settings are left out.
+fn sidebar_groups(visible: &[Tab], battery: bool) -> Vec<SidebarGroup> {
     use crate::tools_panel::Page;
-    let visible = Tab::visible();
-    let mut index = 0isize;
-    let mut items: Vec<AnyElement> = Vec::new();
-    let mut add = |items: &mut Vec<AnyElement>, to: Destination, reading: Option<String>, available: bool| {
-        items.push(sidebar_item(to, here, reading, available, index, dark, this.clone()).into_any_element());
-        index += 1;
-    };
-
-    add(&mut items, Destination::Tab(Tab::Overview), None, true);
-
-    items.push(sidebar_group(l("Live", "Nå"), dark).into_any_element());
-    for tab in visible
+    let live = visible
         .iter()
         .copied()
         .filter(|tab| !matches!(tab, Tab::Overview | Tab::Projects | Tab::History))
-    {
-        // Without a battery the entry is the Power page (see `battery_tab`).
-        let reading = sidebar_reading(tab, s);
-        let available = reading.is_some();
-        add(&mut items, Destination::Tab(tab), Some(reading.unwrap_or_else(|| "–".into())), available);
-    }
-
-    items.push(sidebar_group(l("Work", "Arbeid"), dark).into_any_element());
-    add(&mut items, Destination::Apps, Some(s.app_count.to_string()), true);
-    // Development servers are part of Agents: what your agents and you
-    // started while working.
-    add(&mut items, Destination::Agents, Some(s.agents.len().to_string()), true);
-
-    items.push(sidebar_group(l("Over time", "Over tid"), dark).into_any_element());
+        .filter(|tab| *tab != Tab::Battery || battery)
+        .map(Destination::Tab)
+        .collect();
+    let mut over_time = Vec::new();
     if visible.contains(&Tab::History) {
-        add(&mut items, Destination::Tab(Tab::History), None, true);
+        over_time.push(Destination::Tab(Tab::History));
     }
-    add(&mut items, Destination::Tool(Page::Baselines), None, true);
+    over_time.push(Destination::Tool(Page::Baselines));
+    vec![
+        SidebarGroup { label: None, pages: vec![Destination::Tab(Tab::Overview)] },
+        SidebarGroup { label: Some(l("Live", "Nå")), pages: live },
+        SidebarGroup { label: Some(l("Work", "Arbeid")), pages: vec![Destination::Apps, Destination::Agents] },
+        SidebarGroup { label: Some(l("Over time", "Over tid")), pages: over_time },
+        SidebarGroup {
+            label: Some(l("Maintenance", "Vedlikehold")),
+            pages: [Page::Startup, Page::Storage, Page::Packages].into_iter().map(Destination::Tool).collect(),
+        },
+    ]
+}
 
-    items.push(sidebar_group(l("Maintenance", "Vedlikehold"), dark).into_any_element());
-    for page in [Page::Startup, Page::Storage, Page::Packages] {
-        add(&mut items, Destination::Tool(page), None, true);
+/// The sidebar's pages top to bottom, which is also the order of ⌘1…⌘9.
+fn sidebar_order(groups: &[SidebarGroup]) -> Vec<Destination> {
+    groups.iter().flat_map(|g| g.pages.iter().copied()).collect()
+}
+
+/// The page ⌘`digit` opens: the `digit`-th visible sidebar page, from 1.
+fn shortcut_destination(order: &[Destination], digit: usize) -> Option<Destination> {
+    digit.checked_sub(1).and_then(|i| order.get(i)).copied()
+}
+
+/// The digit of a ⌘1…⌘9 key, if it is one.
+fn shortcut_digit(key: &str) -> Option<usize> {
+    key.parse::<usize>().ok().filter(|d| (1..=9).contains(d)).filter(|_| key.len() == 1)
+}
+
+/// Where keyboard focus sits in the sidebar: the focus handle of the entry
+/// and of its neighbours, so the arrow keys can move between entries.
+struct ItemFocus {
+    handle: Option<FocusHandle>,
+    prev: Option<FocusHandle>,
+    next: Option<FocusHandle>,
+    /// Only the page being shown is a Tab stop, so Tab crosses the sidebar
+    /// in one press and the arrows move within it.
+    tab_stop: bool,
+    index: isize,
+}
+
+/// Every place in the app, grouped by what you are doing.
+fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeView>, focus: &[FocusHandle]) -> impl IntoElement {
+    let groups = sidebar_groups(&Tab::visible(), battery_listed(s));
+    let order = sidebar_order(&groups);
+    let any_selected = order.contains(&here) || here == Destination::Settings;
+    let item_focus = |index: usize, to: Destination| ItemFocus {
+        handle: focus.get(index).cloned(),
+        prev: index.checked_sub(1).and_then(|i| focus.get(i)).cloned(),
+        next: (index < order.len()).then(|| focus.get(index + 1).cloned()).flatten(),
+        tab_stop: to == here || (!any_selected && index == 0),
+        index: index as isize,
+    };
+    let mut items: Vec<AnyElement> = Vec::new();
+    let mut index = 0usize;
+    for group in &groups {
+        if let Some(label) = group.label {
+            items.push(sidebar_group(label, dark).into_any_element());
+        }
+        for &to in &group.pages {
+            let (reading, available) = match to {
+                Destination::Tab(Tab::Overview | Tab::History) => (None, true),
+                Destination::Tab(tab) => {
+                    let reading = sidebar_reading(tab, s);
+                    let available = reading.is_some();
+                    (Some(reading.unwrap_or_else(|| "–".into())), available)
+                }
+                Destination::Apps => (Some(s.app_count.to_string()), true),
+                Destination::Agents => (Some(s.agents.len().to_string()), true),
+                _ => (None, true),
+            };
+            let shortcut = (index < 9).then(|| format!("⌘{}", index + 1));
+            items.push(
+                sidebar_item(to, here, reading, available, item_focus(index, to), shortcut, dark, this.clone()).into_any_element(),
+            );
+            index += 1;
+        }
     }
-    let settings_index = index;
+    let settings_focus = item_focus(index, Destination::Settings);
 
     div()
         .w(px(224.))
@@ -1330,7 +1417,8 @@ fn sidebar(s: &Snapshot, here: Destination, dark: bool, this: Entity<TideGaugeVi
                     here,
                     Some("⌘,".into()),
                     true,
-                    settings_index,
+                    settings_focus,
+                    Some("⌘,".into()),
                     dark,
                     this,
                 )),
@@ -1670,6 +1758,16 @@ impl Render for TideGaugeView {
         let dark = self.dark;
         self.sync_transparency(window);
         self.sliders.sync(self.snap.audio.device_volume, self.snap.audio.input.volume, window, cx);
+        if self.destination() == Destination::Tab(Tab::Sound) {
+            let audio = &self.snap.audio;
+            let listed: Vec<_> = audio
+                .apps
+                .iter()
+                .filter(|a| a.running_output || audio.levels.contains_key(&a.object))
+                .cloned()
+                .collect();
+            self.app_sliders.sync(&listed, &audio.levels, window, cx);
+        }
         let s = &self.snap;
         let tab = self.tab;
         let this = cx.entity();
@@ -1749,6 +1847,23 @@ impl Render for TideGaugeView {
                     cx.stop_propagation();
                 }
             }))
+            // ⌘1…⌘9 open the first nine sidebar pages in order.
+            .on_key_down({
+                let this = this.clone();
+                move |event, _, cx| {
+                    let keys = &event.keystroke;
+                    let plain_command = keys.modifiers.platform && !keys.modifiers.shift && !keys.modifiers.alt && !keys.modifiers.control;
+                    let Some(digit) = shortcut_digit(&keys.key).filter(|_| plain_command) else { return };
+                    let order = {
+                        let view = this.read(cx);
+                        sidebar_order(&sidebar_groups(&Tab::visible(), battery_listed(&view.snap)))
+                    };
+                    if let Some(to) = shortcut_destination(&order, digit) {
+                        navigate(&this, to, cx);
+                        cx.stop_propagation();
+                    }
+                }
+            })
             .size_full()
             .flex()
             .flex_row()
@@ -1756,7 +1871,7 @@ impl Render for TideGaugeView {
             .font_family(".AppleSystemUIFont")
             .font_features(t::tabular())
             .track_focus(&self.focus)
-            .child(sidebar(s, here, dark, this.clone()))
+            .child(sidebar(s, here, dark, this.clone(), &self.sidebar_focus))
             .child(
                 div()
                     .flex_1()
@@ -1785,7 +1900,8 @@ impl TideGaugeView {
     /// Settings opens at the top; only the About menu item opens it lower.
     pub fn reset_settings_scroll(&mut self) {
         self.settings_scroll = ScrollHandle::new();
-        self.alerts_anchor = ScrollAnchor::for_handle(self.settings_scroll.clone());
+        self.section_anchors = crate::settings_page::section_anchors(&self.settings_scroll);
+        self.alerts_anchor = self.section_anchors[crate::settings_page::ALERTS].clone();
     }
 }
 
@@ -1843,7 +1959,7 @@ impl TideGaugeView {
                 .gap(t::SECTION_GAP)
                 .child(crate::agents_panel::panel(self, dark, this.clone()))
                 .when(servers, |d| {
-                    d.child(section_header(l("Development servers", "Utviklingsservere"), "", dark))
+                    d.child(section_header(l("Dev servers", "Utviklingsservere"), "", dark))
                         .when_some(self.project_error.as_ref(), |d, error| {
                             d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed { t::warn(dark) } else { t::ink_dim(dark) })))
                         })
@@ -1868,7 +1984,7 @@ impl TideGaugeView {
             Tab::Battery => battery_tab(s, dark).into_any_element(),
             Tab::Sound => div().flex().flex_col().gap(t::SECTION_GAP)
                 .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
-                .child(sound_tab(s, &self.sliders.volume, &self.sliders.input_volume, dark, this, self.audio_pending)).into_any_element(),
+                .child(sound_tab(s, &self.sliders.volume, &self.sliders.input_volume, &self.app_sliders, dark, this, self.audio_pending)).into_any_element(),
             Tab::Bluetooth => bt_tab(s, dark).into_any_element(),
             Tab::Projects => div()
                 .flex()
@@ -2426,6 +2542,7 @@ fn overview(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .flex()
         .flex_col()
         .gap(if settings.compact_dashboard { t::SPACE_2 } else { t::SPACE_4 })
+        .when_some(crate::attention::strip(s, dark, this.clone()), |d, strip| d.child(strip))
         .when(settings.show_welcome(), |d| d.child(welcome_card(&settings, dark, this.clone())))
         .when_some(crate::agents_panel::plan_strip(&s.plans, dark, this.clone()), |d, strip| d.child(strip))
         .when(crate::keepawake::status().active, |d| {
@@ -3963,6 +4080,7 @@ fn sound_tab(
     s: &Snapshot,
     volume_slider: &Entity<gpui_kit::component::slider::SliderState>,
     input_slider: &Entity<gpui_kit::component::slider::SliderState>,
+    app_sliders: &crate::controls::AppVolumeSliders,
     dark: bool,
     this: Entity<TideGaugeView>,
     pending: bool,
@@ -4013,7 +4131,7 @@ fn sound_tab(
                         .child(div().text_xs().text_color(t::ink_dim(dark)).child(status)),
                 )
                 .when(a.running_output || s.audio.levels.contains_key(&a.object), |d| {
-                    d.child(crate::controls::app_volume_controls(a, s.audio.levels.get(&a.object).copied(), dark, this.clone()))
+                    d.child(crate::controls::app_volume_controls(a, s.audio.levels.get(&a.object).copied(), app_sliders.get(a.object), dark, this.clone()))
                 }),
         );
     }
@@ -4084,7 +4202,19 @@ fn sound_tab(
                 dark,
             )
         } else {
-            list_card(rows, dark)
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(list_card(rows, dark))
+                .child(
+                    sub(l(
+                        "Drag a slider to set one app's volume. macOS asks for audio-capture permission the first time.",
+                        "Dra i en glidebryter for å sette volumet til én app. macOS ber om tillatelse til lydopptak første gang.",
+                    ))
+                    .px_4()
+                    .text_color(t::ink_dim(dark)),
+                )
         })
         .children(idle_line)
 }
@@ -4411,7 +4541,7 @@ pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>
             ),
         )
         .child(section_header(
-            l("Projects", "Prosjekter"),
+            l("By project", "Etter prosjekt"),
             &crate::locale::count(total as u64, "server", "servers", "server", "servere"),
             dark,
         ));
@@ -4535,6 +4665,62 @@ pub(crate) fn projects_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>
 
 #[cfg(test)]
 mod tests {
+    use super::{shortcut_destination, shortcut_digit, sidebar_groups, sidebar_order, Destination, Tab};
+    use crate::tools_panel::Page;
+
+    fn order(visible: &[Tab], battery: bool) -> Vec<Destination> {
+        sidebar_order(&sidebar_groups(visible, battery))
+    }
+
+    #[test]
+    fn command_digits_open_the_visible_pages_in_sidebar_order() {
+        let all = order(&Tab::ALL, true);
+        let digit = |n| shortcut_destination(&all, n);
+        assert!(digit(1) == Some(Destination::Tab(Tab::Overview)));
+        assert!(digit(2) == Some(Destination::Tab(Tab::Cpu)));
+        assert!(all.len() > 9 && digit(9).is_some());
+        assert!(digit(0).is_none() && digit(all.len() + 1).is_none());
+    }
+
+    #[test]
+    fn hidden_pages_do_not_take_a_number() {
+        let visible = [Tab::Overview, Tab::Cpu, Tab::Sound];
+        let few = order(&visible, true);
+        let expected = [
+            Destination::Tab(Tab::Overview),
+            Destination::Tab(Tab::Cpu),
+            Destination::Tab(Tab::Sound),
+            Destination::Apps,
+            Destination::Agents,
+            Destination::Tool(Page::Baselines),
+            Destination::Tool(Page::Startup),
+            Destination::Tool(Page::Storage),
+            Destination::Tool(Page::Packages),
+        ];
+        assert!(few == expected, "History is hidden, so Baselines follows Agents");
+        assert!(shortcut_destination(&few, 3) == Some(Destination::Tab(Tab::Sound)));
+        assert!(shortcut_destination(&few, 9) == Some(Destination::Tool(Page::Packages)));
+        let mut with_history = visible.to_vec();
+        with_history.push(Tab::History);
+        let listed = order(&with_history, true);
+        assert!(shortcut_destination(&listed, 6) == Some(Destination::Tab(Tab::History)));
+    }
+
+    #[test]
+    fn a_battery_macos_says_is_absent_takes_no_number() {
+        let visible = [Tab::Overview, Tab::Battery, Tab::Sound];
+        assert!(!order(&visible, false).contains(&Destination::Tab(Tab::Battery)));
+        assert!(order(&visible, true).contains(&Destination::Tab(Tab::Battery)));
+        assert!(shortcut_destination(&order(&visible, false), 2) == Some(Destination::Tab(Tab::Sound)));
+    }
+
+    #[test]
+    fn only_the_digits_one_to_nine_are_page_shortcuts() {
+        for (key, digit) in [("1", Some(1)), ("9", Some(9)), ("0", None), ("10", None), ("a", None), ("-1", None), ("", None)] {
+            assert_eq!(shortcut_digit(key), digit, "{key:?}");
+        }
+    }
+
     #[test]
     fn every_card_and_tile_key_names_a_card() {
         for key in crate::settings::FAVORITE_METRICS.iter().chain(&crate::settings::PANEL_TILES) {
