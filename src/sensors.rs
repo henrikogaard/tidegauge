@@ -108,9 +108,10 @@ pub fn start() {
                             loop {
                                 let before = (std::time::SystemTime::now(), Instant::now());
                                 let raw = crate::demand::current().raw_sensors();
-                                let mut sample = smc.sample(raw);
+                                // Drain what IOKit and HID hand back each pass (see the sampler).
+                                let mut sample = objc2::rc::autoreleasepool(|_| smc.sample(raw));
                                 failing = if matches!(sample.source, SourceState::Ready) { 0 } else { failing + 1 };
-                                sample.named = crate::named_sensors::read();
+                                sample.named = objc2::rc::autoreleasepool(|_| crate::named_sensors::read());
                                 *out.lock().unwrap() = sample;
                                 wait_for_next_sample(raw);
                                 // After sleep, start over with fresh connections

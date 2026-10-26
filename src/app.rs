@@ -96,6 +96,11 @@ pub fn start_sampler() {
             let mut last_audio: Option<Instant> = None;
             loop {
                 let started = Instant::now();
+                // A thread of our own has no autorelease pool: without one,
+                // every object AppKit, LaunchServices and CoreWLAN hand back
+                // during a pass (running apps, URLs, strings, Wi-Fi requests)
+                // is kept for good, and the app grows by gigabytes over days.
+                objc2::rc::autoreleasepool(|_| {
                 let settings = Settings::load();
                 crate::demand::set_alerts(settings.alert_network_enabled, settings.alert_disk_health_enabled);
                 // Audio apps are read for a window or the panel, for an app
@@ -131,6 +136,7 @@ pub fn start_sampler() {
                     }
                     tick += 1;
                 }
+                });
                 // The menu-bar item and any alerts follow the new sample.
                 PUMP.notify();
                 // A steady 2 s from the start of one pass to the next.

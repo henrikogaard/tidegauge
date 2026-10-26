@@ -197,7 +197,7 @@ pub fn start() {
                         (Some(_), None) => false,
                     };
                     if due {
-                        let sample = collect();
+                        let sample = objc2::rc::autoreleasepool(|_| collect());
                         *out.lock().unwrap() = sample;
                         last = Some(Instant::now());
                     }
@@ -234,7 +234,7 @@ pub fn start() {
                         continue;
                     }
                     let mut next = HashMap::new();
-                    for (id, entry_id, read, write) in native_counters() {
+                    for (id, entry_id, read, write) in objc2::rc::autoreleasepool(|_| native_counters()) {
                         let sample =
                             advance(previous.get(&id), entry_id, read, write, Instant::now());
                         next.insert(id, sample);
