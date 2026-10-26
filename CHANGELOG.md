@@ -6,13 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.6.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.6.1) — 2026-10-26
+
 ### Fixed
 
 - Tidegauge's memory no longer grows by about half a gigabyte a day. Its
   background workers asked macOS for the running apps and Wi-Fi details every
   few seconds without an autorelease pool, so every object macOS handed back
   was kept; after five days one Mac held 3.2 GB, mostly millions of
-  running-app records, URLs and strings. Each pass now drains its pool.
+  running-app records, URLs and strings. Each pass now drains its pool
+  ([#117](https://github.com/henrikogaard/tidegauge/pull/117)).
 
 ## [0.6.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.6.0) — 2026-10-21
 
