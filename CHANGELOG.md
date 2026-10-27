@@ -6,6 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.6.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.6.2) — 2026-10-27
+
+### Fixed
+
+- Desktop widgets no longer get stuck on "Open Tidegauge to start" while
+  Tidegauge is running. macOS could go hours without asking the widgets for
+  new readings, for example after an update or sleep. Tidegauge now asks
+  macOS to refresh them when it starts and when readings resume
+  ([#119](https://github.com/henrikogaard/tidegauge/pull/119)).
+
 ## [0.6.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.6.1) — 2026-10-26
 
 ### Fixed
