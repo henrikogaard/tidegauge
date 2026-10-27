@@ -296,22 +296,23 @@ fn attempt(dir: &Path, snap: &Snapshot, now: SystemTime) -> String {
         return "sample is stale; not written".into();
     }
     match write_atomic(dir, &build(snap, seconds)) {
-        Ok(()) => "wrote the snapshot".into(),
+        Ok(()) => WROTE.into(),
         Err(error) => ["write failed: ", &error.to_string()].concat(),
     }
 }
 
 /// Appends `outcome` to `~/Library/Logs/Tidegauge/widget-export.log` when it
-/// differs from the last one, so a steady state is logged once.
-fn note(dir: &Path, outcome: &str) {
+/// differs from the last one, so a steady state is logged once. Returns
+/// whether it differed.
+fn note(dir: &Path, outcome: &str) -> bool {
     static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if *last == outcome {
-        return;
+        return false;
     }
     *last = outcome.to_string();
     let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) else {
-        return;
+        return true;
     };
     let folder = home.join("Library/Logs/Tidegauge");
     let file = folder.join("widget-export.log");
@@ -323,6 +324,7 @@ fn note(dir: &Path, outcome: &str) {
         let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let _ = writeln!(out, "{at} {} :: {outcome}", dir.display());
     }
+    true
 }
 
 /// Writes the readings for the widgets, if one is on the desktop. Cheap when
@@ -332,7 +334,22 @@ pub fn publish(snap: &Snapshot) {
         note(Path::new(GROUP_ID), "no group folder yet; waiting for a widget or access");
         return;
     };
-    note(&dir, &attempt(&dir, snap, SystemTime::now()));
+    let outcome = attempt(&dir, snap, SystemTime::now());
+    // The first write after launch or sleep: the widgets may be showing
+    // "Open Tidegauge" and macOS may not ask them again for hours.
+    if note(&dir, &outcome) && outcome == WROTE {
+        reload_widgets();
+    }
+}
+
+const WROTE: &str = "wrote the snapshot";
+
+fn reload_widgets() {
+    extern "C" {
+        fn tidegauge_reload_widgets();
+    }
+    // SAFETY: a Swift function with no arguments, built by build.rs.
+    unsafe { tidegauge_reload_widgets() }
 }
 
 #[cfg(test)]
