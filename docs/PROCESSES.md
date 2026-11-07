@@ -41,6 +41,10 @@ never change Quit or Stop eligibility.
 
 Cancel sends nothing. There is no bulk kill, automatic cleanup, force quit, SIGKILL fallback, privileged helper, or disabling of launch agents. A short post-request observation distinguishes exit from still-running/unverifiable outcomes. macOS PID-based signals retain a small unavoidable race between final validation and delivery; this is not a claim of atomic termination.
 
+### Sample
+
+**Sample** runs `/usr/bin/sample <pid> 3 -file <path>` for an app's registered main process or a selected process, and saves the report as `<name>-<pid>-sample-<timestamp>.txt` in Downloads. It is offered only for processes you own that Quit would also accept, and the PID, start time, owner and executable are verified again right before it runs. It runs on a background thread with a 15-second limit, one sample at a time; the button reads "Sampling…" meanwhile. The result appears as a message with a Show in Finder button, or the reason `sample` gave for failing. An existing file is never overwritten.
+
 ## Verification
 
 `cargo test --locked process_signing::` covers stale requests, identity changes,

@@ -534,7 +534,7 @@ pub fn local_weekday(ts: f64) -> usize {
     format_time(ts, c"%w").parse().unwrap_or(0) % 7
 }
 
-fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
+pub(crate) fn format_time(ts: f64, format: &std::ffi::CStr) -> String {
     let time = ts as libc::time_t;
     let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
     let mut output = [0u8; 48];

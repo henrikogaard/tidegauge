@@ -6,6 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Apps & processes can sample a process you own, like Activity Monitor's
+  Sample Process: a three-second report of what its threads are doing, which
+  shows where a hung app is stuck. The Sample button sits on an app with one
+  main process and on a selected process. The report is saved in Downloads
+  with a button to show it in Finder. Other users' and macOS's protected
+  processes are not offered, and the process is checked again right before it
+  is sampled.
+
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 
 ### Added

@@ -515,6 +515,9 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
             }
         }
     } else if let Some(main) = registered_main(s, app) {
+        if control::blocked(main).is_none() {
+            actions = actions.child(sample_button(view, main, &app.name, dark, this.clone()));
+        }
         if control::blocked(main).is_none() && !pending {
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::App { main: main.clone(), name: app.name.clone(), helpers: procs.len(), memory: app.mem_bytes, force };
@@ -768,6 +771,9 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
         }
         None => {}
     }
+    if selected && blocked.is_none() {
+        controls = controls.child(sample_button(view, p, &program_name(p), dark, this.clone()));
+    }
     let target = this.clone();
     if selected {
     controls = controls.child(button(
@@ -996,6 +1002,62 @@ fn signing_details(
         )));
     }
     details
+}
+
+/// "Sample" for a process you own: it says "Sampling…" while it runs, and
+/// is left out while another process is being sampled.
+fn sample_button(view: &TideGaugeView, p: &ProcInfo, name: &str, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+    let id = Identity::of(p);
+    match view.process_sampling {
+        Some(running) if running == id => div()
+            .id(SharedString::from(format!("sample-{}", p.pid)))
+            .role(Role::Status)
+            .text_size(t::TEXT_BODY)
+            .text_color(t::ink_dim(dark))
+            .px_2()
+            .child(l("Sampling…", "Tar stikkprøve…"))
+            .into_any_element(),
+        Some(_) => div().into_any_element(),
+        None => {
+            let (process, name) = (p.clone(), name.to_string());
+            button(format!("sample-{}", p.pid), l("Sample", "Ta stikkprøve"), false, dark, move |_, cx| {
+                start_sample(process.clone(), name.clone(), this.clone(), cx)
+            })
+            .into_any_element()
+        }
+    }
+}
+
+/// Samples on a background thread, then reports with a button to show the file.
+fn start_sample(process: ProcInfo, name: String, this: Entity<TideGaugeView>, cx: &mut App) {
+    if this.read(cx).process_sampling.is_some() {
+        return;
+    }
+    let id = Identity::of(&process);
+    this.update(cx, |v, cx| {
+        v.process_sampling = Some(id);
+        cx.notify();
+    });
+    cx.spawn(async move |cx| {
+        let result = smol::unblock(move || crate::process_sample::sample(&process, &name)).await;
+        this.update(cx, |v, cx| {
+            v.process_sampling = None;
+            v.toast = Some(match result {
+                Ok(path) => crate::ui::Toast::new(
+                    format!(
+                        "{} {}",
+                        l("Sample saved in Downloads:", "Sample lagret i Nedlastinger:"),
+                        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    ),
+                    false,
+                )
+                .with_file(path),
+                Err(error) => crate::ui::Toast::new(error, true),
+            });
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 #[derive(Clone)]

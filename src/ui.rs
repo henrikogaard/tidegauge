@@ -162,6 +162,8 @@ pub struct TideGaugeView {
     pub startup_filter: Entity<gpui_kit::base::input::InputState>,
     pub startup_query: String,
     pub process_pending: bool,
+    /// The process being sampled right now; one sample runs at a time.
+    pub process_sampling: Option<crate::process_activity::Identity>,
     pub toast: Option<Toast>,
     pub process_selected: Option<crate::process_activity::Identity>,
     pub process_signing: crate::process_signing::State,
@@ -279,6 +281,7 @@ impl TideGaugeView {
             startup_filter,
             startup_query: String::new(),
             process_pending: false,
+            process_sampling: None,
             toast: None,
             process_selected: None,
             process_signing: crate::process_signing::State::default(),
@@ -409,12 +412,18 @@ impl TideGaugeView {
 pub struct Toast {
     pub text: String,
     pub failed: bool,
+    /// A file this result is about, with a button to show it in Finder.
+    pub file: Option<std::path::PathBuf>,
     shown: std::time::Instant,
 }
 
 impl Toast {
     pub fn new(text: String, failed: bool) -> Self {
-        Self { text, failed, shown: std::time::Instant::now() }
+        Self { text, failed, file: None, shown: std::time::Instant::now() }
+    }
+    pub fn with_file(mut self, file: std::path::PathBuf) -> Self {
+        self.file = Some(file);
+        self
     }
     fn expired(&self) -> bool {
         // Failures stay a little longer so they can be read.
@@ -450,6 +459,11 @@ fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl In
                 .text_size(t::TEXT_BODY)
                 .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
                 .child(div().min_w_0().child(toast.text.clone()))
+                .when_some(toast.file.clone(), |d, file| {
+                    d.child(crate::controls::button("toast-reveal", l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| {
+                        crate::storage::reveal(&file)
+                    }))
+                })
                 .child(
                     div()
                         .id("toast-close")
