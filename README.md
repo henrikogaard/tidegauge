@@ -106,7 +106,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal and whether the Mac is online), GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
 | Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
-| Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
+| Device telemetry | Read-only temperature/fan channels (with the highest value seen since launch), per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and processor power grouped by executable bundle or parent app |
 | Sound | Choose the output and input device; volume and mute for both where the device supports them; per-app volume and mute (macOS 14.2+) with a level meter |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |

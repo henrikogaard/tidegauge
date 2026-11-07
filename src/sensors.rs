@@ -112,6 +112,7 @@ pub fn start() {
                                 let mut sample = objc2::rc::autoreleasepool(|_| smc.sample(raw));
                                 failing = if matches!(sample.source, SourceState::Ready) { 0 } else { failing + 1 };
                                 sample.named = objc2::rc::autoreleasepool(|_| crate::named_sensors::read());
+                                crate::sensor_max::record(&sample);
                                 *out.lock().unwrap() = sample;
                                 wait_for_next_sample(raw);
                                 // After sleep, start over with fresh connections
@@ -145,12 +146,14 @@ pub fn start() {
                             // them fresh at the normal pace until the retry.
                             for _ in 0..15 {
                                 let before = (std::time::SystemTime::now(), Instant::now());
-                                *out.lock().unwrap() = SensorSnapshot {
+                                let sample = SensorSnapshot {
                                     source: source.clone(),
                                     collected_at: Some(Instant::now()),
                                     named: crate::named_sensors::read(),
                                     ..Default::default()
                                 };
+                                crate::sensor_max::record(&sample);
+                                *out.lock().unwrap() = sample;
                                 std::thread::sleep(Duration::from_secs(2));
                                 // The HID sensors reconnect after sleep here too.
                                 if slept(before.0.elapsed().unwrap_or_default(), before.1.elapsed()) {
@@ -166,6 +169,26 @@ pub fn start() {
             .expect("sensor worker");
         state
     });
+}
+
+/// A readable name for an SMC key, only where its meaning is verified:
+/// `TB0T`/`TB1T`/`TB2T` matched the HID battery sensors to the tenth of a
+/// degree on a Mac17,7, and `F<n>Ac` is fan n's actual speed. Every other key
+/// has no label; the UI shows it as the controller names it.
+pub fn friendly_name(key: &str) -> Option<String> {
+    use crate::locale::text as l;
+    match key {
+        "TB0T" | "TB1T" | "TB2T" => Some(l("Battery", "Batteri").to_string()),
+        _ => {
+            let b = key.as_bytes();
+            if b.len() == 4 && b[0] == b'F' && &b[2..] == b"Ac" {
+                let index = (b[1] as char).to_digit(16)?;
+                Some(format!("{} {}", l("Fan", "Vifte"), index + 1))
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Sleep until the next sample is due: two seconds, or at once when the CPU
@@ -578,6 +601,18 @@ pub fn preview() -> Option<SensorSnapshot> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_verified_keys_get_a_readable_name() {
+        use super::friendly_name;
+        // The words follow the UI language; the numbers do not.
+        assert!(friendly_name("TB1T").is_some_and(|n| n.starts_with("Batter")));
+        assert!(friendly_name("F0Ac").is_some_and(|n| n.ends_with(" 1")));
+        assert!(friendly_name("F1Ac").is_some_and(|n| n.ends_with(" 2")));
+        for unverified in ["TC0P", "Tp01", "Tf04", "TV0s", "F0Mx", "FNum", ""] {
+            assert_eq!(friendly_name(unverified), None, "{unverified} has no verified meaning");
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -89,6 +89,30 @@ the SSD (`NAND`) and the battery (`gas gauge battery`). Calibration channels
 (`PMU tcal`) are left out. Run the read-only probe with
 `cargo test named_sensors::tests::native_named_sensors_read -- --ignored --nocapture`.
 
+Probe of the HID temperature page on the Mac17,7 (2026-11-07, run with
+`cargo test named_sensors::tests::native_named_sensor_products -- --ignored
+--nocapture`): 45 services share only a handful of product names, and the
+names repeat. Each `PMU tdie1`…`tdie14` appears three times, `gas gauge
+battery` six times, `NAND CH0 temp` once. `PMU tcal` (calibration, about
+52 °C) and `PMU tdev1`…`tdev8` (about −9,200: not a temperature) are left out,
+and `als-temp` reports no value. macOS's names give no CPU/GPU split, so the
+page groups by what the names do say: Chip, SSD, Battery. A "GPU die" label
+would be invented and is not used.
+
+### Highest values and labels
+
+Each part's hottest named sensor, every SMC temperature channel and each fan
+shows the highest value seen since Tidegauge started ("71 °C · max 84 °C"). The
+maxima live in memory (`src/sensor_max.rs`), start over with each launch and are
+not written to History. A sensor that stops reporting keeps its maximum;
+non-finite values are ignored. Because HID product names repeat, the named
+maximum is that of the part's hottest reading, not of one physical sensor.
+
+A readable label is shown only where the meaning is verified, and the raw key
+stays beside it: `TB0T`/`TB1T`/`TB2T` as "Battery" (matched the HID battery
+sensors, see the table below) and `F<n>Ac` as "Fan n+1" (the actual-speed key
+above). Every other SMC key is shown as the controller names it.
+
 ### History, alerts, fans and sleep
 
 - **History** records the chip's hottest named sensor, the SSD and the battery every History write (`temp_chip`, `temp_ssd`, `temp_battery`), only while the sensor reading is fresh. History offers them as Chip °C, SSD °C and Battery °C.
