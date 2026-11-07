@@ -3757,6 +3757,15 @@ fn router_card(dark: bool) -> Div {
     let ms = |v: Option<f64>| v.map_or("–".to_string(), |v| format!("{} ms", crate::locale::number(v, 1)));
     let stats = match (&v.status, v.stats) {
         (Status::Probing(_), Some(st)) => st,
+        (Status::Unavailable(_), _) => {
+            return card(dark)
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Router check unavailable", "Ruterkontroll utilgjengelig")))
+                .child(sub(l(
+                    "macOS would not let Tidegauge send the probe, so nothing is measured. This is not packet loss.",
+                    "macOS lot ikke Tidegauge sende prøven, så ingenting måles. Dette er ikke pakketap.",
+                )).text_color(t::ink_dim(dark)))
+                .child(sub(note).text_color(t::ink_dim(dark)));
+        }
         (Status::NoGateway, _) => {
             return card(dark)
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("No router to measure", "Ingen ruter å måle")))

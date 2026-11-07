@@ -21,6 +21,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const PROBE_PERIOD: Duration = Duration::from_secs(2);
 /// The gateway is looked up again after this many probes, or after a loss.
 const RESOLVE_EVERY: u32 = 5;
+const IDENT: u16 = 0x7467;
 const ROUTE_TIMEOUT: Duration = Duration::from_secs(1);
 
 static ROUTE: crate::bounded::Probe = crate::bounded::Probe::new();
@@ -53,9 +54,11 @@ impl Ring {
         self.samples.clear();
     }
 
-    /// Every kept probe for a chart; a lost one is NaN, which draws as a gap.
+    /// The probes behind [`Ring::stats`], for a chart; a lost one is NaN,
+    /// which draws as a gap.
     pub fn series(&self) -> Vec<f64> {
-        self.samples.iter().map(|s| s.unwrap_or(f64::NAN)).collect()
+        let start = self.samples.len().saturating_sub(WINDOW);
+        self.samples.iter().skip(start).map(|s| s.unwrap_or(f64::NAN)).collect()
     }
 
     pub fn stats(&self) -> Option<Stats> {
@@ -84,6 +87,19 @@ pub enum Status {
     /// No usable default gateway: offline, a tunnel, or not a local address.
     NoGateway,
     Probing(Ipv4Addr),
+    /// The probe cannot run here (the socket or the send failed): not a loss.
+    Unavailable(Ipv4Addr),
+}
+
+/// What one echo came to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Outcome {
+    /// Answered after this many milliseconds.
+    Reply(f64),
+    /// Sent, but nothing came back in time: a lost probe.
+    Lost,
+    /// Never sent, because of a local error: says nothing about the router.
+    Unavailable,
 }
 
 #[derive(Clone, Default)]
@@ -175,32 +191,32 @@ fn echo_request(ident: u16, seq: u16) -> [u8; 16] {
     p
 }
 
-/// Whether `packet` is the echo reply to `seq`. The datagram socket may hand
-/// the reply back with its IP header in front.
-fn is_reply(packet: &[u8], seq: u16) -> bool {
+/// The identifier of `packet` when it is the echo reply to `seq`. The
+/// datagram socket may hand the reply back with its IP header in front.
+fn reply_ident(packet: &[u8], seq: u16) -> Option<u16> {
     let icmp = if packet.first().is_some_and(|b| b >> 4 == 4) {
         let header = usize::from(packet[0] & 0x0f) * 4;
         packet.get(header..).unwrap_or(&[])
     } else {
         packet
     };
-    icmp.len() >= 8 && icmp[0] == 0 && u16::from_be_bytes([icmp[6], icmp[7]]) == seq
+    (icmp.len() >= 8 && icmp[0] == 0 && u16::from_be_bytes([icmp[6], icmp[7]]) == seq)
+        .then(|| u16::from_be_bytes([icmp[4], icmp[5]]))
 }
 
-/// One echo to `target`: the round trip in milliseconds, or None when it is
-/// lost or the socket cannot be used.
-fn ping(target: Ipv4Addr, seq: u16) -> Option<f64> {
+/// One echo to `target`, with the identifier its reply carried.
+fn ping(target: Ipv4Addr, seq: u16) -> (Outcome, Option<u16>) {
     unsafe {
         let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP);
         if fd < 0 {
-            return None;
+            return (Outcome::Unavailable, None);
         }
         let result = (|| {
             let mut addr: libc::sockaddr_in = std::mem::zeroed();
             addr.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
             addr.sin_family = libc::AF_INET as libc::sa_family_t;
             addr.sin_addr.s_addr = u32::from_ne_bytes(target.octets());
-            let packet = echo_request(0x7467, seq);
+            let packet = echo_request(IDENT, seq);
             let started = Instant::now();
             let sent = libc::sendto(
                 fd,
@@ -211,11 +227,14 @@ fn ping(target: Ipv4Addr, seq: u16) -> Option<f64> {
                 std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
             );
             if sent < 0 {
-                return None;
+                // No route, no buffer space, a firewall: the probe never left.
+                return (Outcome::Unavailable, None);
             }
             let mut buf = [0u8; 128];
             loop {
-                let left = PROBE_TIMEOUT.checked_sub(started.elapsed())?;
+                let Some(left) = PROBE_TIMEOUT.checked_sub(started.elapsed()) else {
+                    return (Outcome::Lost, None);
+                };
                 let tv = libc::timeval {
                     tv_sec: 0,
                     tv_usec: left.as_micros().max(1) as libc::suseconds_t,
@@ -229,10 +248,17 @@ fn ping(target: Ipv4Addr, seq: u16) -> Option<f64> {
                 );
                 let n = libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), 0);
                 if n < 0 {
-                    return None;
+                    match std::io::Error::last_os_error().kind() {
+                        // A signal is not a loss: wait out the rest.
+                        std::io::ErrorKind::Interrupted => continue,
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => return (Outcome::Lost, None),
+                        _ => return (Outcome::Unavailable, None),
+                    }
                 }
-                if is_reply(&buf[..n as usize], seq) {
-                    return Some(started.elapsed().as_secs_f64() * 1000.0);
+                // XNU keeps the identifier we sent on a datagram socket, so a
+                // reply must carry both it and the sequence.
+                if let Some(ident) = reply_ident(&buf[..n as usize], seq).filter(|id| *id == IDENT) {
+                    return (Outcome::Reply(started.elapsed().as_secs_f64() * 1000.0), Some(ident));
                 }
             }
         })();
@@ -243,6 +269,14 @@ fn ping(target: Ipv4Addr, seq: u16) -> Option<f64> {
 
 // ---- Worker ----
 
+/// Forget everything: what was measured on one network says nothing about
+/// the next one the page is opened on.
+fn reset() {
+    let mut s = STATE.lock().unwrap();
+    s.status = Status::Idle;
+    s.ring.clear();
+}
+
 /// Start the probe thread. It rests until the Network page opens.
 pub fn start() {
     let _ = std::thread::Builder::new()
@@ -251,15 +285,23 @@ pub fn start() {
             crate::demand::utility_thread();
             let mut gateway: Option<Ipv4Addr> = None;
             let (mut since_resolve, mut seq) = (RESOLVE_EVERY, 0u16);
+            let mut last: Option<Instant> = None;
             loop {
                 let seen = crate::demand::generation();
                 if !crate::demand::current().router_probe_wanted() {
                     gateway = None;
                     since_resolve = RESOLVE_EVERY;
+                    reset();
                     crate::demand::wait_for_change(seen, Duration::from_secs(60));
                     continue;
                 }
-                let started = Instant::now();
+                // Any change in the demand wakes this thread; a probe is
+                // still never sent sooner than PROBE_PERIOD after the last.
+                if let Some(wait) = last.and_then(|at| PROBE_PERIOD.checked_sub(at.elapsed())) {
+                    crate::demand::wait_for_change(seen, wait);
+                    continue;
+                }
+                last = Some(Instant::now());
                 if gateway.is_none() || since_resolve >= RESOLVE_EVERY {
                     gateway = find_gateway();
                     since_resolve = 0;
@@ -273,16 +315,24 @@ pub fn start() {
                     }
                     Some(ip) => {
                         seq = seq.wrapping_add(1);
-                        let rtt = ping(ip, seq);
-                        if rtt.is_none() {
+                        let outcome = ping(ip, seq).0;
+                        if !matches!(outcome, Outcome::Reply(_)) {
                             since_resolve = RESOLVE_EVERY;
                         }
                         let mut s = STATE.lock().unwrap();
-                        s.status = Status::Probing(ip);
-                        s.ring.push(rtt);
+                        match outcome {
+                            Outcome::Reply(ms) => {
+                                s.status = Status::Probing(ip);
+                                s.ring.push(Some(ms));
+                            }
+                            Outcome::Lost => {
+                                s.status = Status::Probing(ip);
+                                s.ring.push(None);
+                            }
+                            Outcome::Unavailable => s.status = Status::Unavailable(ip),
+                        }
                     }
                 }
-                crate::demand::wait_for_change(seen, PROBE_PERIOD.saturating_sub(started.elapsed()));
             }
         });
 }
@@ -325,12 +375,27 @@ mod tests {
         for _ in 0..WINDOW {
             r.push(Some(1.0));
         }
-        assert_eq!(r.series().len(), HISTORY);
+        assert_eq!(r.samples.len(), HISTORY);
         let s = r.stats().unwrap();
         assert_eq!((s.loss_pct, s.probes), (0.0, WINDOW));
-        assert!(r.series()[0].is_nan());
+        let series = r.series();
+        assert_eq!(series.len(), WINDOW, "the strip covers the same probes as the figures");
+        assert!(series.iter().all(|v| *v == 1.0));
         r.clear();
         assert!(r.series().is_empty());
+    }
+
+    #[test]
+    fn reset_forgets_probes_and_status() {
+        {
+            let mut s = STATE.lock().unwrap();
+            s.status = Status::Probing(Ipv4Addr::new(192, 168, 1, 1));
+            s.ring.push(Some(3.0));
+        }
+        reset();
+        let v = view();
+        assert_eq!(v.status, Status::Idle);
+        assert!(v.stats.is_none() && v.series.is_empty());
     }
 
     const ROUTE_OK: &str = "   route to: default\ndestination: default\n       mask: default\n    gateway: 192.168.50.1\n  interface: en0\n      flags: <UP>\n";
@@ -357,20 +422,23 @@ mod tests {
         assert_eq!(checksum(&p), 0);
         let mut reply = p;
         reply[0] = 0;
-        assert!(is_reply(&reply, 7));
-        assert!(!is_reply(&reply, 8));
+        assert_eq!(reply_ident(&reply, 7), Some(1));
+        assert_eq!(reply_ident(&reply, 8), None);
         let mut with_ip = vec![0x45u8, 0, 0, 0, 0, 0, 0, 0, 64, 1, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2];
         with_ip.extend_from_slice(&reply);
-        assert!(is_reply(&with_ip, 7));
-        assert!(!is_reply(&p, 7), "an echo request is not a reply");
+        assert_eq!(reply_ident(&with_ip, 7), Some(1));
+        assert_eq!(reply_ident(&p, 7), None, "an echo request is not a reply");
     }
 
     #[test]
     #[ignore = "sends one echo to this Mac's real router; cargo test native_router_ping -- --ignored --nocapture"]
     fn native_router_ping_reaches_the_gateway() {
         let ip = find_gateway().expect("no local default gateway");
-        let rtt = ping(ip, 1).expect("the router did not answer");
-        println!("router {ip}: {rtt:.2} ms");
-        assert!(rtt > 0.0 && rtt < 1000.0);
+        let (outcome, ident) = ping(ip, 1);
+        println!("router {ip}: {outcome:?}, sent identifier {IDENT:#06x}, reply identifier {ident:04x?}");
+        match outcome {
+            Outcome::Reply(rtt) => assert!(rtt > 0.0 && rtt < 1000.0),
+            other => panic!("the router did not answer: {other:?}"),
+        }
     }
 }
