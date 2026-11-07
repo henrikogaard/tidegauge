@@ -134,6 +134,7 @@ pub fn start_sampler() {
                     if tick % 6 == 0 {
                         crate::widget_export::publish(&e.snap);
                     }
+                    crate::live_export::publish(&e.snap, settings.live_export_enabled);
                     tick += 1;
                 }
                 });

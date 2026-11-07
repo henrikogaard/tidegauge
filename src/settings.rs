@@ -97,6 +97,9 @@ pub struct Settings {
     /// again when it is back.
     pub alert_offline_enabled: bool,
     pub launch_at_login: bool,
+    /// Write the headline readings to `live.json` on every sampling pass, for
+    /// scripts. Off by default.
+    pub live_export_enabled: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
     /// The tiles in the menu-bar panel, in order; any of `PANEL_TILES`.
@@ -163,6 +166,7 @@ impl Default for Settings {
             alert_disk_health_enabled: false,
             alert_offline_enabled: false,
             launch_at_login: false,
+            live_export_enabled: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
             panel_tiles: DEFAULT_PANEL_TILES.iter().map(|s| (*s).into()).collect(),

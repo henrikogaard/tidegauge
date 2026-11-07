@@ -2,7 +2,7 @@
 //! and at most one quiet line under the name. Explanations live behind the
 //! header's ⓘ.
 
-use crate::controls::{button_indexed, segment, segment_group, switch};
+use crate::controls::{button, button_indexed, segment, segment_group, switch};
 use crate::locale::text as l;
 use crate::settings::{
     localized_metric_label, localized_style_label, style_fits, ChartStyle, ColorMode, MenuPreset, Settings, MENU_METRICS,
@@ -337,6 +337,43 @@ pub(crate) fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, c
     });
 }
 
+/// The switch for the live JSON file, with its path and a way to show it.
+/// Turning it off deletes the file at once.
+fn live_file_row(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let on = settings.live_export_enabled;
+    let path = crate::live_export::path();
+    let detail = format!(
+        "{} {}",
+        l("Readings for scripts, updated every 2 seconds, in", "Målinger for skript, oppdatert hvert 2. sekund, i"),
+        path.display()
+    );
+    let reveal = (on && path.exists()).then(|| {
+        let path = path.clone();
+        button("live-file-reveal", l("Reveal", "Vis i Finder"), false, dark, move |_, _| {
+            crate::storage::reveal(&path)
+        })
+    });
+    let toggle = switch(
+        "live-file",
+        l("Write live readings to a file", "Skriv levende målinger til en fil"),
+        on,
+        dark,
+        move |window, cx| {
+            update_preference(&this, |s| s.live_export_enabled = !on, window, cx);
+            if on {
+                crate::live_export::remove();
+            }
+        },
+    );
+    row(
+        l("Write live readings to a file", "Skriv levende målinger til en fil"),
+        Some(detail),
+        div().flex().items_center().gap(t::SPACE_3).children(reveal).child(toggle),
+        false,
+        dark,
+    )
+}
+
 /// The General rows and the Look rows (appearance, colors, charts).
 fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> (Div, Div) {
     let appearance = segment_group("appearance-options", l("Appearance", "Utseende"), dark).children(
@@ -494,6 +531,7 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
                 false,
                 dark,
             ),
+            live_file_row(settings, dark, this.clone()),
             keep_awake_row(view, dark, this),
         ],
         dark,

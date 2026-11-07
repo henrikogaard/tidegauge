@@ -61,6 +61,7 @@ mod statusbar;
 mod theme;
 mod ui;
 pub mod updater;
+mod live_export;
 mod widget_export;
 
 use gpui_kit::*;

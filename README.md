@@ -154,6 +154,7 @@ Projects requires a working directory within four levels of a Git root or a reco
 | Settings | `~/Library/Application Support/no.ogard.tidegauge/settings.json` |
 | History | `~/Library/Application Support/no.ogard.tidegauge/history.db` |
 | Saved system baseline | `~/Library/Application Support/no.ogard.tidegauge/system-baseline-v1.json` |
+| Live readings (opt-in) | `~/Library/Application Support/no.ogard.tidegauge/live.json` |
 | Cached app icons | `~/Library/Caches/no.ogard.tidegauge/icons/` |
 
 Open Settings from the sidebar, the menu-bar panel, the menu, or Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Optional readings appear together in one native item, with labels for values and graphs, consistent spacing, and fixed widths for changing values. Changes are saved immediately and applied on the next refresh. Use Reset to icon only to clear extra readings. Existing preferences are preserved on upgrade.
@@ -176,6 +177,45 @@ The app uses defaults when the settings file is absent or cannot be parsed. You 
 Available metric identifiers are `cpu`, `memory`, `network`, `disk`, `battery`, `gpu`, and `power`. The menu-bar pump reloads this file while the app runs. Appearance can be set to System, Light, or Dark for the dashboard.
 
 History includes app names and resource usage. The sampler records headline metrics and the app groups using the most memory, CPU, disk and network approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
+
+### Live readings file
+
+Settings → General → **Write live readings to a file** is off by default. While it is on,
+every sampling pass (about every 2 seconds) replaces `live.json` in the folder above, through
+a temporary file and a rename, so a script never reads half a file. Turning the setting off
+deletes the file. The settings row shows the path and has Reveal. This file is separate from
+the widgets' own snapshot.
+
+`schema` is 1 and changes only when a field is renamed, removed or changes unit; new fields
+may be added without a bump. A field is `null` when macOS does not report it.
+
+| Field | Unit |
+|---|---|
+| `schema` | integer |
+| `written_at`, `sample_at` | Unix seconds |
+| `cpu.percent` | share of the whole Mac, 0-100 |
+| `cpu.cores` | logical cores |
+| `memory.used_bytes`, `memory.total_bytes`, `memory.swap_used_bytes` | bytes |
+| `memory.used_percent` | 0-100 |
+| `memory.pressure` | `normal`, `warning` or `critical` |
+| `disk.read_bytes_per_second`, `disk.write_bytes_per_second` | bytes per second |
+| `disk.used_bytes`, `disk.total_bytes` | bytes, startup volume |
+| `network.in_bytes_per_second`, `network.out_bytes_per_second` | bytes per second |
+| `gpu.percent` | 0-100 |
+| `battery.present` | boolean |
+| `battery.percent` | 0-100 |
+| `battery.state` | `charging`, `on_battery` or `charged` |
+| `temperatures_c.chip`, `.ssd`, `.battery` | degrees Celsius, hottest sensor of each |
+| `power_watts` | watts, whole Mac |
+| `top_apps[]` | up to 10 apps, busiest CPU first |
+| `top_apps[].name`, `.bundle_id` | text (`bundle_id` may be `null`) |
+| `top_apps[].cpu_core_percent` | 100 is one full core, whatever the per-core setting says |
+| `top_apps[].memory_bytes` | bytes |
+| `top_apps[].pids` | array of process ids |
+
+```sh
+jq '.cpu.percent, .top_apps[0].name' "$HOME/Library/Application Support/no.ogard.tidegauge/live.json"
+```
 
 ## Architecture
 
@@ -201,6 +241,7 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 | `src/keepawake.rs` | Owned native idle-sleep assertions and expiry |
 | `src/controls.rs` | Settings, history, keep-awake, and output-device controls |
 | `src/settings.rs` | Settings model, defaults, and JSON persistence |
+| `src/live_export.rs` | Optional live JSON readings file for scripts |
 | `src/statusbar.rs` | Native menu-bar items and sparklines |
 | `src/ui.rs` | Panel navigation, tab content, and charts |
 | `src/theme.rs`, `src/icons.rs` | Design tokens and app-icon caching |
