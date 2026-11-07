@@ -118,15 +118,22 @@ struct Finished {
     stderr: String,
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+/// Read a pipe on its own thread. The text is sent when the pipe closes; a
+/// reader that never gets there is simply left behind.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> std::sync::mpsc::Receiver<String> {
+    let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = pipe {
             let _ = pipe.take(1 << 20).read_to_end(&mut bytes);
         }
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+        let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    receiver
 }
+
+/// How long the output may take to arrive once the program has ended.
+const OUTPUT_GRACE: Duration = Duration::from_secs(1);
 
 /// Run a program to its end or its deadline, whichever comes first. A program
 /// still going at the deadline is killed.
@@ -155,8 +162,8 @@ fn run_bounded(program: &str, args: &[OsString], timeout: Duration) -> Result<Fi
     };
     Ok(Finished {
         success: status.success(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: stdout.recv_timeout(OUTPUT_GRACE).unwrap_or_default(),
+        stderr: stderr.recv_timeout(OUTPUT_GRACE).unwrap_or_default(),
     })
 }
 
@@ -191,12 +198,18 @@ pub fn refresh_library() {
     });
 }
 
-/// Run the chosen Shortcut for an alert that was just sent. Does nothing when
-/// none is chosen or one ran in the last 30 seconds.
+/// Run the chosen Shortcut for an alert that was just sent. It runs whether or
+/// not macOS lets notifications through: picking it was the user's choice.
+/// Does nothing when none is chosen, outside the installed app, or when one
+/// ran in the last 30 seconds.
 pub fn run_for_alert(shortcut: Option<&str>, metric: &str, message: &str) {
     let Some(name) = shortcut.map(str::trim).filter(|name| !name.is_empty()) else {
         return;
     };
+    // Like notifications, only the installed app runs anything.
+    if !crate::notifications::is_app_bundle() {
+        return;
+    }
     if !FLOOR.lock().unwrap().take(since_start()) {
         return;
     }
@@ -208,6 +221,15 @@ pub fn run_for_alert(shortcut: Option<&str>, metric: &str, message: &str) {
     });
 }
 
+/// Removes the file when dropped, whichever way the run ends.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn run(name: &str, text: &str) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -217,16 +239,16 @@ fn run(name: &str, text: &str) -> Result<(), String> {
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&path)
-        .and_then(|mut file| file.write_all(text.as_bytes()))
         .map_err(|error| error.to_string())?;
-    let result = run_bounded(SHORTCUTS, &run_args(name, &path), RUN_TIMEOUT);
-    let _ = std::fs::remove_file(&path);
-    match result? {
+    let _cleanup = TempFile(path.clone());
+    file.write_all(text.as_bytes()).map_err(|error| error.to_string())?;
+    drop(file);
+    match run_bounded(SHORTCUTS, &run_args(name, &path), RUN_TIMEOUT)? {
         done if done.success => Ok(()),
         done => Err(done.stderr.lines().next().unwrap_or("failed").trim().chars().take(120).collect()),
     }
@@ -290,6 +312,10 @@ mod tests {
         let timed_out = run_bounded("/bin/sleep", &args(&["30"]), Duration::from_millis(200));
         assert_eq!(timed_out.err().as_deref(), Some("timed out"));
         assert!(slow.elapsed() < Duration::from_secs(5));
+        // A grandchild holding the pipe open cannot hold the run past the grace.
+        let held = Instant::now();
+        let done = run_bounded("/bin/sh", &args(&["-c", "sleep 4 & exit 0"]), Duration::from_secs(5)).unwrap();
+        assert!(done.success && held.elapsed() < Duration::from_secs(3));
         assert!(run_bounded("/nonexistent/program", &[], Duration::from_secs(1)).is_err());
     }
 }

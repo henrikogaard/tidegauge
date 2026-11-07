@@ -805,8 +805,8 @@ fn alert_shortcut(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) 
         l("No Shortcuts found.", "Fant ingen snarveier.").to_string()
     } else {
         l(
-            "Runs with the alert text when any alert is sent, at most every 30 seconds.",
-            "Kjører med varselteksten når et varsel sendes, høyst hvert 30. sekund.",
+            "Runs with the alert text when any alert is sent, at most every 30 seconds, even if notifications are blocked.",
+            "Kjører med varselteksten når et varsel sendes, høyst hvert 30. sekund, også om varsler er blokkert.",
         )
         .to_string()
     };
