@@ -344,18 +344,28 @@ fn live_file_row(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -
     let path = crate::live_export::path();
     let detail = format!(
         "{} {}",
-        l("Readings for scripts, updated every 2 seconds, in", "Målinger for skript, oppdatert hvert 2. sekund, i"),
+        l(
+            "Readings for scripts, updated every 2 seconds, in",
+            "Målinger for skript, oppdatert hvert 2. sekund, i"
+        ),
         path.display()
     );
     let reveal = (on && path.exists()).then(|| {
         let path = path.clone();
-        button("live-file-reveal", l("Reveal", "Vis i Finder"), false, dark, move |_, _| {
-            crate::storage::reveal(&path)
-        })
+        button(
+            "live-file-reveal",
+            l("Reveal", "Vis i Finder"),
+            false,
+            dark,
+            move |_, _| crate::storage::reveal(&path),
+        )
     });
     let toggle = switch(
         "live-file",
-        l("Write live readings to a file", "Skriv levende målinger til en fil"),
+        l(
+            "Write live readings to a file",
+            "Skriv levende målinger til en fil",
+        ),
         on,
         dark,
         move |window, cx| {
@@ -366,9 +376,17 @@ fn live_file_row(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -
         },
     );
     row(
-        l("Write live readings to a file", "Skriv levende målinger til en fil"),
+        l(
+            "Write live readings to a file",
+            "Skriv levende målinger til en fil",
+        ),
         Some(detail),
-        div().flex().items_center().gap(t::SPACE_3).children(reveal).child(toggle),
+        div()
+            .flex()
+            .items_center()
+            .gap(t::SPACE_3)
+            .children(reveal)
+            .child(toggle),
         false,
         dark,
     )

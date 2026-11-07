@@ -138,7 +138,10 @@ pub fn build(snap: &Snapshot, written_at: f64) -> Live {
         schema: SCHEMA,
         written_at,
         sample_at: finite(snap.at),
-        cpu: Cpu { percent: finite(snap.cpu_pct), cores: snap.core_pct.len() },
+        cpu: Cpu {
+            percent: finite(snap.cpu_pct),
+            cores: snap.core_pct.len(),
+        },
         memory: Memory {
             used_bytes: snap.mem.used,
             total_bytes: snap.mem.total,
@@ -160,7 +163,13 @@ pub fn build(snap: &Snapshot, written_at: f64) -> Live {
             in_bytes_per_second: finite(snap.net.rate_in),
             out_bytes_per_second: finite(snap.net.rate_out),
         },
-        gpu: Gpu { percent: if snap.gpu.supported { opt(snap.gpu.utilization) } else { None } },
+        gpu: Gpu {
+            percent: if snap.gpu.supported {
+                opt(snap.gpu.utilization)
+            } else {
+                None
+            },
+        },
         battery: Battery {
             present: snap.battery.present,
             percent: opt(snap.battery.percent).filter(|_| snap.battery.present),
@@ -204,9 +213,15 @@ pub fn write_atomic(dir: &Path, live: &Live) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let temp = dir.join(format!("{FILE}.tmp"));
     let result = (|| {
-        let mut file = std::fs::File::create(&temp)?;
+        // Private: the file names apps and process ids.
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
         std::fs::rename(&temp, dir.join(FILE))
     })();
     if result.is_err() {
@@ -215,12 +230,17 @@ pub fn write_atomic(dir: &Path, live: &Live) -> std::io::Result<()> {
     result
 }
 
-/// Deletes the file; a missing one is fine.
+/// Deletes the file and any temp file a failed write left; a missing one is
+/// fine.
 pub fn remove_in(dir: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(dir.join(FILE)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
+    let mut result = Ok(());
+    for name in [FILE.to_string(), format!("{FILE}.tmp")] {
+        match std::fs::remove_file(dir.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => result = Err(e),
+            _ => {}
+        }
     }
+    result
 }
 
 /// Deletes the file, for turning the setting off.
@@ -243,10 +263,14 @@ pub fn publish(snap: &Snapshot, enabled: bool) {
     static MAY_EXIST: AtomicBool = AtomicBool::new(true);
     if enabled {
         MAY_EXIST.store(true, Ordering::Relaxed);
-    } else if !MAY_EXIST.swap(false, Ordering::Relaxed) {
+    } else if !MAY_EXIST.load(Ordering::Relaxed) {
         return;
     }
-    let _ = apply(&folder(), enabled, snap, crate::metrics::now_unix());
+    let done = apply(&folder(), enabled, snap, crate::metrics::now_unix()).is_ok();
+    // A failed delete is tried again on the next pass.
+    if !enabled && done {
+        MAY_EXIST.store(false, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -254,7 +278,8 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tidegauge-live-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tidegauge-live-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -292,7 +317,9 @@ mod tests {
         snap.disk.write_rate = 20.;
         snap.power_w = Some(12.5);
         snap.temps.chip = Some(55.);
-        snap.apps = (0..12).map(|i| app(&format!("app{i}"), i as f64 * 10., vec![i, i + 100])).collect();
+        snap.apps = (0..12)
+            .map(|i| app(&format!("app{i}"), i as f64 * 10., vec![i, i + 100]))
+            .collect();
         snap
     }
 
@@ -315,7 +342,10 @@ mod tests {
         assert_eq!(json["temperatures_c"]["chip"], 55.);
         assert!(json["temperatures_c"]["ssd"].is_null());
         assert_eq!(json["power_watts"], 12.5);
-        assert!(json["gpu"]["percent"].is_null(), "no GPU reading is null, not 0");
+        assert!(
+            json["gpu"]["percent"].is_null(),
+            "no GPU reading is null, not 0"
+        );
         assert_eq!(json["battery"]["present"], false);
         assert!(json["battery"]["state"].is_null());
     }
@@ -350,10 +380,24 @@ mod tests {
         let mut snap = snapshot();
         snap.cpu_pct = 7.;
         write_atomic(&dir, &build(&snap, 2.)).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
         assert_eq!(json["cpu"]["percent"], 7.);
-        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(names, [std::ffi::OsString::from(FILE)], "no temp file is left behind");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            [std::ffi::OsString::from(FILE)],
+            "no temp file is left behind"
+        );
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join(FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "only the owner can read it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -364,7 +408,8 @@ mod tests {
         // A directory where the temp file goes makes the create fail.
         std::fs::create_dir(dir.join(format!("{FILE}.tmp"))).unwrap();
         assert!(write_atomic(&dir, &build(&snapshot(), 2.)).is_err());
-        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
         assert_eq!(json["written_at"], 1.);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -378,6 +423,12 @@ mod tests {
         assert!(dir.join(FILE).exists());
         apply(&dir, false, &snapshot(), 2.).unwrap();
         assert!(!dir.join(FILE).exists(), "turning it off deletes the file");
+        std::fs::write(dir.join(format!("{FILE}.tmp")), b"x").unwrap();
+        apply(&dir, false, &snapshot(), 3.).unwrap();
+        assert!(
+            !dir.join(format!("{FILE}.tmp")).exists(),
+            "a leftover temp file goes too"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
