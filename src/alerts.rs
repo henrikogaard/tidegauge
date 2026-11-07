@@ -153,9 +153,6 @@ impl AlertEngine {
         let disk_rate = snapshot.disk.read_rate + snapshot.disk.write_rate;
         let network_rate = snapshot.net.rate_in + snapshot.net.rate_out;
         let mut alerts = Vec::new();
-        let top_cpu = top_app(snapshot, |app| app.cpu_pct);
-        let top_disk = top_app(snapshot, |app| app.disk_read_rate + app.disk_write_rate);
-        let top_network = top_app(snapshot, |app| app.net_in_rate + app.net_out_rate);
 
         if let Some(alert) = self.cpu.check(
             at,
@@ -165,14 +162,14 @@ impl AlertEngine {
             CPU_MEMORY_DURATION,
             |value| Alert {
                 metric: "cpu".into(),
-                message: with_top_app(
+                message: with_top_apps(
                     format!(
                         "{}: {} {}",
                         crate::locale::text("High CPU usage", "Høy CPU-bruk"),
                         crate::locale::percent(value, 0),
                         crate::locale::text("for over 20 seconds", "i over 20 sekunder")
                     ),
-                    top_cpu,
+                    top_cpu_apps(snapshot),
                 ),
                 at,
             },
@@ -188,11 +185,14 @@ impl AlertEngine {
             CPU_MEMORY_DURATION,
             |value| Alert {
                 metric: "memory".into(),
-                message: format!(
-                    "{}: {} {}",
-                    crate::locale::text("High memory usage", "Høy minnebruk"),
-                    crate::locale::percent(value, 0),
-                    crate::locale::text("used for over 20 seconds", "brukt i over 20 sekunder")
+                message: with_top_apps(
+                    format!(
+                        "{}: {} {}",
+                        crate::locale::text("High memory usage", "Høy minnebruk"),
+                        crate::locale::percent(value, 0),
+                        crate::locale::text("used for over 20 seconds", "brukt i over 20 sekunder")
+                    ),
+                    top_memory_apps(snapshot),
                 ),
                 at,
             },
@@ -212,14 +212,18 @@ impl AlertEngine {
             IO_DURATION,
             |value| Alert {
                 metric: "disk".into(),
-                message: with_top_app(
+                message: with_top_apps(
                     format!(
                         "{}: {} {}",
                         crate::locale::text("Heavy disk activity", "Stor diskaktivitet"),
                         crate::engine::fmt_rate(value),
                         crate::locale::text("read+write", "lesing+skriving")
                     ),
-                    top_disk,
+                    top_apps(
+                        snapshot,
+                        |app| app.disk_read_rate + app.disk_write_rate,
+                        crate::engine::fmt_rate,
+                    ),
                 ),
                 at,
             },
@@ -239,13 +243,17 @@ impl AlertEngine {
             IO_DURATION,
             |value| Alert {
                 metric: "network".into(),
-                message: with_top_app(
+                message: with_top_apps(
                     format!(
                         "{}: {}",
                         crate::locale::text("Heavy network activity", "Stor nettverksaktivitet"),
                         crate::engine::fmt_rate(value)
                     ),
-                    top_network,
+                    top_apps(
+                        snapshot,
+                        |app| app.net_in_rate + app.net_out_rate,
+                        crate::engine::fmt_rate,
+                    ),
                 ),
                 at,
             },
@@ -286,7 +294,7 @@ impl AlertEngine {
             THERMAL_DURATION,
             |level| Alert {
                 metric: "thermal".into(),
-                message: if level >= 3. {
+                message: with_top_apps(if level >= 3. {
                     crate::locale::text(
                         "macOS reports a critical thermal state and is slowing the Mac down hard to cool it",
                         "macOS melder kritisk termisk tilstand og senker farten på Macen kraftig for å kjøle den",
@@ -297,7 +305,7 @@ impl AlertEngine {
                         "macOS melder alvorlig termisk tilstand og senker farten på Macen for å kjøle den",
                     )
                 }
-                .into(),
+                .into(), top_cpu_apps(snapshot)),
                 at,
             },
         ) {
@@ -372,7 +380,7 @@ impl AlertEngine {
             PRESSURE_DURATION,
             |level| Alert {
                 metric: "pressure".into(),
-                message: if level >= 4. {
+                message: with_top_apps(if level >= 4. {
                     crate::locale::text(
                         "Memory pressure is critical: macOS is out of memory to hand out. Quit something you don't need.",
                         "Minnepresset er kritisk: macOS har ikke mer minne å gi ut. Avslutt noe du ikke trenger.",
@@ -383,7 +391,7 @@ impl AlertEngine {
                         "Minnepresset er høyt: macOS komprimerer og veksler minne for å henge med.",
                     )
                 }
-                .into(),
+                .into(), top_memory_apps(snapshot)),
                 at,
             },
         ) {
@@ -398,11 +406,14 @@ impl AlertEngine {
             TEMPERATURE_DURATION,
             |value| Alert {
                 metric: "temperature".into(),
-                message: format!(
-                    "{}: {} {}",
-                    crate::locale::text("Chip running hot", "Brikken er varm"),
-                    crate::engine::fmt_celsius(value),
-                    crate::locale::text("for over 30 seconds", "i over 30 sekunder")
+                message: with_top_apps(
+                    format!(
+                        "{}: {} {}",
+                        crate::locale::text("Chip running hot", "Brikken er varm"),
+                        crate::engine::fmt_celsius(value),
+                        crate::locale::text("for over 30 seconds", "i over 30 sekunder")
+                    ),
+                    top_cpu_apps(snapshot),
                 ),
                 at,
             },
@@ -500,30 +511,48 @@ impl AlertEngine {
     }
 }
 
-/// The app using the most of a reading, if any is using any.
-fn top_app(
+/// How many apps an alert names.
+const TOP_APPS: usize = 3;
+
+/// The apps using the most of a reading, busiest first, as "Name value": at
+/// most three, and only those using any.
+fn top_apps(
     snapshot: &Snapshot,
     value: impl Fn(&crate::processes::AppGroup) -> f64,
-) -> Option<&str> {
-    snapshot
+    format: impl Fn(f64) -> String,
+) -> Vec<String> {
+    let mut used: Vec<(&str, f64)> = snapshot
         .apps
         .iter()
         .filter(|app| !app.name.is_empty())
         .map(|app| (app.name.as_str(), value(app)))
         .filter(|(_, value)| value.is_finite() && *value > 0.)
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(name, _)| name)
+        .collect();
+    used.sort_by(|a, b| b.1.total_cmp(&a.1));
+    used.into_iter()
+        .take(TOP_APPS)
+        .map(|(name, value)| format!("{name} {}", format(value)))
+        .collect()
 }
 
-/// The alert's text with the busiest app named after it.
-fn with_top_app(message: String, app: Option<&str>) -> String {
-    match app {
-        Some(name) => format!(
-            "{message} · {}: {name}",
-            crate::locale::text("Top app", "Mest aktive app")
-        ),
-        None => message,
+fn top_cpu_apps(snapshot: &Snapshot) -> Vec<String> {
+    top_apps(snapshot, |app| app.cpu_pct, |value| crate::locale::percent(value, 0))
+}
+
+fn top_memory_apps(snapshot: &Snapshot) -> Vec<String> {
+    top_apps(snapshot, |app| app.mem_bytes as f64, crate::engine::fmt_bytes)
+}
+
+/// The alert's text with the busiest apps listed after it.
+fn with_top_apps(message: String, apps: Vec<String>) -> String {
+    if apps.is_empty() {
+        return message;
     }
+    format!(
+        "{message} · {}: {}",
+        crate::locale::text("Top", "Mest aktive"),
+        apps.join(", ")
+    )
 }
 
 /// Whether a send at `last_sent` still counts as too recent at `at`.
@@ -1353,11 +1382,73 @@ mod tests {
         );
     }
 
+    fn app(key: &str, name: &str) -> crate::processes::AppGroup {
+        crate::processes::AppGroup {
+            key: key.into(),
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn cpu_disk_and_network_alerts_name_the_top_app() {
+    fn top_apps_lists_at_most_three_busiest_first_and_skips_idle() {
+        let mut s = snapshot(0.);
+        s.apps = vec![
+            crate::processes::AppGroup { cpu_pct: 45., ..app("a", "Safari") },
+            crate::processes::AppGroup { cpu_pct: 310., ..app("b", "Xcode") },
+            crate::processes::AppGroup { cpu_pct: 0., ..app("c", "Idle") },
+            crate::processes::AppGroup { cpu_pct: 20., ..app("d", "Mail") },
+            crate::processes::AppGroup { cpu_pct: 10., ..app("e", "Notes") },
+            crate::processes::AppGroup { cpu_pct: 99., ..app("", "") },
+        ];
+        let top = top_cpu_apps(&s);
+        assert_eq!(top.len(), 3);
+        assert!(top[0].starts_with("Xcode ") && top[0].contains("310"), "{top:?}");
+        assert!(top[1].starts_with("Safari ") && top[2].starts_with("Mail "), "{top:?}");
+        let text = with_top_apps("High CPU usage".into(), top);
+        let label = crate::locale::text("Top", "Mest aktive");
+        assert!(text.starts_with(&format!("High CPU usage · {label}: Xcode ")), "{text}");
+        assert!(text.contains(", Safari ") && !text.contains("Notes"), "{text}");
+        assert_eq!(with_top_apps("Plain".into(), Vec::new()), "Plain");
+        assert!(top_cpu_apps(&snapshot(0.)).is_empty());
+    }
+
+    #[test]
+    fn memory_and_pressure_alerts_name_the_apps_holding_memory() {
+        let settings = Settings {
+            alert_mem_enabled: true,
+            alert_pressure_enabled: true,
+            alert_temp_enabled: true,
+            ..Settings::default()
+        };
+        let mut s = snapshot(0.);
+        s.mem.total = 16 << 30;
+        s.mem.used = 16 << 30;
+        s.mem.pressure = Some(crate::metrics::Pressure::Warning);
+        s.temps.chip = Some(100.);
+        s.apps = vec![
+            crate::processes::AppGroup { mem_bytes: 2 << 30, cpu_pct: 5., ..app("a", "Small") },
+            crate::processes::AppGroup { mem_bytes: 9 << 30, cpu_pct: 250., ..app("b", "Xcode") },
+        ];
+        let mut engine = AlertEngine::new();
+        engine.check(&s, &settings);
+        s.at = 40.;
+        let alerts = engine.check(&s, &settings);
+        let named = |metric: &str| {
+            alerts.iter().find(|a| a.metric == metric).unwrap_or_else(|| panic!("no {metric}")).message.clone()
+        };
+        let memory = named("memory");
+        assert!(memory.contains("Xcode ") && memory.contains(", Small "), "{memory}");
+        assert!(named("pressure").contains("Xcode "), "{}", named("pressure"));
+        let hot = named("temperature");
+        assert!(hot.contains("Xcode ") && hot.contains("250"), "{hot}");
+    }
+
+    #[test]
+    fn cpu_disk_and_network_alerts_name_the_top_apps() {
         let settings = settings();
-        let top_label = crate::locale::text("Top app", "Mest aktive app");
-        let top = format!("{top_label}: Xcode");
+        let top_label = crate::locale::text("Top", "Mest aktive");
+        let top = format!("{top_label}: Xcode ");
         let mut engine = AlertEngine::new();
         let mut s = snapshot(0.);
         s.cpu_pct = 95.;
@@ -1365,31 +1456,28 @@ mod tests {
         s.net.rate_in = 90e6;
         s.apps = vec![
             crate::processes::AppGroup {
-                key: "a".into(),
-                name: "Quiet".into(),
                 cpu_pct: 5.,
                 disk_read_rate: 1e6,
                 net_in_rate: 1e6,
-                ..Default::default()
+                ..app("a", "Quiet")
             },
             crate::processes::AppGroup {
-                key: "b".into(),
-                name: "Xcode".into(),
                 cpu_pct: 93.,
                 disk_write_rate: 400e6,
                 net_out_rate: 80e6,
-                ..Default::default()
+                ..app("b", "Xcode")
             },
         ];
         engine.check(&s, &settings);
         s.at = 20.;
         let cpu = engine.check(&s, &settings);
-        assert!(cpu[0].message.ends_with(&top), "{}", cpu[0].message);
+        assert!(cpu[0].message.contains(&top), "{}", cpu[0].message);
+        assert!(cpu[0].message.contains(", Quiet "), "{}", cpu[0].message);
         s.at = 30.;
         let io = engine.check(&s, &settings);
         assert_eq!(io.len(), 2);
         assert!(
-            io.iter().all(|alert| alert.message.ends_with(&top)),
+            io.iter().all(|alert| alert.message.contains(&top)),
             "{:?}",
             io.iter().map(|a| &a.message).collect::<Vec<_>>()
         );

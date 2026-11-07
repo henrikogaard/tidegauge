@@ -96,6 +96,8 @@ pub struct Settings {
     /// Alert when the Mac has had no usable network path for ten seconds, and
     /// again when it is back.
     pub alert_offline_enabled: bool,
+    /// The Shortcut to run when an alert is sent; `None` runs nothing.
+    pub alert_shortcut: Option<String>,
     pub launch_at_login: bool,
     pub dashboard_tabs: Vec<String>,
     pub favorite_metrics: Vec<String>,
@@ -162,6 +164,7 @@ impl Default for Settings {
             alert_battery_full_enabled: false,
             alert_disk_health_enabled: false,
             alert_offline_enabled: false,
+            alert_shortcut: None,
             launch_at_login: false,
             dashboard_tabs: DASHBOARD_TABS.iter().map(|s| (*s).into()).collect(),
             favorite_metrics: DEFAULT_FAVORITES.iter().map(|s| (*s).into()).collect(),
@@ -735,6 +738,7 @@ mod tests {
         assert!(!settings.alert_battery_low_enabled, "older files get the new alerts off");
         assert!(!settings.alert_battery_full_enabled);
         assert!(!settings.alert_disk_health_enabled);
+        assert!(settings.alert_shortcut.is_none(), "no Shortcut runs unless one is picked");
         assert_eq!(settings.alert_battery_low_pct, 20.);
         assert_eq!(settings.dashboard_tabs.len(), 10);
         settings.dashboard_tabs = vec![

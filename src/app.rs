@@ -199,6 +199,7 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, cx: &mut gpui_kit:
     bar.sync(&settings, &snap);
     for a in drain_alerts(&settings) {
         crate::notifications::send(&a.message);
+        crate::alert_shortcut::run_for_alert(settings.alert_shortcut.as_deref(), &a.metric, &a.message);
     }
 }
 

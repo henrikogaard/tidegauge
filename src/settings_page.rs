@@ -786,6 +786,66 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
     )
 }
 
+/// Pick a Shortcut to run whenever an alert is sent. The menu is the user's
+/// own library, read again as the page opens.
+fn alert_shortcut(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::alert_shortcut as shortcuts;
+    shortcuts::refresh_library();
+    let library = shortcuts::library();
+    let chosen = settings.alert_shortcut.clone();
+    let mut names = library.names.clone();
+    if let Some(name) = chosen.as_ref().filter(|name| !names.contains(name)) {
+        names.insert(0, name.clone());
+    }
+    let mut detail = if !library.loaded {
+        l("Reading your Shortcuts…", "Leser snarveiene dine …").to_string()
+    } else if library.failed && names.is_empty() {
+        l("Your Shortcuts could not be read.", "Snarveiene dine kunne ikke leses.").to_string()
+    } else if names.is_empty() {
+        l("No Shortcuts found.", "Fant ingen snarveier.").to_string()
+    } else {
+        l(
+            "Runs with the alert text when any alert is sent, at most every 30 seconds.",
+            "Kjører med varselteksten når et varsel sendes, høyst hvert 30. sekund.",
+        )
+        .to_string()
+    };
+    if let Some(run) = shortcuts::last_run() {
+        let at = crate::history_browser::local_clock(run.at);
+        detail.push_str(&match run.outcome {
+            Ok(()) => format!(" {} {at}: {}.", l("Last run", "Sist kjørt"), l("ok", "ok")),
+            Err(reason) => format!(" {} {at}: {} ({reason}).", l("Last run", "Sist kjørt"), l("failed", "feilet")),
+        });
+    }
+    let mut chips = vec![(None, l("Off", "Av").to_string())];
+    chips.extend(names.into_iter().map(|name| (Some(name.clone()), name)));
+    let control = div()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap(t::SPACE_2)
+        .max_w(px(420.))
+        .children(chips.into_iter().enumerate().map(|(i, (value, label))| {
+            let this = this.clone();
+            segment(
+                format!("alert-shortcut-{i}"),
+                label.clone(),
+                chosen == value,
+                dark,
+                t::accent(dark),
+                move |window, cx| {
+                    let value = value.clone();
+                    update_preference(&this, move |s| s.alert_shortcut = value, window, cx)
+                },
+            )
+        }));
+    group(
+        l("Actions", "Handlinger"),
+        vec![row(l("Run a Shortcut", "Kjør en snarvei"), Some(detail), control, true, dark)],
+        dark,
+    )
+}
+
 /// Whether alerts can reach the person, and a way to try one.
 fn notifications(dark: bool) -> Div {
     use crate::notifications::{self, Permission};
@@ -1168,7 +1228,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     .child(sidebar(&settings, dark, this.clone())),
             ],
         ))
-        .child(section(ALERTS, view, vec![notifications(dark), alerts(view, &settings, dark, this.clone())]))
+        .child(section(ALERTS, view, vec![notifications(dark), alert_shortcut(&settings, dark, this.clone()), alerts(view, &settings, dark, this.clone())]))
         .child(section(
             2,
             view,
