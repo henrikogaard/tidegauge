@@ -55,6 +55,77 @@ pub struct Clocks {
     /// Per core group, keyed by the device tree's cluster type ("P", "M", "E").
     pub cpu: HashMap<String, f64>,
     pub gpu: Option<f64>,
+    /// How the GPU's time split over its speeds in the same reading, idle
+    /// first, then rising speeds. Empty when there is no GPU reading.
+    pub gpu_speeds: Vec<SpeedShare>,
+}
+
+/// One row of "Time at each speed": a share of the reading and the speed
+/// range it covers. `None` speeds mean the GPU was idle or off.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpeedShare {
+    pub low_mhz: Option<f64>,
+    pub high_mhz: Option<f64>,
+    /// 0.0 to 1.0.
+    pub share: f64,
+}
+
+/// Active speeds with less time than this are merged with their neighbour.
+const MIN_SPEED_SHARE: f64 = 0.03;
+
+/// The split of a reading's time over idle and each active speed. GPU states
+/// are named "P{n}" (table index n-1); every other state is idle or off.
+/// Neighbouring speeds under `MIN_SPEED_SHARE` are merged into one range, and
+/// states with no time are left out. `None` when nothing was recorded, or when
+/// time sits in a step the table has no speed for (the table does not fit).
+pub fn speed_shares(states: &[(String, i64)], freqs: &[f64]) -> Option<Vec<SpeedShare>> {
+    let total: i64 = states.iter().map(|(_, r)| (*r).max(0)).sum();
+    if total <= 0 {
+        return None;
+    }
+    let total = total as f64;
+    let mut idle = 0i64;
+    let mut active: Vec<(f64, i64)> = Vec::new();
+    for (name, residency) in states {
+        let residency = (*residency).max(0);
+        if residency == 0 {
+            continue;
+        }
+        match name.strip_prefix('P').and_then(|n| n.parse::<usize>().ok()).and_then(|n| n.checked_sub(1)) {
+            Some(i) => active.push((*freqs.get(i)?, residency)),
+            None => idle += residency,
+        }
+    }
+    active.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    if idle > 0 {
+        out.push(SpeedShare { low_mhz: None, high_mhz: None, share: idle as f64 / total });
+    }
+    let first_active = out.len();
+    let mut pending: Option<SpeedShare> = None;
+    for (mhz, residency) in active {
+        let share = residency as f64 / total;
+        let merged = match pending.take() {
+            Some(p) => SpeedShare { low_mhz: p.low_mhz, high_mhz: Some(mhz), share: p.share + share },
+            None => SpeedShare { low_mhz: Some(mhz), high_mhz: Some(mhz), share },
+        };
+        if merged.share >= MIN_SPEED_SHARE {
+            out.push(merged);
+        } else {
+            pending = Some(merged);
+        }
+    }
+    if let Some(rest) = pending {
+        match out.len() > first_active {
+            true => {
+                let last = out.last_mut().unwrap();
+                last.high_mhz = rest.high_mhz;
+                last.share += rest.share;
+            }
+            false => out.push(rest),
+        }
+    }
+    Some(out)
 }
 
 /// The first 32-bit value of each 8-byte (frequency, voltage) entry.
@@ -278,6 +349,7 @@ fn read(reader: &mut Reader) -> Option<Clocks> {
         let gpu_states = gpu.iter().filter(|(n, _)| n.starts_with('P')).count();
         if let Some(freqs) = gpu_table(&reader.tables, gpu_states) {
             clocks.gpu = weighted_mhz(&gpu, &freqs);
+            clocks.gpu_speeds = speed_shares(&gpu, &freqs).unwrap_or_default();
         }
         Some(clocks)
     }
@@ -332,6 +404,47 @@ mod tests {
         assert_eq!(weighted_mhz(&unused, &[338., 486.]), Some(338.), "an unused step beyond the table is fine");
     }
 
+    fn st(items: &[(&str, i64)]) -> Vec<(String, i64)> {
+        items.iter().map(|(n, r)| (n.to_string(), *r)).collect()
+    }
+
+    #[test]
+    fn speed_shares_split_the_reading_into_idle_and_speeds() {
+        let freqs = [338., 486., 636., 1000.];
+        let shares = speed_shares(&st(&[("OFF", 500), ("IDLE", 100), ("P1", 100), ("P2", 0), ("P3", 100), ("P4", 200)]), &freqs).unwrap();
+        assert_eq!(shares.len(), 4, "zero-time P2 is left out");
+        assert_eq!(shares[0], SpeedShare { low_mhz: None, high_mhz: None, share: 0.6 });
+        assert_eq!((shares[1].low_mhz, shares[1].share), (Some(338.), 0.1));
+        assert_eq!((shares[3].low_mhz, shares[3].high_mhz, shares[3].share), (Some(1000.), Some(1000.), 0.2));
+        let sum: f64 = shares.iter().map(|s| s.share).sum();
+        assert!((sum - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tiny_speeds_merge_with_their_neighbour() {
+        let freqs = [338., 486., 636., 1000.];
+        // P1 and P2 are 1% each: together 2%, still tiny, so they join P3.
+        let shares = speed_shares(&st(&[("P1", 10), ("P2", 10), ("P3", 480), ("P4", 500)]), &freqs).unwrap();
+        assert_eq!(shares.len(), 2);
+        assert_eq!((shares[0].low_mhz, shares[0].high_mhz), (Some(338.), Some(636.)));
+        assert!((shares[0].share - 0.5).abs() < 1e-9);
+        // A tiny top speed folds into the one below it.
+        let shares = speed_shares(&st(&[("IDLE", 500), ("P1", 480), ("P4", 20)]), &freqs).unwrap();
+        assert_eq!(shares.len(), 2);
+        assert_eq!((shares[1].low_mhz, shares[1].high_mhz), (Some(338.), Some(1000.)));
+        // Only tiny speeds: still shown, as one range.
+        let shares = speed_shares(&st(&[("IDLE", 980), ("P1", 10), ("P2", 10)]), &freqs).unwrap();
+        assert_eq!((shares[1].low_mhz, shares[1].high_mhz), (Some(338.), Some(486.)));
+    }
+
+    #[test]
+    fn speed_shares_refuse_what_they_cannot_place() {
+        assert_eq!(speed_shares(&st(&[("OFF", 0), ("P1", 0)]), &[338.]), None, "no time recorded");
+        assert_eq!(speed_shares(&st(&[("P1", 10), ("P5", 10)]), &[338., 486.]), None, "time in a step with no speed");
+        let all_idle = speed_shares(&st(&[("OFF", 10)]), &[338.]).unwrap();
+        assert_eq!(all_idle, vec![SpeedShare { low_mhz: None, high_mhz: None, share: 1.0 }]);
+    }
+
     #[test]
     #[ignore = "needs an Apple silicon Mac"]
     fn native_clocks_read() {
@@ -341,5 +454,6 @@ mod tests {
         let clocks = sample();
         eprintln!("{clocks:?}");
         assert!(!clocks.cpu.is_empty(), "no CPU clocks");
+        eprintln!("gpu speeds {:?}", clocks.gpu_speeds);
     }
 }

@@ -6,6 +6,14 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- The GPU page shows a work split (how busy the renderer, which draws pixels,
+  and the tiler, which works out geometry, were) and "Time at each speed", the
+  share of the last two seconds the GPU rested or ran at each clock speed.
+  Apps & processes gets a GPU column you can sort by, where the Mac exposes
+  GPU time; "Open Apps & processes" from the GPU page opens it sorted by GPU.
+
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 
 ### Added

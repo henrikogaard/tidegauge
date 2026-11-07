@@ -103,7 +103,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | Overview | Favorite metric cards (including temperature, fans and power), busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Battery health | Capacity health and cycle count kept once a day beyond History's 30 days, charted per day on the Battery page |
 | Cores and clocks | Per-core use grouped by core type (Super, Performance, Efficiency), each group's clock speed, and the GPU's core count and clock |
-| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal and whether the Mac is online), GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal and whether the Mac is online), GPU (with renderer and tiler load, time at each clock speed, and the apps using it), Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
 | Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
 | Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
@@ -114,7 +114,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends (including chip, SSD and battery temperatures) with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour; Export CSV saves the samples to Downloads |
 | Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
-| Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
+| Apps & processes | Every app with its processes, filter and sort by CPU, GPU or memory, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
 | Desktop widgets | Small (one reading, chosen when you edit the widget), medium (four readings with sparklines) and large (all six) WidgetKit widgets for the desktop and Notification Center; macOS 14 or later, packaged builds only |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
 | Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
