@@ -196,6 +196,9 @@ pub struct Snapshot {
     pub bt: BtInfo,
     pub projects: Vec<ProjectGroup>,
     pub apps: Vec<AppGroup>,
+    /// GPU users outside the process list, such as WindowServer, which runs
+    /// as another user. Only their GPU share is known.
+    pub gpu_other_apps: Vec<AppGroup>,
     /// Every sampled process, for per-process rows and quit actions.
     pub procs: Vec<crate::processes::ProcInfo>,
     pub agents: Vec<crate::agents::Session>,
@@ -261,6 +264,7 @@ impl Default for Snapshot {
             bt: BtInfo::default(),
             projects: Vec::new(),
             apps: Vec::new(),
+            gpu_other_apps: Vec::new(),
             procs: Vec::new(),
             agents: Vec::new(),
             plans: crate::agents::Plans::Missing,
@@ -295,6 +299,8 @@ struct PrevProc {
     disk_read: u64,
     disk_write: u64,
     energy_nj: u64,
+    /// Cumulative GPU nanoseconds; 0 when the process has not used the GPU.
+    gpu_ns: u64,
     start_unix: f64,
     /// Name and path read when this process was first seen; they are read
     /// again only if the process starts again or changes its name (exec).
@@ -321,6 +327,8 @@ pub struct Engine {
     process_tracker: crate::process_activity::Tracker,
     resource_tracker: crate::resource_activity::Tracker,
     leaks: crate::leaks::Tracker,
+    /// GPU use of processes not in the process list (other users').
+    gpu_unlisted: crate::gpu_apps::Unlisted,
     tick: u64,
     /// How many audio passes have run; the device lists are read every tenth.
     audio_passes: u64,
@@ -351,6 +359,7 @@ impl Engine {
             process_tracker: crate::process_activity::Tracker::default(),
             resource_tracker: crate::resource_activity::Tracker::default(),
             leaks: crate::leaks::Tracker::default(),
+            gpu_unlisted: Default::default(),
             tick: 0,
             audio_passes: 0,
             last_rates: None,
@@ -518,6 +527,7 @@ impl Engine {
             self.last_heavy = now;
             let pids = list_pids();
             let enumerated = pids.iter().copied().collect();
+            let gpu_times = if s.gpu.supported { crate::gpu_apps::gpu_time_by_pid() } else { Default::default() };
             let mut procs = Vec::with_capacity(pids.len());
             for pid in pids {
                 let Some(b) = proc_bsd(pid) else { continue };
@@ -529,7 +539,14 @@ impl Engine {
                         .to_string_lossy()
                         .to_string()
                 };
+                let gpu_ns = gpu_times.get(&pid).map(|c| c.ns).unwrap_or(0);
                 let prev = self.prev.get(&pid);
+                let gpu_pct = match prev {
+                    Some(pv) if pv.start_unix == start => crate::gpu_apps::gpu_pct(pv.gpu_ns, gpu_ns, pdt),
+                    Some(_) => 0.0,
+                    // First sight: the average over the process's life, as for CPU.
+                    None => crate::gpu_apps::gpu_pct(0, gpu_ns, (now_unix() - start).max(1.0)),
+                };
                 let (cpu_pct, rr, wr, pw) = if let Some(pv) = prev {
                     let alive = if pv.start_unix == start { pdt } else { 0.0 };
                     if alive > 0.0 {
@@ -562,6 +579,7 @@ impl Engine {
                         disk_read: r.ri_diskio_bytesread,
                         disk_write: r.ri_diskio_byteswritten,
                         energy_nj: r.ri_energy_nj,
+                        gpu_ns,
                         start_unix: start,
                         comm: comm.clone(),
                         exe_path: exe.clone(),
@@ -584,11 +602,13 @@ impl Engine {
                     read_rate: rr.max(0.0),
                     write_rate: wr.max(0.0),
                     power_w: pw.max(0.0),
+                    gpu_pct,
                 });
             }
             // prune dead pids
             let live: std::collections::HashSet<i32> = procs.iter().map(|p| p.pid).collect();
             self.prev.retain(|p, _| live.contains(p));
+            s.gpu_other_apps = self.gpu_unlisted.sample(&gpu_times, &live, pdt);
 
             s.proc_count = procs.len();
             s.process_groups = self.process_tracker.sample(&procs, &enumerated);
@@ -907,12 +927,35 @@ mod tests {
         assert_eq!(fresh[0].net_out_rate, 1024.0);
     }
 
+    /// Needs a physical Mac: WindowServer runs as another user, so its GPU
+    /// share reaches the GPU page only through `gpu_other_apps`.
+    #[test]
+    #[ignore]
+    fn native_window_server_gpu_use_is_sampled() {
+        let mut engine = Engine::new();
+        engine.sample(None, BtInfo::default());
+        assert!(engine.snap.apps.iter().all(|a| a.name != "WindowServer"), "WindowServer is in the process list");
+        let mut seen = None;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            engine.sample(None, BtInfo::default());
+            seen = engine.snap.gpu_other_apps.iter().find(|a| a.name == "WindowServer").map(|a| a.gpu_pct);
+            if seen.is_some_and(|p| p > 0.0) {
+                break;
+            }
+        }
+        let pct = seen.expect("no WindowServer GPU row");
+        eprintln!("WindowServer GPU {pct:.2}%");
+        assert!(pct > 0.0 && pct <= 100.0, "WindowServer GPU {pct}");
+    }
+
     fn prev_proc(start: f64, comm: &str, exe: &str) -> PrevProc {
         PrevProc {
             cpu_ns: 0,
             disk_read: 0,
             disk_write: 0,
             energy_nj: 0,
+            gpu_ns: 0,
             start_unix: start,
             comm: comm.into(),
             exe_path: exe.into(),

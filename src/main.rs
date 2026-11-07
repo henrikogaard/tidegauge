@@ -24,6 +24,7 @@ mod engine;
 mod ffi;
 mod history;
 mod history_browser;
+mod gpu_apps;
 mod gpu_power;
 mod icons;
 mod instance;
