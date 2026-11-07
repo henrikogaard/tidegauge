@@ -52,6 +52,16 @@ fn order(sort: ProcSort, a: &AppGroup, b: &AppGroup) -> std::cmp::Ordering {
     }
 }
 
+/// The chosen sort, except that GPU falls back to CPU where the Mac exposes
+/// no GPU time.
+fn effective_sort(view: &TideGaugeView) -> ProcSort {
+    if view.process_sort == ProcSort::Gpu && !view.snap.gpu.supported {
+        ProcSort::Cpu
+    } else {
+        view.process_sort
+    }
+}
+
 fn sorted_keys(s: &Snapshot, sort: ProcSort) -> Vec<String> {
     let mut apps: Vec<&AppGroup> = s.apps.iter().collect();
     apps.sort_by(|a, b| order(sort, a, b));
@@ -79,7 +89,7 @@ pub fn refresh_order(view: &mut TideGaugeView) {
         .is_none_or(|at| at.elapsed() >= Duration::from_secs(4));
     let held = view.process_table_hovered || view.expanded_process_group.is_some();
     if view.process_order.is_empty() || (stale && !held) {
-        view.process_order = sorted_keys(&view.snap, view.process_sort);
+        view.process_order = sorted_keys(&view.snap, effective_sort(view));
         view.process_order_at = Some(Instant::now());
     }
 }
@@ -89,7 +99,7 @@ pub fn refresh_order(view: &mut TideGaugeView) {
 fn order_held(view: &TideGaugeView) -> bool {
     (view.process_table_hovered || view.expanded_process_group.is_some())
         && !view.process_order.is_empty()
-        && view.process_order != sorted_keys(&view.snap, view.process_sort)
+        && view.process_order != sorted_keys(&view.snap, effective_sort(view))
 }
 
 fn held_chip(dark: bool) -> impl IntoElement {
@@ -222,7 +232,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let remaining = remaining_pids(s);
     // The GPU column and sort exist only where macOS exposes GPU time.
     let gpu = s.gpu.supported;
-    let sort = if gpu || view.process_sort != ProcSort::Gpu { view.process_sort } else { ProcSort::Cpu };
+    let sort = effective_sort(view);
     let cpu = AppCpu::chosen(s.chip.cores);
 
     // Three views of the same processes: every app, what an app left
@@ -516,7 +526,7 @@ pub(crate) fn quit_action(s: &Snapshot, app: &AppGroup, force: Force) -> Option<
 fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
     let s = &view.snap;
     let mut procs: Vec<&ProcInfo> = s.procs.iter().filter(|p| app.pids.contains(&p.pid)).collect();
-    match view.process_sort {
+    match effective_sort(view) {
         ProcSort::Cpu => procs.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct)),
         ProcSort::Memory => procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes)),
         ProcSort::Gpu => procs.sort_by(|a, b| b.gpu_pct.total_cmp(&a.gpu_pct)),
