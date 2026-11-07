@@ -43,7 +43,7 @@ Cancel sends nothing. There is no bulk kill, automatic cleanup, force quit, SIGK
 
 ### Sample
 
-**Sample** runs `/usr/bin/sample <pid> 3 -file <path>` for an app's registered main process or a selected process, and saves the report as `<name>-<pid>-sample-<timestamp>.txt` in Downloads. It is offered only for processes you own that Quit would also accept, and the PID, start time, owner and executable are verified again right before it runs. It runs on a background thread with a 15-second limit, one sample at a time; the button reads "Sampling…" meanwhile. The result appears as a message with a Show in Finder button, or the reason `sample` gave for failing. An existing file is never overwritten.
+**Sample** runs `/usr/bin/sample <pid> 3 -file <path>` for an app's registered main process or a selected process, and saves the report as `<name>-<pid>-sample-<timestamp>.txt` in Downloads. It is offered only for processes you own that Quit would also accept, and the PID, start time, owner and executable are verified again right before it runs. It runs on a background thread with a 30-second limit, one sample at a time; the button reads "Sampling…" meanwhile. The result appears as a message with a Show in Finder button, or the reason `sample` gave for failing. An existing file is never overwritten.
 
 ## Verification
 

@@ -14,7 +14,7 @@ const SAMPLE: &str = "/usr/bin/sample";
 /// Seconds `sample` watches the process.
 const SECONDS: u32 = 3;
 /// Sampling a healthy process ends after `SECONDS`; this only stops a stuck one.
-const TIMEOUT: Duration = Duration::from_secs(15);
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// "Safari-1234-sample-2026-11-07-091500.txt"; no slash or colon from an
 /// app's name reaches the file system.
@@ -70,7 +70,7 @@ fn run_sample(program: &str, pid: i32, path: &Path, timeout: Duration) -> Result
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| l("Sample could not be started.", "Sample kunne ikke startes.").to_string())?;
+        .map_err(|_| l("Sample could not be started.", "Stikkprøven kunne ikke startes.").to_string())?;
     let out = child.stdout.take().map(drain);
     let err = child.stderr.take().map(drain);
     let deadline = Instant::now() + timeout;
@@ -82,13 +82,15 @@ fn run_sample(program: &str, pid: i32, path: &Path, timeout: Duration) -> Result
                 let _ = child.wait();
                 return Err(l(
                     "Sampling took too long and was stopped. The app may be too stuck to be sampled.",
-                    "Samplingen tok for lang tid og ble stoppet. Appen kan sitte for fast til å bli samplet.",
+                    "Stikkprøven tok for lang tid og ble stoppet. Appen kan sitte for fast til å bli undersøkt.",
                 )
                 .into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(_) => {
-                return Err(l("Sampling could not be checked.", "Samplingen kunne ikke kontrolleres.").to_string())
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(l("Sampling could not be checked.", "Stikkprøven kunne ikke kontrolleres.").to_string())
             }
         }
     };
@@ -112,7 +114,7 @@ fn failure(said: &str) -> String {
         .filter(|line| !line.is_empty() && !line.starts_with("Sampling process"))
         .last()
         .unwrap_or("");
-    let head = l("Sampling failed", "Samplingen mislyktes");
+    let head = l("Sampling failed", "Stikkprøven mislyktes");
     if reason.is_empty() {
         format!("{head}.")
     } else {
@@ -127,7 +129,7 @@ pub fn sample(target: &ProcInfo, name: &str) -> Result<PathBuf, String> {
         target,
         l(
             "The process changed since you chose it. Nothing was sampled.",
-            "Prosessen er endret siden du valgte den. Ingenting ble samplet.",
+            "Prosessen er endret siden du valgte den. Ingen stikkprøve ble tatt.",
         ),
     )?;
     let stamp = crate::history_browser::format_time(
@@ -142,7 +144,7 @@ pub fn sample(target: &ProcInfo, name: &str) -> Result<PathBuf, String> {
         Ok(()) if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) => Ok(path),
         Ok(()) => {
             let _ = std::fs::remove_file(&path);
-            Err(l("Sample finished without a report.", "Sample ble ferdig uten en rapport.").into())
+            Err(l("Sample finished without a report.", "Stikkprøven ble ferdig uten en rapport.").into())
         }
         Err(error) => {
             let _ = std::fs::remove_file(&path);
@@ -205,9 +207,62 @@ mod tests {
 
     #[test]
     fn a_changed_process_is_not_sampled() {
-        let me = std::process::id() as i32;
-        let target = ProcInfo { pid: me, exe_path: "/nonexistent".into(), start_unix: 1., ..Default::default() };
-        assert!(sample(&target, "x").is_err());
+        use crate::processes::{proc_bsd, proc_path};
+        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let result = (|| {
+            let mut bsd = None;
+            for _ in 0..100 {
+                if let Some(info) = proc_bsd(pid) {
+                    if !proc_path(pid).is_empty() {
+                        bsd = Some(info);
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let bsd = bsd.ok_or("child not visible")?;
+            let real = ProcInfo {
+                pid,
+                uid: bsd.pbi_uid,
+                exe_path: proc_path(pid),
+                comm: "sleep".into(),
+                start_unix: bsd.pbi_start_tvsec as f64 + bsd.pbi_start_tvusec as f64 / 1_000_000.,
+                ..Default::default()
+            };
+            // The unchanged child is eligible and passes the identity check.
+            let check = |t: &ProcInfo| crate::process_control::verify_unchanged(t, "changed");
+            if let Err(e) = check(&real) {
+                return Err(format!("unchanged child was refused: {e}"));
+            }
+            let mut moved = real.clone();
+            moved.start_unix += 100.;
+            let mut other_exe = real.clone();
+            other_exe.exe_path = "/nonexistent/other".into();
+            for (what, target) in [("start time", moved), ("executable", other_exe)] {
+                if check(&target) != Err("changed".to_string()) {
+                    return Err(format!("a changed {what} was not refused as changed"));
+                }
+                if sample(&target, "sleep") != Err(l(
+                    "The process changed since you chose it. Nothing was sampled.",
+                    "Prosessen er endret siden du valgte den. Ingen stikkprøve ble tatt.",
+                )
+                .to_string())
+                {
+                    return Err(format!("sample did not refuse a changed {what}"));
+                }
+            }
+            // A different owner is refused before the identity check.
+            let mut other_user = real.clone();
+            other_user.uid += 1;
+            if sample(&other_user, "sleep").is_ok() {
+                return Err("another user's process was sampled".into());
+            }
+            Ok(())
+        })();
+        let _ = child.kill();
+        let _ = child.wait();
+        result.unwrap();
     }
 
     #[test]

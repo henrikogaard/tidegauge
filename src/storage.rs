@@ -288,10 +288,16 @@ fn walk_with_progress(
 
 pub fn reveal(path: &Path) {
     if path.is_absolute() && path.exists() {
-        let _ = std::process::Command::new("/usr/bin/open")
+        if let Ok(mut child) = std::process::Command::new("/usr/bin/open")
             .arg("-R")
             .arg(path)
-            .spawn();
+            .spawn()
+        {
+            // Reap it, so it does not linger as a zombie.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
     }
 }
 

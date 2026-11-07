@@ -1046,7 +1046,7 @@ fn start_sample(process: ProcInfo, name: String, this: Entity<TideGaugeView>, cx
                 Ok(path) => crate::ui::Toast::new(
                     format!(
                         "{} {}",
-                        l("Sample saved in Downloads:", "Sample lagret i Nedlastinger:"),
+                        l("Sample saved in Downloads:", "Stikkprøven er lagret i Nedlastinger:"),
                         path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
                     ),
                     false,
