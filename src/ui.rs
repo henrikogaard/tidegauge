@@ -3085,30 +3085,50 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
     // Without them (a virtual or Intel Mac), the SMC channels stand in.
     let named = if fresh { crate::named_sensors::summarise(&sample.named) } else { Vec::new() };
     let summary = named.is_empty().then(|| temperature_summary(&sample.temperatures, fresh)).flatten();
+    let real = preview.is_none();
     let reading_row = move |reading: &crate::sensors::Reading, unit: &'static str| {
         div()
             .flex()
             .items_center()
             .justify_between()
             .gap_3()
-            .child(div().text_sm().child(reading.key.clone()))
+            .child(div().text_sm().child(match crate::sensors::friendly_name(&reading.key) {
+                // A verified name leads; the controller's own key stays visible.
+                Some(name) => format!("{name} · {}", reading.key),
+                None => reading.key.clone(),
+            }))
             .child(
-                div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                    reading
-                        .value
-                        .filter(|_| fresh)
-                        .map(|v| if unit == "RPM" { format!("{:.0} RPM", v) } else { fmt_celsius(v) })
-                        .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()),
-                ),
+                div().text_sm().font_weight(FontWeight::SEMIBOLD).child({
+                    let show = |v: f64| if unit == "RPM" { format!("{:.0} RPM", v) } else { fmt_celsius(v) };
+                    match reading.value.filter(|_| fresh) {
+                        Some(v) => match real
+                            .then(|| {
+                                crate::sensor_max::get(&if unit == "RPM" {
+                                    crate::sensor_max::fan_id(&reading.key)
+                                } else {
+                                    crate::sensor_max::smc_id(&reading.key)
+                                })
+                            })
+                            .flatten()
+                        {
+                            Some(max) => format!("{} · {} {}", show(v), l("max", "maks"), show(max)),
+                            None => show(v),
+                        },
+                        None => l("Unavailable", "Utilgjengelig").into(),
+                    }
+                }),
             )
     };
-    let summary_stat = |label: String, value: f64| {
+    let summary_stat = |label: String, value: f64, max: Option<f64>| {
         div()
             .flex()
             .flex_col()
             .gap(t::SPACE_1)
             .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label))
             .child(div().text_size(t::TEXT_EMPH).font_weight(FontWeight::SEMIBOLD).child(fmt_celsius(value)))
+            .when_some(max, |d, max| {
+                d.child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(format!("{} {}", l("max", "maks"), fmt_celsius(max))))
+            })
     };
     // The channel list is long and its names are the hardware's own, so it
     // stays folded behind the hottest and average readings.
@@ -3125,20 +3145,27 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
             d.child(div().flex().flex_wrap().gap(t::SPACE_6).children(named.iter().flat_map(|part| {
                 // The chip has dozens of sensors: its hottest and average. A
                 // part with one or a few reads as its hottest.
+                let max = real.then(|| crate::sensor_max::get(&crate::sensor_max::named_id(part.kind))).flatten();
                 let stats = match part.kind {
                     crate::named_sensors::Kind::Chip => vec![
-                        (format!("{} · {}", part.kind.label(), l("hottest", "varmest")), part.hottest),
-                        (format!("{} · {}", part.kind.label(), l("average", "snitt")), part.average),
+                        (format!("{} · {}", part.kind.label(), l("hottest", "varmest")), part.hottest, max),
+                        (format!("{} · {}", part.kind.label(), l("average", "snitt")), part.average, None),
                     ],
-                    _ => vec![(part.kind.label().to_string(), part.hottest)],
+                    _ => vec![(part.kind.label().to_string(), part.hottest, max)],
                 };
-                stats.into_iter().map(|(label, value)| summary_stat(label, value))
+                stats.into_iter().map(|(label, value, max)| summary_stat(label, value, max))
             })))
         })
         .when_some(summary, |d, (hottest, average)| {
             d.child(div().flex().gap(t::SPACE_6)
-                .child(summary_stat(l("Hottest", "Varmest").into(), hottest))
-                .child(summary_stat(l("Average", "Gjennomsnitt").into(), average)))
+                .child(summary_stat(l("Hottest", "Varmest").into(), hottest, None))
+                .child(summary_stat(l("Average", "Gjennomsnitt").into(), average, None)))
+        })
+        .when(real && fresh && !named.is_empty(), |d| {
+            d.child(sub(l("max is the highest reading since Tidegauge started", "maks er høyeste måling siden Tidegauge startet")).text_color(t::ink_dim(dark)))
+        })
+        .when(real && fresh && open && !sample.temperatures.is_empty(), |d| {
+            d.child(sub(l("Channel max is the highest reading since you opened CPU", "Kanalmaks er høyeste måling siden du åpnet CPU")).text_color(t::ink_dim(dark)))
         })
         .when(open, |d| {
             d.children(temperature_display.rows.iter().map(|r| reading_row(r, "°C")))
@@ -3170,6 +3197,9 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
             } else {
                 l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.")
             }).text_color(t::ink_dim(dark)))
+        })
+        .when(real && fresh && !sample.fans.is_empty(), |d| {
+            d.child(sub(l("max is the highest speed since Tidegauge started", "maks er høyeste hastighet siden Tidegauge startet")).text_color(t::ink_dim(dark)))
         })
         .children(sample.fans.iter().enumerate().map(|(i, r)| {
             let (min, max) = sample.fan_limits.get(i).copied().unwrap_or((None, None));

@@ -13,6 +13,12 @@ hardware acceptance checks. A merge and a published release are separate events.
   share of the last two seconds the GPU rested or ran at each clock speed.
   Apps & processes gets a GPU column you can sort by, where the Mac exposes
   GPU time; "Open Apps & processes" from the GPU page opens it sorted by GPU.
+- The CPU page shows the highest value each named temperature and fan has
+  reached since Tidegauge started, next to the current reading (for example
+  "71 °C · max 84 °C"). The raw SMC channels are read only while CPU is open,
+  so their maxima cover that visit only and reset when you leave. SMC keys with
+  a verified meaning (battery, fans) get a readable label with the raw key
+  beside it; other keys keep the controller's own name.
 
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 
