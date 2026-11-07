@@ -348,6 +348,11 @@ extern "C" {
         existing: *mut io_iterator_t,
     ) -> kern_return_t;
     pub fn IOIteratorNext(iterator: io_iterator_t) -> io_object_t;
+    pub fn IORegistryEntryGetChildIterator(
+        entry: io_registry_entry_t,
+        plane: *const c_char,
+        iterator: *mut io_iterator_t,
+    ) -> kern_return_t;
     pub fn IOObjectRelease(object: io_object_t) -> kern_return_t;
     pub fn IORegistryEntryCreateCFProperty(
         entry: io_registry_entry_t,
@@ -425,6 +430,7 @@ extern "C" {
     pub fn CFNumberGetTypeID() -> CFTypeID;
     pub fn CFStringGetTypeID() -> CFTypeID;
     pub fn CFDictionaryGetTypeID() -> CFTypeID;
+    pub fn CFArrayGetTypeID() -> CFTypeID;
     pub fn CFBooleanGetTypeID() -> CFTypeID;
     pub fn CFBooleanGetValue(b: CFTypeRef) -> Boolean;
 }

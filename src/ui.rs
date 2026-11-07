@@ -1980,7 +1980,7 @@ impl TideGaugeView {
             Tab::Memory => memory_tab(s, dark, this).into_any_element(),
             Tab::Disk => disk_tab(s, dark, self.selected_disk.as_deref(), this, cx).into_any_element(),
             Tab::Network => network_tab(s, dark, this).into_any_element(),
-            Tab::Gpu => gpu_tab(s, dark).into_any_element(),
+            Tab::Gpu => gpu_tab(s, dark, this).into_any_element(),
             Tab::Battery => battery_tab(s, dark).into_any_element(),
             Tab::Sound => div().flex().flex_col().gap(t::SECTION_GAP)
                 .when_some(self.audio_error.as_ref(), |d,error|d.child(card(dark).child(sub(error.clone()).text_color(t::warn(dark)))))
@@ -3857,8 +3857,11 @@ pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, exp
         )
 }
 
-fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
+fn gpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Gpu;
+    let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
+    rows.sort_by(|a, b| b.gpu_pct.total_cmp(&a.gpu_pct));
+    let max = rows.first().map(|a| a.gpu_pct).unwrap_or(1.0).max(1.0);
     let supported = s.gpu.supported;
     let mut page = div().flex().flex_col().gap(t::SECTION_GAP);
     if s.gpu.utilization.is_none() {
@@ -3896,7 +3899,15 @@ fn gpu_tab(s: &Snapshot, dark: bool) -> Div {
                 ],
                 Some(100.0),
             ))
-
+            // Per-app GPU time is read only where the GPU's counters exist.
+            .when(supported, |d| d
+            .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), "GPU", dark))
+            .child(top_apps(rows.iter().copied(), |a| {
+                // Under 0.05% reads as 0.0 %, so leave the app out.
+                let pct = if a.gpu_pct < 0.05 { 0.0 } else { a.gpu_pct };
+                (crate::locale::percent(pct, if pct < 10.0 { 1 } else { 0 }), pct)
+            }, max, m.accent(dark), true, dark, this))
+            .child(sub(l("GPU time per app comes from macOS's own counters. Drawing windows on screen is counted under WindowServer, not under the app whose window it is.", "GPU-tid per app kommer fra macOS sine egne tellere. Tegning av vinduer på skjermen telles under WindowServer, ikke under appen som eier vinduet.")).text_color(t::ink_dim(dark))))
             .when(!supported, |d| {
                 d.child(empty_state(
                     "icons/gpu.svg",

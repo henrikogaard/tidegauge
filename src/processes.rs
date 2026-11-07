@@ -30,6 +30,8 @@ pub struct ProcInfo {
     pub read_rate: f64,
     pub write_rate: f64,
     pub power_w: f64,
+    /// Share of the GPU's time since the last reading, in percent.
+    pub gpu_pct: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -46,6 +48,7 @@ pub struct AppGroup {
     pub net_in_rate: f64,
     pub net_out_rate: f64,
     pub power_w: f64,
+    pub gpu_pct: f64,
     pub is_system: bool,
 }
 
@@ -328,6 +331,7 @@ pub fn group_procs(procs: &[ProcInfo]) -> Vec<AppGroup> {
         g.disk_read_rate += p.read_rate;
         g.disk_write_rate += p.write_rate;
         g.power_w += p.power_w;
+        g.gpu_pct += p.gpu_pct;
     }
     let mut v: Vec<AppGroup> = groups.into_values().collect();
     v.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));

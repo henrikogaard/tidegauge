@@ -295,6 +295,8 @@ struct PrevProc {
     disk_read: u64,
     disk_write: u64,
     energy_nj: u64,
+    /// Cumulative GPU nanoseconds; 0 when the process has not used the GPU.
+    gpu_ns: u64,
     start_unix: f64,
     /// Name and path read when this process was first seen; they are read
     /// again only if the process starts again or changes its name (exec).
@@ -518,6 +520,7 @@ impl Engine {
             self.last_heavy = now;
             let pids = list_pids();
             let enumerated = pids.iter().copied().collect();
+            let gpu_times = if s.gpu.supported { crate::gpu_apps::gpu_time_by_pid() } else { Default::default() };
             let mut procs = Vec::with_capacity(pids.len());
             for pid in pids {
                 let Some(b) = proc_bsd(pid) else { continue };
@@ -529,7 +532,14 @@ impl Engine {
                         .to_string_lossy()
                         .to_string()
                 };
+                let gpu_ns = gpu_times.get(&pid).copied().unwrap_or(0);
                 let prev = self.prev.get(&pid);
+                let gpu_pct = match prev {
+                    Some(pv) if pv.start_unix == start => crate::gpu_apps::gpu_pct(pv.gpu_ns, gpu_ns, pdt),
+                    Some(_) => 0.0,
+                    // First sight: the average over the process's life, as for CPU.
+                    None => crate::gpu_apps::gpu_pct(0, gpu_ns, (now_unix() - start).max(1.0)),
+                };
                 let (cpu_pct, rr, wr, pw) = if let Some(pv) = prev {
                     let alive = if pv.start_unix == start { pdt } else { 0.0 };
                     if alive > 0.0 {
@@ -562,6 +572,7 @@ impl Engine {
                         disk_read: r.ri_diskio_bytesread,
                         disk_write: r.ri_diskio_byteswritten,
                         energy_nj: r.ri_energy_nj,
+                        gpu_ns,
                         start_unix: start,
                         comm: comm.clone(),
                         exe_path: exe.clone(),
@@ -584,6 +595,7 @@ impl Engine {
                     read_rate: rr.max(0.0),
                     write_rate: wr.max(0.0),
                     power_w: pw.max(0.0),
+                    gpu_pct,
                 });
             }
             // prune dead pids
@@ -913,6 +925,7 @@ mod tests {
             disk_read: 0,
             disk_write: 0,
             energy_nj: 0,
+            gpu_ns: 0,
             start_unix: start,
             comm: comm.into(),
             exe_path: exe.into(),
