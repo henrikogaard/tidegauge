@@ -35,6 +35,13 @@ hardware acceptance checks. A merge and a published release are separate events.
   round trip, the average and worst of the last 30 probes, the loss share and
   a history strip. One ICMP echo goes to the default gateway every two seconds,
   only while the page is open, and never to an internet host or through a VPN.
+- Alerts say what was busy: system CPU, memory, memory pressure, disk,
+  network, overheating and thermal alerts list the top three apps for that
+  resource with their values, such as "Top: Xcode 310%, Safari 45%".
+- Settings → Alerts can run one of your Shortcuts whenever an alert is sent
+  (off by default). The Shortcut receives the alert text and category, runs in
+  the background with a 60-second limit, runs at most once every 30 seconds,
+  and Settings shows the last run's time and result.
 
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 

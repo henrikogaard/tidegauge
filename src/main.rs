@@ -3,6 +3,7 @@
 mod about;
 mod agents;
 mod agents_panel;
+mod alert_shortcut;
 mod alerts;
 mod app;
 mod attention;
