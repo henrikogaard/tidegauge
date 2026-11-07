@@ -230,6 +230,12 @@ impl Demand {
         self.watched() || taps || since_last >= HIDDEN_AUDIO_PERIOD
     }
 
+    /// The router latency probe sends one echo per pass, on the Network page
+    /// only.
+    pub fn router_probe_wanted(&self) -> bool {
+        self.page(Page::Network)
+    }
+
     /// The raw AppleSMC temperature channels are listed on the CPU page only.
     pub fn raw_sensors(&self) -> bool {
         self.page(Page::Cpu)
@@ -254,6 +260,15 @@ mod tests {
             window: Some(page),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn router_probe_runs_only_on_the_network_page() {
+        assert!(window(Page::Network).router_probe_wanted());
+        assert!(!window(Page::Other).router_probe_wanted());
+        assert!(!Demand::default().router_probe_wanted());
+        let panel = Demand { panel: true, network_alert: true, ..Default::default() };
+        assert!(!panel.router_probe_wanted());
     }
 
     #[test]

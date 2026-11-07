@@ -3729,6 +3729,8 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         .child(top_apps(rows.iter().copied(), |a| { let r = a.net_in_rate + a.net_out_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
         .child(section_header(l("Connection", "Tilkobling"), "", dark))
         .child(connection_card(s, dark))
+        .child(section_header(l("Router", "Ruter"), l("Last 30 probes", "Siste 30 prøver"), dark))
+        .child(router_card(dark))
         .child(
             sub(format!(
                 "{}: {} / {}",
@@ -3741,6 +3743,68 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ))
             .text_color(t::ink_dim(dark)),
         )
+}
+
+/// Round-trip time and loss to the router, from the probe that runs while
+/// this page is open. A lost probe is a gap in the strip.
+fn router_card(dark: bool) -> Div {
+    use crate::router_ping::Status;
+    let v = crate::router_ping::view();
+    let note = l(
+        "Measures the link between this Mac and your router, not the internet. One small echo goes to the router every two seconds while this page is open.",
+        "Måler forbindelsen mellom denne Macen og ruteren, ikke internett. Ett lite ekko sendes til ruteren hvert andre sekund mens denne siden er åpen.",
+    );
+    let ms = |v: Option<f64>| v.map_or("–".to_string(), |v| format!("{} ms", crate::locale::number(v, 1)));
+    let stats = match (&v.status, v.stats) {
+        (Status::Probing(_), Some(st)) => st,
+        (Status::NoGateway, _) => {
+            return card(dark)
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("No router to measure", "Ingen ruter å måle")))
+                .child(sub(l(
+                    "There is no default route to a router on the local network (offline, or the traffic goes through a VPN), so nothing is sent.",
+                    "Det finnes ingen standardrute til en ruter på det lokale nettet (uten nett, eller trafikken går gjennom VPN), så ingenting sendes.",
+                )).text_color(t::ink_dim(dark)))
+                .child(sub(note).text_color(t::ink_dim(dark)));
+        }
+        _ => {
+            return card(dark)
+                .child(sub(l("Measuring…", "Måler …")).text_color(t::ink_dim(dark)))
+                .child(sub(note).text_color(t::ink_dim(dark)));
+        }
+    };
+    let loss_tone = if stats.loss_pct >= 10.0 {
+        Some(t::warn(dark))
+    } else if stats.loss_pct > 0.0 {
+        Some(t::caution(dark))
+    } else {
+        None
+    };
+    let cells: Vec<(&str, String, Option<Hsla>)> = vec![
+        (
+            l("Latency", "Svartid"),
+            if stats.current.is_some() { ms(stats.current) } else { l("No reply", "Ingen svar").into() },
+            if stats.current.is_none() { Some(t::warn(dark)) } else { None },
+        ),
+        (l("Average", "Gjennomsnitt"), ms(stats.average), None),
+        (l("Worst", "Verst"), ms(stats.worst), None),
+        (l("Packet loss", "Pakketap"), crate::locale::percent(stats.loss_pct, 0), loss_tone),
+    ];
+    card(dark)
+        .child(div().flex().gap_6().children(cells.into_iter().map(|(label, value, tone)| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .when_some(tone, |d, color| d.text_color(color))
+                        .child(value),
+                )
+        })))
+        .child(area_chart(&v.series, 48.0, Metric::Network.accent(dark), None))
+        .child(sub(note).text_color(t::ink_dim(dark)))
 }
 
 /// The connection's details as captioned values in rows of four, like a
