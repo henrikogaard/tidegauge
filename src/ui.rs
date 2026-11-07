@@ -1659,7 +1659,7 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
             ),
         ],
         Tab::Gpu => vec![
-            l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
+            l("GPU time per app comes from macOS's own counters. Drawing windows on screen is counted under WindowServer, not under the app whose window it is.", "GPU-tid per app kommer fra macOS sine egne tellere. Tegning av vinduer på skjermen telles under WindowServer, ikke under appen som eier vinduet."),
             l("Work split shows how busy the GPU's two drawing stages were: the tiler works out geometry, the renderer draws the pixels. A scene can keep one busy while the other waits, so they do not add up to the total.", "Arbeidsfordelingen viser hvor travle GPU-ens to tegnetrinn var: flisleggeren regner ut geometri, tegneenheten tegner pikslene. En scene kan holde det ene opptatt mens det andre venter, så de summerer seg ikke til totalen."),
             l("Time at each speed comes from macOS's GPU state counters over the last two seconds. Idle or off is time the GPU rested.", "Tid på hver hastighet kommer fra macOS sine GPU-tilstandstellere over de siste to sekundene. Hvile eller av er tid GPU-en hvilte."),
             l("GPU power is measured: the change in macOS's GPU energy counter between samples.", "GPU-effekten er målt: endringen i GPU-energitelleren i macOS mellom målingene."),
