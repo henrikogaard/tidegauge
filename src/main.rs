@@ -47,6 +47,7 @@ mod processes;
 mod process_activity;
 mod process_control;
 mod process_panel;
+mod process_sample;
 mod process_signing;
 mod projects;
 mod sensors;

@@ -78,6 +78,19 @@ pub fn part_of_macos(p: &ProcInfo) -> bool {
 }
 
 fn verify(expected: &ProcInfo) -> Result<(), String> {
+    verify_unchanged(
+        expected,
+        l(
+            "The process changed since you chose it. Nothing was quit.",
+            "Prosessen er endret siden du valgte den. Ingenting ble avsluttet.",
+        ),
+    )
+}
+
+/// Refuses unless `expected` is still the same process of yours: eligible,
+/// running, and with the PID, start time, owner and executable it had.
+/// `changed` is the message when it is not.
+pub fn verify_unchanged(expected: &ProcInfo, changed: &'static str) -> Result<(), String> {
     if let Some(block) = blocked(expected) {
         return Err(block.reason().into());
     }
@@ -92,11 +105,7 @@ fn verify(expected: &ProcInfo) -> Result<(), String> {
         || info.pbi_uid != expected.uid
         || proc_path(expected.pid) != expected.exe_path
     {
-        return Err(l(
-            "The process changed since you chose it. Nothing was quit.",
-            "Prosessen er endret siden du valgte den. Ingenting ble avsluttet.",
-        )
-        .into());
+        return Err(changed.into());
     }
     Ok(())
 }

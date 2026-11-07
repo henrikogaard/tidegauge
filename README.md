@@ -114,7 +114,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends (including chip, SSD and battery temperatures) with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour; Export CSV saves the samples to Downloads |
 | Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
-| Apps & processes | Every app with its processes, filter and sort by CPU, GPU or memory, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
+| Apps & processes | Every app with its processes, filter and sort by CPU, GPU or memory, observed ownership, confirmed Quit and Force Quit for an app, a process, or what an app left running, and Sample to save a three-second report of what a process of yours is doing |
 | Desktop widgets | Small (one reading, chosen when you edit the widget), medium (four readings with sparklines) and large (all six) WidgetKit widgets for the desktop and Notification Center; macOS 14 or later, packaged builds only |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
 | Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
