@@ -31,6 +31,10 @@ hardware acceptance checks. A merge and a published release are separate events.
   busiest apps) to `live.json` in Tidegauge's Application Support folder
   every sampling pass, for scripts. It is off by default, replaces the file
   atomically, and deletes it when switched off.
+- The Network page shows latency and packet loss to your router: the current
+  round trip, the average and worst of the last 30 probes, the loss share and
+  a history strip. One ICMP echo goes to the default gateway every two seconds,
+  only while the page is open, and never to an internet host or through a VPN.
 
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 

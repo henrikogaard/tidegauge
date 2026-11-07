@@ -103,7 +103,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | Overview | Favorite metric cards (including temperature, fans and power), busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Battery health | Capacity health and cycle count kept once a day beyond History's 30 days, charted per day on the Battery page |
 | Cores and clocks | Per-core use grouped by core type (Super, Performance, Efficiency), each group's clock speed, and the GPU's core count and clock |
-| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal and whether the Mac is online), GPU (with renderer and tiler load, time at each clock speed, and the apps using it), Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal, whether the Mac is online, and latency and loss to your router while the page is open), GPU (with renderer and tiler load, time at each clock speed, and the apps using it), Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
 | Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
 | Device telemetry | Read-only temperature/fan channels (with the highest value seen: since launch for named sensors and fans, since opening CPU for raw channels), per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
