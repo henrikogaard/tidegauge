@@ -29,6 +29,7 @@ mod gpu_power;
 mod icons;
 mod instance;
 mod leaks;
+mod live_export;
 mod keepawake;
 mod locale;
 #[cfg(test)]

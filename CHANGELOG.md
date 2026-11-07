@@ -26,6 +26,11 @@ hardware acceptance checks. A merge and a published release are separate events.
   with a button to show it in Finder. Other users' and macOS's protected
   processes are not offered, and the process is checked again right before it
   is sampled.
+- Settings → General can write the live readings (CPU, memory and pressure,
+  disk and network rates, GPU, battery, temperatures, power and the ten
+  busiest apps) to `live.json` in Tidegauge's Application Support folder
+  every sampling pass, for scripts. It is off by default, replaces the file
+  atomically, and deletes it when switched off.
 
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 
