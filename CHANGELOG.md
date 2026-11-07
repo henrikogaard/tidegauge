@@ -9,7 +9,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 ### Added
 
 - The GPU page lists the apps using the GPU most, as a share of GPU time,
-  from the same macOS counters Activity Monitor's GPU column reads. Drawing
+  from the same macOS counters Activity Monitor's GPU column reads, including
+  system processes such as WindowServer that run as another user. Drawing
   windows on screen counts under WindowServer, not under the app whose window
   it is. Virtual Macs expose no such counters, so the list stays empty there
   ([#121](https://github.com/henrikogaard/tidegauge/pull/121)).

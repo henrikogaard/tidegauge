@@ -3859,7 +3859,7 @@ pub(crate) fn empty_state(icon: &'static str, color: Hsla, headline: String, exp
 
 fn gpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let m = Metric::Gpu;
-    let mut rows: Vec<&AppGroup> = s.apps.iter().collect();
+    let mut rows: Vec<&AppGroup> = s.apps.iter().chain(&s.gpu_other_apps).collect();
     rows.sort_by(|a, b| b.gpu_pct.total_cmp(&a.gpu_pct));
     let max = rows.first().map(|a| a.gpu_pct).unwrap_or(1.0).max(1.0);
     let supported = s.gpu.supported;
