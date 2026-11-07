@@ -101,11 +101,14 @@ would be invented and is not used.
 
 ### Highest values and labels
 
-Each part's hottest named sensor, every SMC temperature channel and each fan
-shows the highest value seen since Tidegauge started ("71 °C · max 84 °C"). The
+Each part's hottest named sensor and each fan show the highest value seen since
+Tidegauge started ("71 °C · max 84 °C"). SMC temperature channels are read only
+while the CPU page is open, so their maxima cover only that visit and are
+cleared when the page closes; the channel list says "since you opened CPU". The
 maxima live in memory (`src/sensor_max.rs`), start over with each launch and are
 not written to History. A sensor that stops reporting keeps its maximum;
-non-finite values are ignored. Because HID product names repeat, the named
+non-finite values are ignored. The sensor preview fixture shows no maxima.
+Because HID product names repeat, the named
 maximum is that of the part's hottest reading, not of one physical sensor.
 
 A readable label is shown only where the meaning is verified, and the raw key

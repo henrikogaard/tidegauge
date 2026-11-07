@@ -3083,6 +3083,7 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
     // Without them (a virtual or Intel Mac), the SMC channels stand in.
     let named = if fresh { crate::named_sensors::summarise(&sample.named) } else { Vec::new() };
     let summary = named.is_empty().then(|| temperature_summary(&sample.temperatures, fresh)).flatten();
+    let real = preview.is_none();
     let reading_row = move |reading: &crate::sensors::Reading, unit: &'static str| {
         div()
             .flex()
@@ -3098,7 +3099,16 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                 div().text_sm().font_weight(FontWeight::SEMIBOLD).child({
                     let show = |v: f64| if unit == "RPM" { format!("{:.0} RPM", v) } else { fmt_celsius(v) };
                     match reading.value.filter(|_| fresh) {
-                        Some(v) => match crate::sensor_max::get(&crate::sensor_max::smc_id(&reading.key)) {
+                        Some(v) => match real
+                            .then(|| {
+                                crate::sensor_max::get(&if unit == "RPM" {
+                                    crate::sensor_max::fan_id(&reading.key)
+                                } else {
+                                    crate::sensor_max::smc_id(&reading.key)
+                                })
+                            })
+                            .flatten()
+                        {
                             Some(max) => format!("{} · {} {}", show(v), l("max", "maks"), show(max)),
                             None => show(v),
                         },
@@ -3133,7 +3143,7 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
             d.child(div().flex().flex_wrap().gap(t::SPACE_6).children(named.iter().flat_map(|part| {
                 // The chip has dozens of sensors: its hottest and average. A
                 // part with one or a few reads as its hottest.
-                let max = crate::sensor_max::get(&crate::sensor_max::named_id(part.kind));
+                let max = real.then(|| crate::sensor_max::get(&crate::sensor_max::named_id(part.kind))).flatten();
                 let stats = match part.kind {
                     crate::named_sensors::Kind::Chip => vec![
                         (format!("{} · {}", part.kind.label(), l("hottest", "varmest")), part.hottest, max),
@@ -3149,8 +3159,11 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                 .child(summary_stat(l("Hottest", "Varmest").into(), hottest, None))
                 .child(summary_stat(l("Average", "Gjennomsnitt").into(), average, None)))
         })
-        .when(fresh && (!named.is_empty() || !sample.temperatures.is_empty()), |d| {
+        .when(real && fresh && !named.is_empty(), |d| {
             d.child(sub(l("max is the highest reading since Tidegauge started", "maks er høyeste måling siden Tidegauge startet")).text_color(t::ink_dim(dark)))
+        })
+        .when(real && fresh && open && !sample.temperatures.is_empty(), |d| {
+            d.child(sub(l("Channel max is the highest reading since you opened CPU", "Kanalmaks er høyeste måling siden du åpnet CPU")).text_color(t::ink_dim(dark)))
         })
         .when(open, |d| {
             d.children(temperature_display.rows.iter().map(|r| reading_row(r, "°C")))
@@ -3183,7 +3196,7 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
                 l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.")
             }).text_color(t::ink_dim(dark)))
         })
-        .when(fresh && !sample.fans.is_empty(), |d| {
+        .when(real && fresh && !sample.fans.is_empty(), |d| {
             d.child(sub(l("max is the highest speed since Tidegauge started", "maks er høyeste hastighet siden Tidegauge startet")).text_color(t::ink_dim(dark)))
         })
         .children(sample.fans.iter().enumerate().map(|(i, r)| {

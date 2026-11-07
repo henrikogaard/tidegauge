@@ -112,7 +112,7 @@ pub fn start() {
                                 let mut sample = objc2::rc::autoreleasepool(|_| smc.sample(raw));
                                 failing = if matches!(sample.source, SourceState::Ready) { 0 } else { failing + 1 };
                                 sample.named = objc2::rc::autoreleasepool(|_| crate::named_sensors::read());
-                                crate::sensor_max::record(&sample);
+                                crate::sensor_max::record(&sample, raw);
                                 *out.lock().unwrap() = sample;
                                 wait_for_next_sample(raw);
                                 // After sleep, start over with fresh connections
@@ -152,7 +152,7 @@ pub fn start() {
                                     named: crate::named_sensors::read(),
                                     ..Default::default()
                                 };
-                                crate::sensor_max::record(&sample);
+                                crate::sensor_max::record(&sample, false);
                                 *out.lock().unwrap() = sample;
                                 std::thread::sleep(Duration::from_secs(2));
                                 // The HID sensors reconnect after sleep here too.
