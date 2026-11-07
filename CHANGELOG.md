@@ -12,7 +12,7 @@ hardware acceptance checks. A merge and a published release are separate events.
   from the same macOS counters Activity Monitor's GPU column reads. Drawing
   windows on screen counts under WindowServer, not under the app whose window
   it is. Virtual Macs expose no such counters, so the list stays empty there
-  (PR link to follow).
+  ([#121](https://github.com/henrikogaard/tidegauge/pull/121)).
 
 ## [0.6.2](https://github.com/henrikogaard/tidegauge/releases/tag/v0.6.2) — 2026-10-27
 
