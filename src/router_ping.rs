@@ -277,6 +277,15 @@ fn reset() {
     s.ring.clear();
 }
 
+/// The gateway to probe next. Probes of another router describe another
+/// link, so a change of router (Wi-Fi to Ethernet, say) clears the history.
+fn switch_gateway(old: Option<Ipv4Addr>, new: Option<Ipv4Addr>, ring: &mut Ring) -> Option<Ipv4Addr> {
+    if old.is_some() && new != old {
+        ring.clear();
+    }
+    new
+}
+
 /// Start the probe thread. It rests until the Network page opens.
 pub fn start() {
     let _ = std::thread::Builder::new()
@@ -303,7 +312,8 @@ pub fn start() {
                 }
                 last = Some(Instant::now());
                 if gateway.is_none() || since_resolve >= RESOLVE_EVERY {
-                    gateway = find_gateway();
+                    let found = find_gateway();
+                    gateway = switch_gateway(gateway, found, &mut STATE.lock().unwrap().ring);
                     since_resolve = 0;
                 }
                 since_resolve += 1;
@@ -382,6 +392,18 @@ mod tests {
         assert_eq!(series.len(), WINDOW, "the strip covers the same probes as the figures");
         assert!(series.iter().all(|v| *v == 1.0));
         r.clear();
+        assert!(r.series().is_empty());
+    }
+
+    #[test]
+    fn a_new_gateway_starts_a_fresh_history() {
+        let (a, b) = (Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(10, 0, 0, 1));
+        let mut r = ring(&[Some(3.0), None]);
+        // The same router keeps its probes.
+        assert_eq!(switch_gateway(Some(a), Some(a), &mut r), Some(a));
+        assert_eq!(r.series().len(), 2);
+        // A different router, as after moving from Wi-Fi to Ethernet, does not.
+        assert_eq!(switch_gateway(Some(a), Some(b), &mut r), Some(b));
         assert!(r.series().is_empty());
     }
 
