@@ -504,6 +504,15 @@ pub struct GpuStats {
     pub supported: bool,
     /// Measured GPU power from macOS's energy counters, in watts.
     pub power_w: Option<f64>,
+    /// Share of time the pixel-drawing hardware was busy, in percent.
+    pub renderer: Option<f64>,
+    /// Share of time the geometry hardware was busy, in percent.
+    pub tiler: Option<f64>,
+}
+
+/// A percentage the driver reports; anything outside 0-100 is not one.
+pub fn percent_stat(d: CFDictionaryRef, key: &str) -> Option<f64> {
+    cf_to_i64(dict_get(d, key)).filter(|v| (0..=100).contains(v)).map(|v| v as f64)
 }
 
 pub fn gpu_stats() -> GpuStats {
@@ -528,6 +537,8 @@ pub fn gpu_stats() -> GpuStats {
                         }
                     }
                 }
+                g.renderer = percent_stat(d, "Renderer Utilization %");
+                g.tiler = percent_stat(d, "Tiler Utilization %");
                 unsafe { CFRelease(stats) };
                 unsafe { IOObjectRelease(e) };
                 return g;
@@ -726,6 +737,14 @@ mod tests {
         let m = super::mem_stats();
         eprintln!("pressure {:?}, available {:?} %", m.pressure, m.available_pct);
         assert!(m.pressure.is_some() && m.available_pct.is_some());
+    }
+
+    #[test]
+    #[ignore = "requires a Mac with a GPU"]
+    fn native_gpu_work_split_reads() {
+        let g = super::gpu_stats();
+        eprintln!("device {:?}, renderer {:?}, tiler {:?}", g.utilization, g.renderer, g.tiler);
+        assert!(g.supported && g.renderer.is_some() && g.tiler.is_some());
     }
 
     #[test]

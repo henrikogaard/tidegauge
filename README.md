@@ -103,18 +103,18 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | Overview | Favorite metric cards (including temperature, fans and power), busiest apps, memory and power breakdowns, optional compact layout, and configurable sidebar order |
 | Battery health | Capacity health and cycle count kept once a day beyond History's 30 days, charted per day on the Battery page |
 | Cores and clocks | Per-core use grouped by core type (Super, Performance, Efficiency), each group's clock speed, and the GPU's core count and clock |
-| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal and whether the Mac is online), GPU, Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
+| Metric pages | CPU, Memory, Disk, Network (with the link type, addresses, Wi-Fi signal, whether the Mac is online, and latency and loss to your router while the page is open), GPU (with renderer and tiler load, time at each clock speed, and the apps using it), Battery, Sound, Bluetooth, and stored History, each with notes behind ⓘ |
 | Memory pressure | macOS's own pressure level (normal, warning, critical) and the share of memory it counts as available, on the Memory page and Overview |
 | Agents | Running coding-agent sessions with what they started and Quit, AI plan usage read from OpenQuota's saved data, and development servers |
-| Device telemetry | Read-only temperature/fan channels, per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
+| Device telemetry | Read-only temperature/fan channels (with the highest value seen: since launch for named sensors and fans, since opening CPU for raw channels), per-drive capacity/APFS/activity/health, and battery health/charging detail where available |
 | App grouping | CPU, memory, disk counters, and processor power grouped by executable bundle or parent app |
 | Sound | Choose the output and input device; volume and mute for both where the device supports them; per-app volume and mute (macOS 14.2+) with a level meter |
 | Bluetooth | Connected devices and available battery levels from `system_profiler` |
 | Dev servers | Shown in Agents: owned development listeners, explicit process/project/port confirmation, signal-time eligibility checks, and asynchronous Stop outcomes |
 | History | Local 1-hour, 12-hour, 24-hour, 7-day, and 30-day system/app trends (including chip, SSD and battery temperatures) with downsampled averages and visible gaps; an expanded app in Apps & processes shows its own last hour; Export CSV saves the samples to Downloads |
-| Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns |
+| Alerts | Opt-in CPU, used-memory, memory-pressure, disk, network, network lost and back, single-app CPU and memory, low startup-disk space and overheating alerts; configurable CPU/memory/app thresholds and independent cooldowns; system-wide alerts name the top three apps for the resource; optionally runs one of your Shortcuts (picked in Settings, off by default) whenever an alert is sent, at most once every 30 seconds, even when macOS notifications are blocked |
 | Keep awake | Native idle-system-sleep prevention for 15 minutes, 30 minutes, 1 hour, or until stopped |
-| Apps & processes | Every app with its processes, filter and sort, observed ownership, and confirmed Quit and Force Quit for an app, a process, or what an app left running |
+| Apps & processes | Every app with its processes, filter and sort by CPU, GPU or memory, observed ownership, confirmed Quit and Force Quit for an app, a process, or what an app left running, and Sample to save a three-second report of what a process of yours is doing |
 | Desktop widgets | Small (one reading, chosen when you edit the widget), medium (four readings with sparklines) and large (all six) WidgetKit widgets for the desktop and Notification Center; macOS 14 or later, packaged builds only |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
 | Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
@@ -154,6 +154,7 @@ Projects requires a working directory within four levels of a Git root or a reco
 | Settings | `~/Library/Application Support/no.ogard.tidegauge/settings.json` |
 | History | `~/Library/Application Support/no.ogard.tidegauge/history.db` |
 | Saved system baseline | `~/Library/Application Support/no.ogard.tidegauge/system-baseline-v1.json` |
+| Live readings (opt-in) | `~/Library/Application Support/no.ogard.tidegauge/live.json` |
 | Cached app icons | `~/Library/Caches/no.ogard.tidegauge/icons/` |
 
 Open Settings from the sidebar, the menu-bar panel, the menu, or Command-comma. Each metric can be Off, Icon, Value, Graph, or Value + graph. Optional readings appear together in one native item, with labels for values and graphs, consistent spacing, and fixed widths for changing values. Changes are saved immediately and applied on the next refresh. Use Reset to icon only to clear extra readings. Existing preferences are preserved on upgrade.
@@ -176,6 +177,45 @@ The app uses defaults when the settings file is absent or cannot be parsed. You 
 Available metric identifiers are `cpu`, `memory`, `network`, `disk`, `battery`, `gpu`, and `power`. The menu-bar pump reloads this file while the app runs. Appearance can be set to System, Light, or Dark for the dashboard.
 
 History includes app names and resource usage. The sampler records headline metrics and the app groups using the most memory, CPU, disk and network approximately every five sampling passes. Sampling starts a new process and chart baseline on each launch; renaming the storage namespace does not migrate older settings or history.
+
+### Live readings file
+
+Settings → General → **Write live readings to a file** is off by default. While it is on,
+every sampling pass (about every 2 seconds) replaces `live.json` in the folder above, through
+a temporary file and a rename, so a script never reads half a file. Turning the setting off
+deletes the file. The settings row shows the path and has Reveal. This file is separate from
+the widgets' own snapshot.
+
+`schema` is 1 and changes only when a field is renamed, removed or changes unit; new fields
+may be added without a bump. A field is `null` when macOS does not report it.
+
+| Field | Unit |
+|---|---|
+| `schema` | integer |
+| `written_at`, `sample_at` | Unix seconds |
+| `cpu.percent` | share of the whole Mac, 0-100 |
+| `cpu.cores` | logical cores |
+| `memory.used_bytes`, `memory.total_bytes`, `memory.swap_used_bytes` | bytes |
+| `memory.used_percent` | 0-100 |
+| `memory.pressure` | `normal`, `warning` or `critical` |
+| `disk.read_bytes_per_second`, `disk.write_bytes_per_second` | bytes per second |
+| `disk.used_bytes`, `disk.total_bytes` | bytes, startup volume |
+| `network.in_bytes_per_second`, `network.out_bytes_per_second` | bytes per second |
+| `gpu.percent` | 0-100 |
+| `battery.present` | boolean |
+| `battery.percent` | 0-100 |
+| `battery.state` | `charging`, `on_battery` or `charged` |
+| `temperatures_c.chip`, `.ssd`, `.battery` | degrees Celsius, hottest sensor of each |
+| `power_watts` | watts, whole Mac |
+| `top_apps[]` | up to 10 apps, busiest CPU first |
+| `top_apps[].name`, `.bundle_id` | text (`bundle_id` may be `null`) |
+| `top_apps[].cpu_core_percent` | 100 is one full core, whatever the per-core setting says |
+| `top_apps[].memory_bytes` | bytes |
+| `top_apps[].pids` | array of process ids |
+
+```sh
+jq '.cpu.percent, .top_apps[0].name' "$HOME/Library/Application Support/no.ogard.tidegauge/live.json"
+```
 
 ## Architecture
 
@@ -201,6 +241,7 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 | `src/keepawake.rs` | Owned native idle-sleep assertions and expiry |
 | `src/controls.rs` | Settings, history, keep-awake, and output-device controls |
 | `src/settings.rs` | Settings model, defaults, and JSON persistence |
+| `src/live_export.rs` | Optional live JSON readings file for scripts |
 | `src/statusbar.rs` | Native menu-bar items and sparklines |
 | `src/ui.rs` | Panel navigation, tab content, and charts |
 | `src/theme.rs`, `src/icons.rs` | Design tokens and app-icon caching |

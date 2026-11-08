@@ -150,7 +150,7 @@ pub struct TideGaugeView {
     /// Apps & processes shows the last minute's activity per process.
     pub(crate) process_recent: bool,
     pub expanded_process_group: Option<String>,
-    pub process_sort_cpu: bool,
+    pub process_sort: crate::process_panel::ProcSort,
     pub process_show_all: bool,
     pub process_all_helpers: Option<String>,
     pub process_detail: Option<crate::process_activity::Identity>,
@@ -162,6 +162,8 @@ pub struct TideGaugeView {
     pub startup_filter: Entity<gpui_kit::base::input::InputState>,
     pub startup_query: String,
     pub process_pending: bool,
+    /// The process being sampled right now; one sample runs at a time.
+    pub process_sampling: Option<crate::process_activity::Identity>,
     pub toast: Option<Toast>,
     pub process_selected: Option<crate::process_activity::Identity>,
     pub process_signing: crate::process_signing::State,
@@ -267,7 +269,7 @@ impl TideGaugeView {
             only_remaining: false,
             process_recent: false,
             expanded_process_group: None,
-            process_sort_cpu: true,
+            process_sort: crate::process_panel::ProcSort::Cpu,
             process_show_all: false,
             process_all_helpers: None,
             process_detail: None,
@@ -279,6 +281,7 @@ impl TideGaugeView {
             startup_filter,
             startup_query: String::new(),
             process_pending: false,
+            process_sampling: None,
             toast: None,
             process_selected: None,
             process_signing: crate::process_signing::State::default(),
@@ -409,12 +412,18 @@ impl TideGaugeView {
 pub struct Toast {
     pub text: String,
     pub failed: bool,
+    /// A file this result is about, with a button to show it in Finder.
+    pub file: Option<std::path::PathBuf>,
     shown: std::time::Instant,
 }
 
 impl Toast {
     pub fn new(text: String, failed: bool) -> Self {
-        Self { text, failed, shown: std::time::Instant::now() }
+        Self { text, failed, file: None, shown: std::time::Instant::now() }
+    }
+    pub fn with_file(mut self, file: std::path::PathBuf) -> Self {
+        self.file = Some(file);
+        self
     }
     fn expired(&self) -> bool {
         // Failures stay a little longer so they can be read.
@@ -450,6 +459,11 @@ fn toast_view(toast: &Toast, dark: bool, this: Entity<TideGaugeView>) -> impl In
                 .text_size(t::TEXT_BODY)
                 .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
                 .child(div().min_w_0().child(toast.text.clone()))
+                .when_some(toast.file.clone(), |d, file| {
+                    d.child(crate::controls::button("toast-reveal", l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| {
+                        crate::storage::reveal(&file)
+                    }))
+                })
                 .child(
                     div()
                         .id("toast-close")
@@ -835,7 +849,7 @@ fn app_row(app: &AppGroup, value: String, frac: f64, color: Hsla, dark: bool) ->
 }
 
 /// The rest of a ranked list, as one line that opens the full sortable table.
-fn more_apps(rest: usize, sort_cpu: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+fn more_apps(rest: usize, sort: crate::process_panel::ProcSort, dark: bool, this: Entity<TideGaugeView>) -> Div {
     div()
         .flex()
         .items_center()
@@ -851,13 +865,13 @@ fn more_apps(rest: usize, sort_cpu: bool, dark: bool, this: Entity<TideGaugeView
             .text_color(t::ink_dim(dark)),
         )
         .child(crate::controls::button(
-            format!("more-apps-{sort_cpu}"),
+            format!("more-apps-{sort:?}"),
             l("Open Apps & processes", "Åpne Apper og prosesser"),
             false,
             dark,
             move |_, cx| {
                 this.update(cx, |v, _| {
-                    v.process_sort_cpu = sort_cpu;
+                    v.process_sort = sort;
                     v.process_order.clear();
                 });
                 crate::process_panel::open(&this, cx);
@@ -871,7 +885,7 @@ fn top_apps<'a>(
     value: impl Fn(&AppGroup) -> (String, f64),
     max: f64,
     color: Hsla,
-    sort_cpu: bool,
+    sort: crate::process_panel::ProcSort,
     dark: bool,
     this: Entity<TideGaugeView>,
 ) -> Div {
@@ -889,7 +903,7 @@ fn top_apps<'a>(
             ),
         );
     }
-    list.child(more_apps(active.len().saturating_sub(10), sort_cpu, dark, this))
+    list.child(more_apps(active.len().saturating_sub(10), sort, dark, this))
 }
 
 pub(crate) fn card(dark: bool) -> Div {
@@ -1659,7 +1673,9 @@ fn tab_notes(tab: Tab) -> Vec<&'static str> {
             ),
         ],
         Tab::Gpu => vec![
-            l("macOS does not attribute GPU utilization to individual apps on this Mac.", "macOS tilskriver ikke GPU-utnyttelse til enkeltapper på denne Macen."),
+            l("GPU time per app comes from macOS's own counters. Drawing windows on screen is counted under WindowServer, not under the app whose window it is.", "GPU-tid per app kommer fra macOS sine egne tellere. Tegning av vinduer på skjermen telles under WindowServer, ikke under appen som eier vinduet."),
+            l("Work split shows how busy the GPU's two drawing stages were: the tiler works out geometry, the renderer draws the pixels. A scene can keep one busy while the other waits, so they do not add up to the total.", "Arbeidsfordelingen viser hvor travle GPU-ens to tegnetrinn var: flisleggeren regner ut geometri, tegneenheten tegner pikslene. En scene kan holde det ene opptatt mens det andre venter, så de summerer seg ikke til totalen."),
+            l("Time at each speed comes from macOS's GPU state counters over the last two seconds. Idle or off is time the GPU rested.", "Tid på hver hastighet kommer fra macOS sine GPU-tilstandstellere over de siste to sekundene. Hvile eller av er tid GPU-en hvilte."),
             l("GPU power is measured: the change in macOS's GPU energy counter between samples.", "GPU-effekten er målt: endringen i GPU-energitelleren i macOS mellom målingene."),
         ],
         Tab::Battery => vec![
@@ -2814,7 +2830,7 @@ fn busiest_apps(s: &Snapshot, height: f32, rows: usize, dark: bool, this: Entity
         )
         .on_click(move |_, _, cx| {
             this.update(cx, |v, _| {
-                v.process_sort_cpu = true;
+                v.process_sort = crate::process_panel::ProcSort::Cpu;
                 v.process_order.clear();
             });
             crate::process_panel::open(&this, cx);
@@ -2988,7 +3004,7 @@ fn cpu_tab(s: &Snapshot, dark: bool, open_sensors: bool, this: Entity<TideGaugeV
             cpu_unit.qualifier(),
             dark,
         ))
-        .child(top_apps(rows.iter().copied(), |a| (cpu_unit.format(a.cpu_pct), a.cpu_pct), max, m.accent(dark), true, dark, this.clone()))
+        .child(top_apps(rows.iter().copied(), |a| (cpu_unit.format(a.cpu_pct), a.cpu_pct), max, m.accent(dark), crate::process_panel::ProcSort::Cpu, dark, this.clone()))
         .child(sensor_panel(s, dark, open_sensors, this))
 }
 
@@ -3083,30 +3099,50 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
     // Without them (a virtual or Intel Mac), the SMC channels stand in.
     let named = if fresh { crate::named_sensors::summarise(&sample.named) } else { Vec::new() };
     let summary = named.is_empty().then(|| temperature_summary(&sample.temperatures, fresh)).flatten();
+    let real = preview.is_none();
     let reading_row = move |reading: &crate::sensors::Reading, unit: &'static str| {
         div()
             .flex()
             .items_center()
             .justify_between()
             .gap_3()
-            .child(div().text_sm().child(reading.key.clone()))
+            .child(div().text_sm().child(match crate::sensors::friendly_name(&reading.key) {
+                // A verified name leads; the controller's own key stays visible.
+                Some(name) => format!("{name} · {}", reading.key),
+                None => reading.key.clone(),
+            }))
             .child(
-                div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
-                    reading
-                        .value
-                        .filter(|_| fresh)
-                        .map(|v| if unit == "RPM" { format!("{:.0} RPM", v) } else { fmt_celsius(v) })
-                        .unwrap_or_else(|| l("Unavailable", "Utilgjengelig").into()),
-                ),
+                div().text_sm().font_weight(FontWeight::SEMIBOLD).child({
+                    let show = |v: f64| if unit == "RPM" { format!("{:.0} RPM", v) } else { fmt_celsius(v) };
+                    match reading.value.filter(|_| fresh) {
+                        Some(v) => match real
+                            .then(|| {
+                                crate::sensor_max::get(&if unit == "RPM" {
+                                    crate::sensor_max::fan_id(&reading.key)
+                                } else {
+                                    crate::sensor_max::smc_id(&reading.key)
+                                })
+                            })
+                            .flatten()
+                        {
+                            Some(max) => format!("{} · {} {}", show(v), l("max", "maks"), show(max)),
+                            None => show(v),
+                        },
+                        None => l("Unavailable", "Utilgjengelig").into(),
+                    }
+                }),
             )
     };
-    let summary_stat = |label: String, value: f64| {
+    let summary_stat = |label: String, value: f64, max: Option<f64>| {
         div()
             .flex()
             .flex_col()
             .gap(t::SPACE_1)
             .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label))
             .child(div().text_size(t::TEXT_EMPH).font_weight(FontWeight::SEMIBOLD).child(fmt_celsius(value)))
+            .when_some(max, |d, max| {
+                d.child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(format!("{} {}", l("max", "maks"), fmt_celsius(max))))
+            })
     };
     // The channel list is long and its names are the hardware's own, so it
     // stays folded behind the hottest and average readings.
@@ -3123,20 +3159,27 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
             d.child(div().flex().flex_wrap().gap(t::SPACE_6).children(named.iter().flat_map(|part| {
                 // The chip has dozens of sensors: its hottest and average. A
                 // part with one or a few reads as its hottest.
+                let max = real.then(|| crate::sensor_max::get(&crate::sensor_max::named_id(part.kind))).flatten();
                 let stats = match part.kind {
                     crate::named_sensors::Kind::Chip => vec![
-                        (format!("{} · {}", part.kind.label(), l("hottest", "varmest")), part.hottest),
-                        (format!("{} · {}", part.kind.label(), l("average", "snitt")), part.average),
+                        (format!("{} · {}", part.kind.label(), l("hottest", "varmest")), part.hottest, max),
+                        (format!("{} · {}", part.kind.label(), l("average", "snitt")), part.average, None),
                     ],
-                    _ => vec![(part.kind.label().to_string(), part.hottest)],
+                    _ => vec![(part.kind.label().to_string(), part.hottest, max)],
                 };
-                stats.into_iter().map(|(label, value)| summary_stat(label, value))
+                stats.into_iter().map(|(label, value, max)| summary_stat(label, value, max))
             })))
         })
         .when_some(summary, |d, (hottest, average)| {
             d.child(div().flex().gap(t::SPACE_6)
-                .child(summary_stat(l("Hottest", "Varmest").into(), hottest))
-                .child(summary_stat(l("Average", "Gjennomsnitt").into(), average)))
+                .child(summary_stat(l("Hottest", "Varmest").into(), hottest, None))
+                .child(summary_stat(l("Average", "Gjennomsnitt").into(), average, None)))
+        })
+        .when(real && fresh && !named.is_empty(), |d| {
+            d.child(sub(l("max is the highest reading since Tidegauge started", "maks er høyeste måling siden Tidegauge startet")).text_color(t::ink_dim(dark)))
+        })
+        .when(real && fresh && open && !sample.temperatures.is_empty(), |d| {
+            d.child(sub(l("Channel max is the highest reading since you opened CPU", "Kanalmaks er høyeste måling siden du åpnet CPU")).text_color(t::ink_dim(dark)))
         })
         .when(open, |d| {
             d.children(temperature_display.rows.iter().map(|r| reading_row(r, "°C")))
@@ -3168,6 +3211,9 @@ fn sensor_panel(s: &Snapshot, dark: bool, open: bool, this: Entity<TideGaugeView
             } else {
                 l("Fan readings unavailable.", "Viftemålinger er utilgjengelige.")
             }).text_color(t::ink_dim(dark)))
+        })
+        .when(real && fresh && !sample.fans.is_empty(), |d| {
+            d.child(sub(l("max is the highest speed since Tidegauge started", "maks er høyeste hastighet siden Tidegauge startet")).text_color(t::ink_dim(dark)))
         })
         .children(sample.fans.iter().enumerate().map(|(i, r)| {
             let (min, max) = sample.fan_limits.get(i).copied().unwrap_or((None, None));
@@ -3265,7 +3311,7 @@ fn memory_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
         )
         .when(!s.leaks.is_empty(), |d| d.child(growing_memory(s, dark, this.clone())))
         .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), l("Memory", "Minne"), dark))
-        .child(top_apps(rows.iter().copied(), |a| (fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64), max, m.accent(dark), false, dark, this))
+        .child(top_apps(rows.iter().copied(), |a| (fmt_bytes(a.mem_bytes as f64), a.mem_bytes as f64), max, m.accent(dark), crate::process_panel::ProcSort::Memory, dark, this))
         .child(sub(l("App totals and system-used memory have different accounting scopes and may not reconcile. Pressure comes from macOS, not from these totals.", "Apptotaler og brukt systemminne har ulikt beregningsgrunnlag og samsvarer ikke nødvendigvis. Minnepresset kommer fra macOS, ikke fra disse summene.")).text_color(t::ink_dim(dark)))
 }
 
@@ -3437,7 +3483,7 @@ fn disk_tab(
             l("Device disconnected, replaced, or temporarily unavailable. Waiting for a fresh inventory.", "Enheten er frakoblet, erstattet eller midlertidig utilgjengelig. Venter på en ny oversikt.").into(), dark)))
         .when_some(device.filter(|device| inventory.fresh() && device.identity_matches(&io)), |d, device| d.child(disk_detail(device, io.get(&device.id).filter(|sample| sample.fresh()), dark)))
         .child(section_header(l("All apps · all devices", "Alle apper · alle enheter"), l("Disk activity", "Diskaktivitet"), dark))
-        .child(top_apps(rows.iter().copied(), |a| { let r = a.disk_read_rate + a.disk_write_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
+        .child(top_apps(rows.iter().copied(), |a| { let r = a.disk_read_rate + a.disk_write_rate; (fmt_rate(r), r) }, max, m.accent(dark), crate::process_panel::ProcSort::Cpu, dark, this))
 }
 
 fn disk_detail(
@@ -3726,9 +3772,11 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             l("Download + upload", "Nedlasting + opplasting"),
             dark,
         ))
-        .child(top_apps(rows.iter().copied(), |a| { let r = a.net_in_rate + a.net_out_rate; (fmt_rate(r), r) }, max, m.accent(dark), true, dark, this))
+        .child(top_apps(rows.iter().copied(), |a| { let r = a.net_in_rate + a.net_out_rate; (fmt_rate(r), r) }, max, m.accent(dark), crate::process_panel::ProcSort::Cpu, dark, this))
         .child(section_header(l("Connection", "Tilkobling"), "", dark))
         .child(connection_card(s, dark))
+        .child(section_header(l("Router", "Ruter"), l("Last 30 probes", "Siste 30 prøver"), dark))
+        .child(router_card(dark))
         .child(
             sub(format!(
                 "{}: {} / {}",
@@ -3741,6 +3789,77 @@ fn network_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ))
             .text_color(t::ink_dim(dark)),
         )
+}
+
+/// Round-trip time and loss to the router, from the probe that runs while
+/// this page is open. A lost probe is a gap in the strip.
+fn router_card(dark: bool) -> Div {
+    use crate::router_ping::Status;
+    let v = crate::router_ping::view();
+    let note = l(
+        "Measures the link between this Mac and your router, not the internet. One small echo goes to the router every two seconds while this page is open.",
+        "Måler forbindelsen mellom denne Macen og ruteren, ikke internett. Ett lite ekko sendes til ruteren hvert andre sekund mens denne siden er åpen.",
+    );
+    let ms = |v: Option<f64>| v.map_or("–".to_string(), |v| format!("{} ms", crate::locale::number(v, 1)));
+    let stats = match (&v.status, v.stats) {
+        (Status::Probing(_), Some(st)) => st,
+        (Status::Unavailable(_), _) => {
+            return card(dark)
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("Router check unavailable", "Ruterkontroll utilgjengelig")))
+                .child(sub(l(
+                    "macOS would not let Tidegauge send the probe, so nothing is measured. This is not packet loss.",
+                    "macOS lot ikke Tidegauge sende prøven, så ingenting måles. Dette er ikke pakketap.",
+                )).text_color(t::ink_dim(dark)))
+                .child(sub(note).text_color(t::ink_dim(dark)));
+        }
+        (Status::NoGateway, _) => {
+            return card(dark)
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(l("No router to measure", "Ingen ruter å måle")))
+                .child(sub(l(
+                    "There is no default route to a router on the local network (offline, or the traffic goes through a VPN), so nothing is sent.",
+                    "Det finnes ingen standardrute til en ruter på det lokale nettet (uten nett, eller trafikken går gjennom VPN), så ingenting sendes.",
+                )).text_color(t::ink_dim(dark)))
+                .child(sub(note).text_color(t::ink_dim(dark)));
+        }
+        _ => {
+            return card(dark)
+                .child(sub(l("Measuring…", "Måler …")).text_color(t::ink_dim(dark)))
+                .child(sub(note).text_color(t::ink_dim(dark)));
+        }
+    };
+    let loss_tone = if stats.loss_pct >= 10.0 {
+        Some(t::warn(dark))
+    } else if stats.loss_pct > 0.0 {
+        Some(t::caution(dark))
+    } else {
+        None
+    };
+    let cells: Vec<(&str, String, Option<Hsla>)> = vec![
+        (
+            l("Latency", "Svartid"),
+            if stats.current.is_some() { ms(stats.current) } else { l("No reply", "Ingen svar").into() },
+            if stats.current.is_none() { Some(t::warn(dark)) } else { None },
+        ),
+        (l("Average", "Gjennomsnitt"), ms(stats.average), None),
+        (l("Worst", "Verst"), ms(stats.worst), None),
+        (l("Packet loss", "Pakketap"), crate::locale::percent(stats.loss_pct, 0), loss_tone),
+    ];
+    card(dark)
+        .child(div().flex().gap_6().children(cells.into_iter().map(|(label, value, tone)| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(label))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .when_some(tone, |d, color| d.text_color(color))
+                        .child(value),
+                )
+        })))
+        .child(area_chart(&v.series, 48.0, Metric::Network.accent(dark), None))
+        .child(sub(note).text_color(t::ink_dim(dark)))
 }
 
 /// The connection's details as captioned values in rows of four, like a
@@ -3899,6 +4018,12 @@ fn gpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 ],
                 Some(100.0),
             ))
+            .when(s.gpu.renderer.is_some() || s.gpu.tiler.is_some(), |d| d
+                .child(section_header(l("Work split", "Arbeidsfordeling"), l("Busy share of time", "Andel av tiden i arbeid"), dark))
+                .child(work_split_card(s, dark)))
+            .when(!s.clocks.gpu_speeds.is_empty(), |d| d
+                .child(section_header(l("Time at each speed", "Tid på hver hastighet"), l("Last 2 seconds", "Siste 2 sekunder"), dark))
+                .child(speed_card(&s.clocks.gpu_speeds, m.accent(dark), dark)))
             // Per-app GPU time is read only where the GPU's counters exist.
             .when(supported, |d| d
             .child(section_header(l("Apps · highest usage first", "Apper · høyest bruk først"), "GPU", dark))
@@ -3906,7 +4031,7 @@ fn gpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
                 // Under 0.05% reads as 0.0 %, so leave the app out.
                 let pct = if a.gpu_pct < 0.05 { 0.0 } else { a.gpu_pct };
                 (crate::locale::percent(pct, if pct < 10.0 { 1 } else { 0 }), pct)
-            }, max, m.accent(dark), true, dark, this))
+            }, max, m.accent(dark), crate::process_panel::ProcSort::Gpu, dark, this))
             .child(sub(l("GPU time per app comes from macOS's own counters. Drawing windows on screen is counted under WindowServer, not under the app whose window it is.", "GPU-tid per app kommer fra macOS sine egne tellere. Tegning av vinduer på skjermen telles under WindowServer, ikke under appen som eier vinduet.")).text_color(t::ink_dim(dark))))
             .when(!supported, |d| {
                 d.child(empty_state(
@@ -3919,6 +4044,56 @@ fn gpu_tab(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             });
     }
     page
+}
+
+/// A labelled bar with a value on the right, for shares of a whole.
+fn share_row(label: String, value: String, frac: f64, color: Hsla, dark: bool) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(div().w(px(150.)).flex_shrink_0().truncate().text_size(t::TEXT_BODY).child(label))
+        .child(
+            div()
+                .flex_1()
+                .h(px(8.))
+                .rounded_full()
+                .bg(color.opacity(0.15))
+                .child(div().h_full().w(relative(frac.clamp(0.0, 1.0) as f32)).rounded_full().bg(color)),
+        )
+        .child(div().w(px(56.)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(value))
+}
+
+/// Renderer and tiler: two halves of the GPU's drawing work. Each bar is the
+/// share of time that part was busy, so the two do not add up to the total.
+fn work_split_card(s: &Snapshot, dark: bool) -> Div {
+    let color = Metric::Gpu.accent(dark);
+    let bar = |label: &str, v: f64| share_row(label.to_string(), fmt_pct(v), v / 100., color, dark);
+    card(dark)
+        .when_some(s.gpu.renderer, |d, v| d.child(bar(l("Renderer · pixels", "Tegning · piksler"), v)))
+        .when_some(s.gpu.tiler, |d, v| d.child(bar(l("Tiler · geometry", "Flislegging · geometri"), v)))
+        .child(sub(l(
+            "The renderer colours the pixels you see. The tiler works out the shapes and where they land on screen. Each bar is that part's own busy time.",
+            "Tegneenheten fargelegger pikslene du ser. Flisleggeren regner ut formene og hvor de havner på skjermen. Hver stolpe er den delens egen travelhet.",
+        )).text_color(t::ink_dim(dark)))
+}
+
+/// "Idle" and each active speed with its share of the last reading.
+fn speed_card(speeds: &[crate::clocks::SpeedShare], color: Hsla, dark: bool) -> Div {
+    let mut card = card(dark);
+    for row in speeds {
+        let label = match (row.low_mhz, row.high_mhz) {
+            (Some(lo), Some(hi)) if lo == hi => crate::engine::fmt_clock(lo),
+            (Some(lo), Some(hi)) => format!("{} – {}", crate::engine::fmt_clock(lo), crate::engine::fmt_clock(hi)),
+            _ => l("Idle or off", "Hvile eller av").to_string(),
+        };
+        let tint = if row.low_mhz.is_some() { color } else { t::ink_dim(dark) };
+        card = card.child(share_row(label, fmt_pct(row.share * 100.), row.share, tint, dark));
+    }
+    card.child(sub(l(
+        "How the GPU's time was split between resting and each clock speed. Close speeds with little time are shown as one range.",
+        "Hvordan GPU-ens tid ble fordelt mellom hvile og hver klokkehastighet. Nære hastigheter med lite tid vises som ett område.",
+    )).text_color(t::ink_dim(dark)))
 }
 
 fn battery_tab(s: &Snapshot, dark: bool) -> Div {

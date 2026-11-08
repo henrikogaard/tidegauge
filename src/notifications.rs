@@ -54,7 +54,7 @@ thread_local! {
     };
 }
 
-fn is_app_bundle() -> bool {
+pub(crate) fn is_app_bundle() -> bool {
     let bundle = NSBundle::mainBundle();
     bundle
         .bundleIdentifier()

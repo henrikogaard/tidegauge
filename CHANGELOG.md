@@ -6,6 +6,43 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- The GPU page shows a work split (how busy the renderer, which draws pixels,
+  and the tiler, which works out geometry, were) and "Time at each speed", the
+  share of the last two seconds the GPU rested or ran at each clock speed.
+  Apps & processes gets a GPU column you can sort by, where the Mac exposes
+  GPU time; "Open Apps & processes" from the GPU page opens it sorted by GPU.
+- The CPU page shows the highest value each named temperature and fan has
+  reached since Tidegauge started, next to the current reading (for example
+  "71 °C · max 84 °C"). The raw SMC channels are read only while CPU is open,
+  so their maxima cover that visit only and reset when you leave. SMC keys with
+  a verified meaning (battery, fans) get a readable label with the raw key
+  beside it; other keys keep the controller's own name.
+- Apps & processes can sample a process you own, like Activity Monitor's
+  Sample Process: a three-second report of what its threads are doing, which
+  shows where a hung app is stuck. The Sample button sits on an app with one
+  main process and on a selected process. The report is saved in Downloads
+  with a button to show it in Finder. Other users' and macOS's protected
+  processes are not offered, and the process is checked again right before it
+  is sampled.
+- Settings → General can write the live readings (CPU, memory and pressure,
+  disk and network rates, GPU, battery, temperatures, power and the ten
+  busiest apps) to `live.json` in Tidegauge's Application Support folder
+  every sampling pass, for scripts. It is off by default, replaces the file
+  atomically, and deletes it when switched off.
+- The Network page shows latency and packet loss to your router: the current
+  round trip, the average and worst of the last 30 probes, the loss share and
+  a history strip. One ICMP echo goes to the default gateway every two seconds,
+  only while the page is open, and never to an internet host or through a VPN.
+- Alerts say what was busy: system CPU, memory, memory pressure, disk,
+  network, overheating and thermal alerts list the top three apps for that
+  resource with their values, such as "Top: Xcode 310%, Safari 45%".
+- Settings → Alerts can run one of your Shortcuts whenever an alert is sent
+  (off by default). The Shortcut receives the alert text and category, runs in
+  the background with a 60-second limit, runs at most once every 30 seconds,
+  and Settings shows the last run's time and result.
+
 ## [0.7.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.7.0) — 2026-11-07
 
 ### Added

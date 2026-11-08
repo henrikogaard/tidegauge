@@ -2,7 +2,7 @@
 //! and at most one quiet line under the name. Explanations live behind the
 //! header's ⓘ.
 
-use crate::controls::{button_indexed, segment, segment_group, switch};
+use crate::controls::{button, button_indexed, segment, segment_group, switch};
 use crate::locale::text as l;
 use crate::settings::{
     localized_metric_label, localized_style_label, style_fits, ChartStyle, ColorMode, MenuPreset, Settings, MENU_METRICS,
@@ -337,6 +337,61 @@ pub(crate) fn set_launch_at_login(enabled: bool, this: &Entity<TideGaugeView>, c
     });
 }
 
+/// The switch for the live JSON file, with its path and a way to show it.
+/// Turning it off deletes the file at once.
+fn live_file_row(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let on = settings.live_export_enabled;
+    let path = crate::live_export::path();
+    let detail = format!(
+        "{} {}",
+        l(
+            "Readings for scripts, updated every 2 seconds, in",
+            "Målinger for skript, oppdatert hvert 2. sekund, i"
+        ),
+        path.display()
+    );
+    let reveal = (on && path.exists()).then(|| {
+        let path = path.clone();
+        button(
+            "live-file-reveal",
+            l("Reveal", "Vis i Finder"),
+            false,
+            dark,
+            move |_, _| crate::storage::reveal(&path),
+        )
+    });
+    let toggle = switch(
+        "live-file",
+        l(
+            "Write live readings to a file",
+            "Skriv levende målinger til en fil",
+        ),
+        on,
+        dark,
+        move |window, cx| {
+            update_preference(&this, |s| s.live_export_enabled = !on, window, cx);
+            if on {
+                crate::live_export::remove();
+            }
+        },
+    );
+    row(
+        l(
+            "Write live readings to a file",
+            "Skriv levende målinger til en fil",
+        ),
+        Some(detail),
+        div()
+            .flex()
+            .items_center()
+            .gap(t::SPACE_3)
+            .children(reveal)
+            .child(toggle),
+        false,
+        dark,
+    )
+}
+
 /// The General rows and the Look rows (appearance, colors, charts).
 fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> (Div, Div) {
     let appearance = segment_group("appearance-options", l("Appearance", "Utseende"), dark).children(
@@ -494,6 +549,7 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
                 false,
                 dark,
             ),
+            live_file_row(settings, dark, this.clone()),
             keep_awake_row(view, dark, this),
         ],
         dark,
@@ -782,6 +838,66 @@ fn alerts(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<Ti
                 row(name, Some(detail), control, i == 0, dark)
             })
             .collect(),
+        dark,
+    )
+}
+
+/// Pick a Shortcut to run whenever an alert is sent. The menu is the user's
+/// own library, read again as the page opens.
+fn alert_shortcut(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::alert_shortcut as shortcuts;
+    shortcuts::refresh_library();
+    let library = shortcuts::library();
+    let chosen = settings.alert_shortcut.clone();
+    let mut names = library.names.clone();
+    if let Some(name) = chosen.as_ref().filter(|name| !names.contains(name)) {
+        names.insert(0, name.clone());
+    }
+    let mut detail = if !library.loaded {
+        l("Reading your Shortcuts…", "Leser snarveiene dine …").to_string()
+    } else if library.failed && names.is_empty() {
+        l("Your Shortcuts could not be read.", "Snarveiene dine kunne ikke leses.").to_string()
+    } else if names.is_empty() {
+        l("No Shortcuts found.", "Fant ingen snarveier.").to_string()
+    } else {
+        l(
+            "Runs with the alert text when any alert is sent, at most every 30 seconds, even if notifications are blocked.",
+            "Kjører med varselteksten når et varsel sendes, høyst hvert 30. sekund, også om varsler er blokkert.",
+        )
+        .to_string()
+    };
+    if let Some(run) = shortcuts::last_run() {
+        let at = crate::history_browser::local_clock(run.at);
+        detail.push_str(&match run.outcome {
+            Ok(()) => format!(" {} {at}: {}.", l("Last run", "Sist kjørt"), l("ok", "ok")),
+            Err(reason) => format!(" {} {at}: {} ({reason}).", l("Last run", "Sist kjørt"), l("failed", "feilet")),
+        });
+    }
+    let mut chips = vec![(None, l("Off", "Av").to_string())];
+    chips.extend(names.into_iter().map(|name| (Some(name.clone()), name)));
+    let control = div()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap(t::SPACE_2)
+        .max_w(px(420.))
+        .children(chips.into_iter().enumerate().map(|(i, (value, label))| {
+            let this = this.clone();
+            segment(
+                format!("alert-shortcut-{i}"),
+                label.clone(),
+                chosen == value,
+                dark,
+                t::accent(dark),
+                move |window, cx| {
+                    let value = value.clone();
+                    update_preference(&this, move |s| s.alert_shortcut = value, window, cx)
+                },
+            )
+        }));
+    group(
+        l("Actions", "Handlinger"),
+        vec![row(l("Run a Shortcut", "Kjør en snarvei"), Some(detail), control, true, dark)],
         dark,
     )
 }
@@ -1168,7 +1284,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     .child(sidebar(&settings, dark, this.clone())),
             ],
         ))
-        .child(section(ALERTS, view, vec![notifications(dark), alerts(view, &settings, dark, this.clone())]))
+        .child(section(ALERTS, view, vec![notifications(dark), alert_shortcut(&settings, dark, this.clone()), alerts(view, &settings, dark, this.clone())]))
         .child(section(
             2,
             view,

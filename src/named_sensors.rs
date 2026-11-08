@@ -123,6 +123,43 @@ fn client() -> Option<usize> {
     })
 }
 
+/// Every sensor the HID temperature page offers, with its product name and
+/// whether `classify` keeps it: the raw material for the native probe.
+pub fn read_products() -> Vec<(String, Option<f64>, Option<Kind>)> {
+    let Some(client) = client() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    unsafe {
+        let services = IOHIDEventSystemClientCopyServices(client as Client);
+        if services.is_null() {
+            return out;
+        }
+        let product_key = crate::metrics::cf_str("Product");
+        for i in 0..CFArrayGetCount(services) {
+            let service = CFArrayGetValueAtIndex(services, i);
+            let product = IOHIDServiceClientCopyProperty(service, product_key);
+            let name = crate::metrics::cf_to_string(product).unwrap_or_default();
+            if !product.is_null() {
+                CFRelease(product);
+            }
+            let event = IOHIDServiceClientCopyEvent(service, EVENT_TEMPERATURE, 0, 0);
+            let value = if event.is_null() {
+                None
+            } else {
+                let v = IOHIDEventGetFloatValue(event, (EVENT_TEMPERATURE as i32) << 16);
+                CFRelease(event);
+                Some(v)
+            };
+            let kind = classify(&name);
+            out.push((name, value, kind));
+        }
+        CFRelease(product_key);
+        CFRelease(services);
+    }
+    out
+}
+
 /// Every named temperature now, read-only. Empty where the service offers
 /// none (a virtual Mac, an Intel Mac).
 pub fn read() -> Vec<(Kind, f64)> {
@@ -185,6 +222,17 @@ mod tests {
     fn headline_temps_take_each_parts_hottest() {
         let t = super::temps(&[(Kind::Chip, 58.), (Kind::Chip, 63.), (Kind::Battery, 35.)]);
         assert_eq!(t, super::Temps { chip: Some(63.), ssd: None, battery: Some(35.) });
+    }
+
+    #[test]
+    #[ignore = "needs a physical Mac"]
+    fn native_named_sensor_products() {
+        let mut products = super::read_products();
+        products.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, value, kind) in &products {
+            eprintln!("{name:?}\t{value:?}\t{kind:?}");
+        }
+        assert!(!products.is_empty());
     }
 
     #[test]

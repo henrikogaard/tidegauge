@@ -34,14 +34,47 @@ pub fn open(this: &Entity<TideGaugeView>, cx: &mut App) {
     }
 }
 
-fn sorted_keys(s: &Snapshot, sort_cpu: bool) -> Vec<String> {
-    let mut apps: Vec<&AppGroup> = s.apps.iter().collect();
-    if sort_cpu {
-        apps.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct).then(b.mem_bytes.cmp(&a.mem_bytes)));
-    } else {
-        apps.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+/// What the Apps & processes list is ordered by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProcSort {
+    #[default]
+    Cpu,
+    Memory,
+    Gpu,
+}
+
+/// Biggest first for `sort`; ties fall back to memory, which is always known.
+fn order(sort: ProcSort, a: &AppGroup, b: &AppGroup) -> std::cmp::Ordering {
+    match sort {
+        ProcSort::Cpu => b.cpu_pct.total_cmp(&a.cpu_pct).then(b.mem_bytes.cmp(&a.mem_bytes)),
+        ProcSort::Memory => b.mem_bytes.cmp(&a.mem_bytes),
+        ProcSort::Gpu => b.gpu_pct.total_cmp(&a.gpu_pct).then(b.mem_bytes.cmp(&a.mem_bytes)),
     }
+}
+
+/// The chosen sort, except that GPU falls back to CPU where the Mac exposes
+/// no GPU time.
+fn effective_sort(view: &TideGaugeView) -> ProcSort {
+    if view.process_sort == ProcSort::Gpu && !view.snap.gpu.supported {
+        ProcSort::Cpu
+    } else {
+        view.process_sort
+    }
+}
+
+fn sorted_keys(s: &Snapshot, sort: ProcSort) -> Vec<String> {
+    let mut apps: Vec<&AppGroup> = s.apps.iter().collect();
+    apps.sort_by(|a, b| order(sort, a, b));
     apps.into_iter().map(|app| app.key.clone()).collect()
+}
+
+/// The value a sort ranks by, for the bar behind each row.
+fn sort_value(sort: ProcSort, app: &AppGroup) -> f64 {
+    match sort {
+        ProcSort::Cpu => app.cpu_pct,
+        ProcSort::Memory => app.mem_bytes as f64,
+        ProcSort::Gpu => app.gpu_pct,
+    }
 }
 
 /// Rows re-sort only when it is safe: never while the pointer is over the
@@ -56,7 +89,7 @@ pub fn refresh_order(view: &mut TideGaugeView) {
         .is_none_or(|at| at.elapsed() >= Duration::from_secs(4));
     let held = view.process_table_hovered || view.expanded_process_group.is_some();
     if view.process_order.is_empty() || (stale && !held) {
-        view.process_order = sorted_keys(&view.snap, view.process_sort_cpu);
+        view.process_order = sorted_keys(&view.snap, effective_sort(view));
         view.process_order_at = Some(Instant::now());
     }
 }
@@ -66,7 +99,7 @@ pub fn refresh_order(view: &mut TideGaugeView) {
 fn order_held(view: &TideGaugeView) -> bool {
     (view.process_table_hovered || view.expanded_process_group.is_some())
         && !view.process_order.is_empty()
-        && view.process_order != sorted_keys(&view.snap, view.process_sort_cpu)
+        && view.process_order != sorted_keys(&view.snap, effective_sort(view))
 }
 
 fn held_chip(dark: bool) -> impl IntoElement {
@@ -127,8 +160,18 @@ fn mono(text: impl Into<String>, dark: bool) -> Div {
 const COL_PROCS: f32 = 92.;
 const COL_CPU: f32 = 112.;
 const COL_MEM: f32 = 88.;
+const COL_GPU: f32 = 72.;
 
-fn header_row(sort_cpu: bool, cpu: AppCpu, dark: bool) -> Div {
+/// A GPU share; under 0.05 % reads as a dash rather than "0.0 %".
+fn gpu_cell(pct: f64) -> String {
+    if pct < 0.05 {
+        "—".into()
+    } else {
+        crate::locale::percent(pct, if pct < 10.0 { 1 } else { 0 })
+    }
+}
+
+fn header_row(sort: ProcSort, gpu: bool, cpu: AppCpu, dark: bool) -> Div {
     let cell = |text: &str, width: f32, active: bool| {
         div()
             .w(px(width))
@@ -150,8 +193,9 @@ fn header_row(sort_cpu: bool, cpu: AppCpu, dark: bool) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .child(div().flex_1().text_color(t::ink_dim(dark)).child(l("App", "App").to_uppercase()))
         .child(cell(l("PROCESSES", "PROSESSER"), COL_PROCS, false))
-        .child(cell(cpu.column_header(), COL_CPU, sort_cpu))
-        .child(cell(l("MEMORY", "MINNE"), COL_MEM, !sort_cpu))
+        .child(cell(cpu.column_header(), COL_CPU, sort == ProcSort::Cpu))
+        .when(gpu, |d| d.child(cell("GPU", COL_GPU, sort == ProcSort::Gpu)))
+        .child(cell(l("MEMORY", "MINNE"), COL_MEM, sort == ProcSort::Memory))
         .child(div().w(px(16.)).flex_shrink_0())
 }
 
@@ -186,7 +230,9 @@ pub(crate) fn chrome(view: &TideGaugeView) -> crate::ui::PageChrome {
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let s = &view.snap;
     let remaining = remaining_pids(s);
-    let sort_cpu = view.process_sort_cpu;
+    // The GPU column and sort exist only where macOS exposes GPU time.
+    let gpu = s.gpu.supported;
+    let sort = effective_sort(view);
     let cpu = AppCpu::chosen(s.chip.cores);
 
     // Three views of the same processes: every app, what an app left
@@ -225,19 +271,22 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             .child(div().flex().child(mode))
             .child(crate::tools_panel::activity(view, dark, this));
     }
-    let mut sort = segment_group("process-sort", l("Sort by", "Sorter etter"), dark);
-    for (cpu, label) in [(true, "CPU"), (false, l("Memory", "Minne"))] {
+    let mut sort_group = segment_group("process-sort", l("Sort by", "Sorter etter"), dark);
+    for (choice, label) in [(ProcSort::Cpu, "CPU"), (ProcSort::Gpu, "GPU"), (ProcSort::Memory, l("Memory", "Minne"))] {
+        if choice == ProcSort::Gpu && !gpu {
+            continue;
+        }
         let target = this.clone();
-        sort = sort.child(segment(
-            format!("process-sort-{cpu}"),
+        sort_group = sort_group.child(segment(
+            format!("process-sort-{choice:?}"),
             label,
-            sort_cpu == cpu,
+            sort == choice,
             dark,
             t::accent(dark),
             move |_, cx| {
                 target.update(cx, |v, cx| {
-                    v.process_sort_cpu = cpu;
-                    v.process_order = sorted_keys(&v.snap, cpu);
+                    v.process_sort = choice;
+                    v.process_order = sorted_keys(&v.snap, choice);
                     v.process_order_at = Some(Instant::now());
                     cx.notify();
                 });
@@ -266,7 +315,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             .child(div().flex_1())
             .when(order_held(view), |d| d.child(held_chip(dark)))
             .child(sub(l("Sort by", "Sorter etter")).text_color(t::ink_dim(dark)))
-            .child(sort),
+            .child(sort_group),
     );
 
     let query = view.process_query.as_str();
@@ -296,13 +345,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     // New apps join below the held order until the next safe re-sort.
     apps.sort_by(|a, b| {
         let rank = |app: &AppGroup| position.get(app.key.as_str()).copied().unwrap_or(usize::MAX);
-        rank(a).cmp(&rank(b)).then_with(|| {
-            if sort_cpu {
-                b.cpu_pct.total_cmp(&a.cpu_pct)
-            } else {
-                b.mem_bytes.cmp(&a.mem_bytes)
-            }
-        })
+        rank(a).cmp(&rank(b)).then_with(|| order(sort, a, b))
     });
     if apps.is_empty() {
         return page.child(crate::ui::empty_state(
@@ -334,7 +377,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     let shown = if view.process_show_all || !query.is_empty() { total } else { total.min(FIRST_PAGE) };
     let max_value = apps
         .iter()
-        .map(|a| if sort_cpu { a.cpu_pct } else { a.mem_bytes as f64 })
+        .map(|a| sort_value(sort, a))
         .fold(0., f64::max)
         .max(f64::MIN_POSITIVE);
 
@@ -350,11 +393,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         .pb_2()
         .px_2()
         .gap_0()
-        .child(header_row(sort_cpu, cpu, dark));
+        .child(header_row(sort, gpu, cpu, dark));
     for app in apps.into_iter().take(shown) {
         let expanded = view.expanded_process_group.as_deref() == Some(app.key.as_str());
-        let value = if sort_cpu { app.cpu_pct } else { app.mem_bytes as f64 };
-        table = table.child(app_row(app, expanded, (value / max_value).clamp(0., 1.), sort_cpu, cpu, dark, this.clone()));
+        let value = sort_value(sort, app);
+        table = table.child(app_row(app, expanded, (value / max_value).clamp(0., 1.), sort, gpu, cpu, dark, this.clone()));
         if expanded {
             table = table.child(app_detail(view, app, &remaining, dark, this.clone()));
         }
@@ -380,11 +423,15 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     page.child(table)
 }
 
-fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, cpu: AppCpu, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort: ProcSort, gpu: bool, cpu: AppCpu, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
     let key = app.key.clone();
     let keyboard_key = key.clone();
     let keyboard = this.clone();
-    let tide = if sort_cpu { Metric::Cpu.accent(dark) } else { Metric::Memory.accent(dark) };
+    let tide = match sort {
+        ProcSort::Cpu => Metric::Cpu.accent(dark),
+        ProcSort::Memory => Metric::Memory.accent(dark),
+        ProcSort::Gpu => Metric::Gpu.accent(dark),
+    };
     let toggle = move |this: &Entity<TideGaugeView>, key: &String, cx: &mut App| {
         this.update(cx, |v, cx| {
             v.expanded_process_group = if expanded { None } else { Some(key.clone()) };
@@ -432,8 +479,9 @@ fn app_row(app: &AppGroup, expanded: bool, frac: f64, sort_cpu: bool, cpu: AppCp
                 .child(div().min_w_0().truncate().text_size(t::TEXT_ROW).when(expanded, |d| d.font_weight(FontWeight::SEMIBOLD)).child(app.name.clone())),
         )
         .child(div().w(px(COL_PROCS)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).text_color(t::ink_dim(dark)).child(app.pids.len().to_string()))
-        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(cpu.format(app.cpu_pct)))
-        .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(!sort_cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
+        .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort == ProcSort::Cpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(cpu.format(app.cpu_pct)))
+        .when(gpu, |d| d.child(div().w(px(COL_GPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort == ProcSort::Gpu, |d| d.font_weight(FontWeight::SEMIBOLD)).child(gpu_cell(app.gpu_pct))))
+        .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).when(sort == ProcSort::Memory, |d| d.font_weight(FontWeight::SEMIBOLD)).child(fmt_bytes(app.mem_bytes as f64)))
         .child(div().w(px(16.)).flex_shrink_0().text_size(t::TEXT_CAPTION).text_color(t::ink_dim(dark)).child(if expanded { "▾" } else { "▸" }))
         .on_click(move |_, _, cx| toggle(&this, &key, cx))
         .capture_key_down(move |event, window, cx| {
@@ -478,10 +526,10 @@ pub(crate) fn quit_action(s: &Snapshot, app: &AppGroup, force: Force) -> Option<
 fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
     let s = &view.snap;
     let mut procs: Vec<&ProcInfo> = s.procs.iter().filter(|p| app.pids.contains(&p.pid)).collect();
-    if view.process_sort_cpu {
-        procs.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
-    } else {
-        procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    match effective_sort(view) {
+        ProcSort::Cpu => procs.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct)),
+        ProcSort::Memory => procs.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes)),
+        ProcSort::Gpu => procs.sort_by(|a, b| b.gpu_pct.total_cmp(&a.gpu_pct)),
     }
     // Left-running helpers first, so the row cutoff never hides them; in the
     // Left running view they are the only rows.
@@ -515,6 +563,9 @@ fn app_detail(view: &TideGaugeView, app: &AppGroup, remaining: &HashSet<i32>, da
             }
         }
     } else if let Some(main) = registered_main(s, app) {
+        if control::blocked(main).is_none() {
+            actions = actions.child(sample_button(view, main, &app.name, dark, this.clone()));
+        }
         if control::blocked(main).is_none() && !pending {
             for force in [Force::Quit, Force::ForceQuit] {
                 let action = Action::App { main: main.clone(), name: app.name.clone(), helpers: procs.len(), memory: app.mem_bytes, force };
@@ -768,6 +819,9 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
         }
         None => {}
     }
+    if selected && blocked.is_none() {
+        controls = controls.child(sample_button(view, p, &program_name(p), dark, this.clone()));
+    }
     let target = this.clone();
     if selected {
     controls = controls.child(button(
@@ -849,6 +903,7 @@ fn process_row(view: &TideGaugeView, p: &ProcInfo, bundle: Option<&str>, left_ru
                     .child(mono(short_path(p, bundle), dark)),
             )
             .child(div().w(px(COL_CPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(AppCpu::chosen(view.snap.chip.cores).format(p.cpu_pct)))
+            .when(view.snap.gpu.supported, |d| d.child(div().w(px(COL_GPU)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(gpu_cell(p.gpu_pct))))
             .child(div().w(px(COL_MEM)).flex_shrink_0().flex().justify_end().text_size(t::TEXT_BODY).child(fmt_bytes(p.mem_bytes as f64)))
             // Same trailing slot as the app row's chevron, so columns line up.
             .child(div().w(px(16.)).flex_shrink_0()),
@@ -996,6 +1051,62 @@ fn signing_details(
         )));
     }
     details
+}
+
+/// "Sample" for a process you own: it says "Sampling…" while it runs, and
+/// is left out while another process is being sampled.
+fn sample_button(view: &TideGaugeView, p: &ProcInfo, name: &str, dark: bool, this: Entity<TideGaugeView>) -> AnyElement {
+    let id = Identity::of(p);
+    match view.process_sampling {
+        Some(running) if running == id => div()
+            .id(SharedString::from(format!("sample-{}", p.pid)))
+            .role(Role::Status)
+            .text_size(t::TEXT_BODY)
+            .text_color(t::ink_dim(dark))
+            .px_2()
+            .child(l("Sampling…", "Tar stikkprøve…"))
+            .into_any_element(),
+        Some(_) => div().into_any_element(),
+        None => {
+            let (process, name) = (p.clone(), name.to_string());
+            button(format!("sample-{}", p.pid), l("Sample", "Ta stikkprøve"), false, dark, move |_, cx| {
+                start_sample(process.clone(), name.clone(), this.clone(), cx)
+            })
+            .into_any_element()
+        }
+    }
+}
+
+/// Samples on a background thread, then reports with a button to show the file.
+fn start_sample(process: ProcInfo, name: String, this: Entity<TideGaugeView>, cx: &mut App) {
+    if this.read(cx).process_sampling.is_some() {
+        return;
+    }
+    let id = Identity::of(&process);
+    this.update(cx, |v, cx| {
+        v.process_sampling = Some(id);
+        cx.notify();
+    });
+    cx.spawn(async move |cx| {
+        let result = smol::unblock(move || crate::process_sample::sample(&process, &name)).await;
+        this.update(cx, |v, cx| {
+            v.process_sampling = None;
+            v.toast = Some(match result {
+                Ok(path) => crate::ui::Toast::new(
+                    format!(
+                        "{} {}",
+                        l("Sample saved in Downloads:", "Stikkprøven er lagret i Nedlastinger:"),
+                        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    ),
+                    false,
+                )
+                .with_file(path),
+                Err(error) => crate::ui::Toast::new(error, true),
+            });
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 #[derive(Clone)]

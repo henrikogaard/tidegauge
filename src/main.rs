@@ -3,6 +3,7 @@
 mod about;
 mod agents;
 mod agents_panel;
+mod alert_shortcut;
 mod alerts;
 mod app;
 mod attention;
@@ -29,6 +30,7 @@ mod gpu_power;
 mod icons;
 mod instance;
 mod leaks;
+mod live_export;
 mod keepawake;
 mod locale;
 #[cfg(test)]
@@ -39,6 +41,7 @@ mod menu_style;
 mod metrics;
 mod move_to_applications;
 mod named_sensors;
+mod sensor_max;
 mod network;
 mod notifications;
 mod packages;
@@ -46,10 +49,12 @@ mod processes;
 mod process_activity;
 mod process_control;
 mod process_panel;
+mod process_sample;
 mod process_signing;
 mod projects;
 mod sensors;
 mod resource_activity;
+mod router_ping;
 mod startup;
 mod storage;
 mod tools_panel;
@@ -84,6 +89,7 @@ fn main() {
     sensors::start();
     disks::start();
     projects::start_nettop();
+    router_ping::start();
     app::start_sampler();
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());
