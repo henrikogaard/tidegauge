@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.8.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.8.0) — 2026-11-08
+
 ### Added
 
 - The GPU page shows a work split (how busy the renderer, which draws pixels,
