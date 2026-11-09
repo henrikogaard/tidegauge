@@ -1,0 +1,486 @@
+//! Leftovers beside worktrees: Xcode build data whose project is gone
+//! (FR-6), build output in idle projects (FR-7), and a fixed catalog of
+//! known places (FR-8). The catalog's path list follows disk-jockey
+//! (github.com/bmcreations/disk-jockey, MIT).
+
+use super::gate;
+use super::git;
+use super::{Candidate, Category, Method, Tier, ToolAction};
+use crate::locale::text as l;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// The caches Tidegauge already knew (`caches.rs`), as candidates.
+pub fn known_caches() -> (Vec<Candidate>, Vec<(String, String)>) {
+    use crate::caches::Kind;
+    let inv = crate::caches::scan();
+    let skipped = inv
+        .unmeasured
+        .iter()
+        .map(|k| (format!("{k:?}"), l("could not be measured", "kunne ikke måles").to_string()))
+        .collect();
+    let found = crate::caches::listed(&inv.caches)
+        .into_iter()
+        .filter(|c| c.kind != Kind::Trash)
+        .cloned()
+        .map(|cache| {
+            let (category, tier, title) = match cache.kind {
+                Kind::DerivedData => (Category::XcodeBuild, Tier::Rebuild, l("All Xcode build data", "All Xcode-byggdata")),
+                Kind::DeviceSupport => (Category::XcodeBuild, Tier::Rebuild, l("Xcode device support", "Xcode-enhetsstøtte")),
+                Kind::Simulators => (Category::Simulators, Tier::Safe, l("Unavailable simulators", "Utilgjengelige simulatorer")),
+                Kind::Homebrew => (Category::PackageCaches, Tier::Safe, l("Homebrew downloads", "Homebrew-nedlastinger")),
+                Kind::Npm => (Category::PackageCaches, Tier::Safe, l("npm cache", "npm-buffer")),
+                Kind::Pnpm => (Category::PackageCaches, Tier::Safe, l("pnpm store", "pnpm-lager")),
+                Kind::Yarn => (Category::PackageCaches, Tier::Safe, l("Yarn cache", "Yarn-buffer")),
+                Kind::Bun => (Category::PackageCaches, Tier::Safe, l("Bun cache", "Bun-buffer")),
+                Kind::Cargo => (Category::PackageCaches, Tier::Rebuild, l("Cargo downloads", "Cargo-nedlastinger")),
+                Kind::Trash => unreachable!(),
+            };
+            let id = match cache.paths.first() {
+                Some(p) => p.display().to_string(),
+                None => format!("tool:{:?}", cache.kind),
+            };
+            Candidate {
+                id,
+                category,
+                title: title.into(),
+                detail: match (cache.kind.method(), cache.items.is_empty()) {
+                    (crate::caches::Method::Tool, false) => cache.items.join(", "),
+                    (crate::caches::Method::Tool, true) => l("Cleared by its own tool; can't be undone", "Ryddes av sitt eget verktøy; kan ikke angres").into(),
+                    _ => l("Rebuilt when needed", "Bygges opp igjen ved behov").into(),
+                },
+                watch: Vec::new(),
+                paths: cache.paths.clone(),
+                bytes: Some(cache.bytes),
+                last_used: None,
+                tier,
+                method: Method::KnownCache(cache),
+                lock: None,
+                state: None,
+                fingerprint: Default::default(),
+                note: None,
+                facts: Vec::new(),
+            }
+        })
+        .collect();
+    (found, skipped)
+}
+
+/// `WorkspacePath` from a DerivedData folder's `info.plist`.
+fn workspace_path(folder: &Path) -> Option<PathBuf> {
+    let plist = folder.join("info.plist");
+    if !plist.is_file() {
+        return None;
+    }
+    let mut c = std::process::Command::new("/usr/bin/plutil");
+    c.args(["-extract", "WorkspacePath", "raw", "-o", "-"])
+        .arg(&plist)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let out = crate::packages::run_command(c, Duration::from_secs(2)).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then(|| PathBuf::from(s))
+}
+
+/// Whether a recorded project is provably gone: missing, and not on a
+/// volume that is just unmounted.
+pub fn project_gone(path: &Path) -> bool {
+    if path.exists() {
+        return false;
+    }
+    let mut parts = path.components();
+    if let (Some(_), Some(v), Some(name)) = (parts.next(), parts.next(), parts.next()) {
+        if v.as_os_str() == "Volumes" && !Path::new("/Volumes").join(name.as_os_str()).exists() {
+            return false;
+        }
+    }
+    true
+}
+
+/// DerivedData folders whose project no longer exists (FR-6).
+pub fn derived_orphans(home: &Path) -> Vec<Candidate> {
+    derived_orphans_in(&home.join("Library/Developer/Xcode/DerivedData"), home, workspace_path)
+}
+
+fn derived_orphans_in(dir: &Path, home: &Path, read: impl Fn(&Path) -> Option<PathBuf>) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for e in entries.flatten() {
+        let folder = e.path();
+        if !e.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let Some(project) = read(&folder) else { continue };
+        if !project_gone(&project) || gate::validate(&folder, home).is_err() {
+            continue;
+        }
+        let name = project.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut c = Candidate::folder(Category::XcodeBuild, folder.clone(), format!("{name} · {}", l("project gone", "prosjektet er borte")), Tier::Safe);
+        c.detail = crate::processes::path_summary(&project.display().to_string());
+        c.last_used = super::worktrees::last_used(&folder, None);
+        out.push(c);
+    }
+    out
+}
+
+/// Build files and the output folders that sit next to them.
+const BUILD: [(&str, &[&str]); 9] = [
+    ("package.json", &["node_modules", ".next", ".turbo", "dist"]),
+    ("Cargo.toml", &["target"]),
+    ("Package.swift", &[".build"]),
+    ("build.gradle", &["build", ".gradle"]),
+    ("build.gradle.kts", &["build", ".gradle"]),
+    ("settings.gradle", &["build", ".gradle"]),
+    ("settings.gradle.kts", &["build", ".gradle"]),
+    ("pyproject.toml", &[".venv", "__pycache__"]),
+    ("requirements.txt", &[".venv", "__pycache__"]),
+];
+
+const WALK_SKIP: [&str; 8] = ["node_modules", "target", ".build", "build", "dist", "Pods", "DerivedData", "vendor"];
+
+/// The nearest folder at or above `dir` that is a git work tree.
+fn repo_top(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().find(|a| a.join(".git").exists()).map(Path::to_path_buf)
+}
+
+/// Build output in projects up to four levels below each root (FR-7).
+/// Projects inside a worktree are left to the worktree.
+pub fn build_output(roots: &[PathBuf], worktrees: &[PathBuf], home: &Path, cancel: &AtomicBool) -> (Vec<Candidate>, Vec<(String, String)>) {
+    let mut out = Vec::new();
+    let mut skipped = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut commits: std::collections::HashMap<PathBuf, Option<i64>> = Default::default();
+    let mut stack: Vec<(PathBuf, u32)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if worktrees.iter().any(|w| dir.starts_with(w)) || !seen.insert(dir.clone()) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let names: Vec<(String, bool)> = entries
+            .flatten()
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().is_ok_and(|t| t.is_dir())))
+            .collect();
+        let outputs: Vec<&str> = BUILD
+            .iter()
+            .filter(|(file, _)| names.iter().any(|(n, d)| !d && n == file))
+            .flat_map(|(_, outs)| outs.iter().copied())
+            .collect();
+        for o in outputs {
+            let folder = dir.join(o);
+            if !names.iter().any(|(n, d)| *d && n == o) || out.iter().any(|c: &Candidate| c.paths[0] == folder) {
+                continue;
+            }
+            match judge_output(&dir, &folder, home, &mut commits) {
+                Ok(Some(c)) => out.push(c),
+                Ok(None) => {}
+                Err(why) => skipped.push((folder.display().to_string(), why)),
+            }
+        }
+        if depth >= 4 {
+            continue;
+        }
+        for (name, is_dir) in names {
+            if is_dir && !name.starts_with('.') && !WALK_SKIP.contains(&name.as_str()) {
+                stack.push((dir.join(name), depth + 1));
+            }
+        }
+    }
+    (out, skipped)
+}
+
+fn judge_output(
+    project: &Path,
+    folder: &Path,
+    home: &Path,
+    commits: &mut std::collections::HashMap<PathBuf, Option<i64>>,
+) -> Result<Option<Candidate>, String> {
+    if gate::validate(folder, home).is_err() {
+        return Ok(None);
+    }
+    let last = match repo_top(project) {
+        Some(top) => {
+            let rel = folder.strip_prefix(&top).map_err(|_| String::new())?.to_string_lossy().into_owned();
+            match git::is_ignored(&top, &rel) {
+                Some(true) => {}
+                Some(false) => return Ok(None),
+                None => return Err(l("git did not answer", "git svarte ikke").into()),
+            }
+            if git::tracks_any(&top, &rel) != Some(false) {
+                return Ok(None);
+            }
+            let commit = *commits.entry(top.clone()).or_insert_with(|| git::last_commit(&top));
+            idle_since(project, folder, commit)
+        }
+        None => {
+            // Without git, nothing says `dist` or `build` is not source.
+            let name = folder.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(name, "dist" | "build") {
+                return Ok(None);
+            }
+            idle_since(project, folder, None)
+        }
+    };
+    let project_name = project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let output_name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut c = Candidate::folder(Category::BuildOutput, folder.to_path_buf(), format!("{project_name} · {output_name}"), Tier::Rebuild);
+    c.watch = vec![project.to_path_buf()];
+    c.last_used = last;
+    c.detail = crate::processes::path_summary(&project.display().to_string());
+    Ok(Some(c))
+}
+
+/// Last activity in a project: its last commit, or the newest top-level
+/// change that is not build output.
+fn idle_since(project: &Path, folder: &Path, commit: Option<i64>) -> Option<i64> {
+    let mtime = |p: &Path| {
+        std::fs::symlink_metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+    };
+    let mut newest = commit;
+    if let Ok(entries) = std::fs::read_dir(project) {
+        for e in entries.flatten().take(500) {
+            let p = e.path();
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if p == folder || super::worktrees::DISPOSABLE.contains(&name.as_ref()) || name == ".git" {
+                continue;
+            }
+            newest = newest.max(mtime(&p));
+        }
+    }
+    newest
+}
+
+fn days_old(p: &Path, days: i64) -> bool {
+    std::fs::symlink_metadata(p)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|e| e.as_secs() as i64 >= days * 86_400)
+}
+
+/// One folder from the catalog, if it exists and passes the gate.
+fn place(home: &Path, rel: &str, category: Category, tier: Tier, title: &str) -> Option<Candidate> {
+    let path = home.join(rel);
+    let path = std::fs::canonicalize(&path).ok().filter(|p| *p == path)?;
+    if !path.is_dir() || gate::validate(&path, home).is_err() {
+        return None;
+    }
+    let mut c = Candidate::folder(category, path, title.to_string(), tier);
+    if tier == Tier::Keep {
+        c.method = Method::None;
+    }
+    Some(c)
+}
+
+/// Files directly in `dir` older than `days` whose name passes `keep`.
+fn old_files(dir: &Path, days: i64, keep: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|r| {
+            r.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .filter(|e| keep(&e.file_name().to_string_lossy()))
+                .map(|e| e.path())
+                .filter(|p| days_old(p, days))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn files_candidate(category: Category, id: String, title: &str, paths: Vec<PathBuf>, tier: Tier, home: &Path) -> Option<Candidate> {
+    let paths: Vec<PathBuf> = paths.into_iter().filter(|p| gate::validate(p, home).is_ok()).collect();
+    if paths.is_empty() {
+        return None;
+    }
+    let n = paths.len() as u64;
+    Some(Candidate {
+        id,
+        category,
+        title: title.to_string(),
+        detail: crate::locale::count(n, "file older than 30 days", "files older than 30 days", "fil eldre enn 30 dager", "filer eldre enn 30 dager"),
+        watch: Vec::new(),
+        paths,
+        bytes: None,
+        last_used: None,
+        tier,
+        method: Method::Trash,
+        lock: None,
+        state: None,
+        fingerprint: Default::default(),
+        note: None,
+        facts: Vec::new(),
+    })
+}
+
+/// The fixed catalog (FR-8). Downloads only when switched on, which avoids
+/// macOS's privacy prompt for that folder.
+pub fn catalog(home: &Path, include_downloads: bool) -> Vec<Candidate> {
+    use Category as C;
+    let mut out: Vec<Candidate> = [
+        (".gradle/caches", C::PackageCaches, Tier::Rebuild, l("Gradle caches", "Gradle-bufre")),
+        (".gradle/wrapper/dists", C::PackageCaches, Tier::Rebuild, l("Gradle distributions", "Gradle-distribusjoner")),
+        ("Library/Caches/CocoaPods", C::PackageCaches, Tier::Safe, l("CocoaPods cache", "CocoaPods-buffer")),
+        ("Library/Caches/pip", C::PackageCaches, Tier::Safe, l("pip cache", "pip-buffer")),
+        ("Library/Caches/pypoetry", C::PackageCaches, Tier::Safe, l("Poetry cache", "Poetry-buffer")),
+        (".cache/uv", C::PackageCaches, Tier::Safe, l("uv cache", "uv-buffer")),
+        ("Library/Caches/org.swift.swiftpm", C::PackageCaches, Tier::Safe, l("SwiftPM cache", "SwiftPM-buffer")),
+        ("Library/Caches/ms-playwright", C::PackageCaches, Tier::Rebuild, l("Playwright browsers", "Playwright-nettlesere")),
+        ("Library/Logs/CoreSimulator", C::Logs, Tier::Safe, l("Simulator logs", "Simulatorlogger")),
+        ("Library/Developer/Xcode/Archives", C::Archives, Tier::Keep, l("Xcode archives", "Xcode-arkiver")),
+        ("Library/Application Support/MobileSync/Backup", C::Archives, Tier::Keep, l("iPhone and iPad backups", "Sikkerhetskopier av iPhone og iPad")),
+        (".claude/projects", C::AgentHistory, Tier::Keep, l("Claude Code transcripts", "Claude Code-samtaler")),
+        (".codex/sessions", C::AgentHistory, Tier::Keep, l("Codex sessions", "Codex-økter")),
+    ]
+    .into_iter()
+    .filter_map(|(rel, cat, tier, title)| place(home, rel, cat, tier, title))
+    .collect();
+    // Go's module cache is read-only on disk, so Go clears it itself.
+    if let Some(mut go) = place(home, "go/pkg/mod", C::PackageCaches, Tier::Rebuild, l("Go modules", "Go-moduler")) {
+        go.method = Method::Tool(ToolAction::GoModCache);
+        out.push(go);
+    }
+    if let Some(c) = files_candidate(
+        C::Logs,
+        "logs:DiagnosticReports".into(),
+        l("Crash reports", "Krasjrapporter"),
+        old_files(&home.join("Library/Logs/DiagnosticReports"), 30, |_| true),
+        Tier::Safe,
+        home,
+    ) {
+        out.push(c);
+    }
+    out.extend(scratch(home));
+    if include_downloads {
+        if let Some(c) = files_candidate(
+            C::Downloads,
+            "downloads:installers".into(),
+            l("Old installers in Downloads", "Gamle installasjonsfiler i Nedlastinger"),
+            old_files(&home.join("Downloads"), 30, |n| {
+                let n = n.to_lowercase();
+                n.ends_with(".dmg") || n.ends_with(".pkg")
+            }),
+            Tier::Rebuild,
+            home,
+        ) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Agent scratch folders in `/private/tmp/claude-<uid>` untouched for three days.
+fn scratch(home: &Path) -> Vec<Candidate> {
+    let root = gate::scratch_root();
+    let Ok(entries) = std::fs::read_dir(&root) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| days_old(p, 3) && super::worktrees::last_used(p, None).is_none_or(|t| super::now() - t >= 3 * 86_400))
+        .filter(|p| gate::validate(p, home).is_ok())
+        .map(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // Rebuild: Balanced takes it only after 30 idle days, since a
+            // live session may work deeper inside than the top level shows.
+            let mut c = Candidate::folder(Category::AgentScratch, p.clone(), name, Tier::Rebuild);
+            c.last_used = super::worktrees::last_used(&p, None);
+            c
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    #[test]
+    fn derived_orphan_when_workspace_missing() {
+        let home = temp("derived");
+        let dd = home.join("DD");
+        for n in ["Gone-abc", "Here-def", "NoPlist-ghi", "Vol-jkl"] {
+            std::fs::create_dir_all(dd.join(n)).unwrap();
+        }
+        let here = home.join("Here.xcodeproj");
+        std::fs::create_dir_all(&here).unwrap();
+        let read = |f: &Path| match f.file_name()?.to_str()? {
+            "Gone-abc" => Some(home.join("Gone.xcodeproj")),
+            "Here-def" => Some(here.clone()),
+            "Vol-jkl" => Some(PathBuf::from("/Volumes/NotMountedTidegaugeTest/App.xcodeproj")),
+            _ => None,
+        };
+        let found = derived_orphans_in(&dd, &home, read);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].paths[0].ends_with("Gone-abc"));
+        assert_eq!(found[0].tier, Tier::Safe);
+    }
+
+    #[test]
+    fn build_output_rules() {
+        let home = temp("build");
+        // A repo whose node_modules is ignored and one whose dist is tracked.
+        let r = repo(&home, "web");
+        std::fs::write(r.join("package.json"), "{}").unwrap();
+        std::fs::create_dir_all(r.join("node_modules/x")).unwrap();
+        std::fs::create_dir_all(r.join("dist")).unwrap();
+        std::fs::write(r.join("dist/app.js"), "x").unwrap();
+        git(&r, &["add", "package.json", "dist"]);
+        git(&r, &["commit", "-qm", "dist is tracked"]);
+        // A target folder with no Cargo.toml next to it is not output.
+        std::fs::create_dir_all(r.join("lib/target")).unwrap();
+        let (found, _) = build_output(&[home.clone()], &[], &home, &AtomicBool::new(false));
+        let names: Vec<String> = found.iter().map(|c| c.title.clone()).collect();
+        assert_eq!(names, vec!["web · node_modules"], "{names:?}");
+        assert_eq!(found[0].tier, Tier::Rebuild);
+        assert_eq!(found[0].watch, vec![r.clone()]);
+        // Idle comes from the last commit (ten days ago in the fixture),
+        // not from node_modules.
+        let idle = super::super::now() - found[0].last_used.unwrap();
+        assert!(idle < 86_400 || idle >= 9 * 86_400, "idle {idle}");
+    }
+
+    #[test]
+    fn build_output_skips_worktrees() {
+        let home = temp("buildwt");
+        let r = repo(&home, "app");
+        let w = worktree(&r, "feat");
+        std::fs::write(w.join("package.json"), "{}").unwrap();
+        std::fs::create_dir_all(w.join("node_modules")).unwrap();
+        let (found, _) = build_output(&[home.clone()], &[w], &home, &AtomicBool::new(false));
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn catalog_places_and_tiers() {
+        let home = temp("catalog");
+        for rel in ["Library/Caches/pip", ".gradle/caches", "Library/Developer/Xcode/Archives", ".claude/projects", "go/pkg/mod", "Downloads"] {
+            std::fs::create_dir_all(home.join(rel)).unwrap();
+        }
+        let c = catalog(&home, false);
+        let find = |en: &'static str, nb: &'static str| {
+            let t = l(en, nb);
+            c.iter().find(|c| c.title == t).unwrap_or_else(|| panic!("{t}"))
+        };
+        assert_eq!(find("pip cache", "pip-buffer").tier, Tier::Safe);
+        assert_eq!(find("Gradle caches", "Gradle-bufre").tier, Tier::Rebuild);
+        assert_eq!(find("Xcode archives", "Xcode-arkiver").tier, Tier::Keep);
+        assert!(matches!(find("Xcode archives", "Xcode-arkiver").method, Method::None));
+        assert_eq!(find("Claude Code transcripts", "Claude Code-samtaler").tier, Tier::Keep);
+        assert!(matches!(find("Go modules", "Go-moduler").method, Method::Tool(ToolAction::GoModCache)));
+        assert!(!c.iter().any(|c| c.category == Category::Downloads), "downloads off by default");
+    }
+
+    #[test]
+    fn project_gone_respects_unmounted_volumes() {
+        assert!(project_gone(Path::new("/Users/nobody-tidegauge/Gone.xcodeproj")));
+        assert!(!project_gone(Path::new("/Volumes/NotMountedTidegaugeTest/A.xcodeproj")));
+        assert!(!project_gone(Path::new("/")));
+    }
+}

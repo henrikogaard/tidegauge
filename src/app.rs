@@ -183,6 +183,11 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, cx: &mut gpui_kit:
         });
         toggle_panel(cx);
     }
+    if crate::statusbar::SHOW_CLEANUP.swap(false, Ordering::SeqCst) {
+        let view = dashboard(cx, true);
+        crate::tools_panel::open_page(&view, crate::tools_panel::Page::Cleanup, cx);
+        toggle_panel(cx);
+    }
     if SHOW_ABOUT.swap(false, Ordering::SeqCst) {
         dashboard(cx, true).update(cx, |view, cx| {
             view.show_settings = true;
@@ -199,7 +204,7 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, cx: &mut gpui_kit:
     let snap = crate::engine::latest();
     bar.sync(&settings, &snap);
     for a in drain_alerts(&settings) {
-        crate::notifications::send(&a.message);
+        crate::notifications::send(&a.message, &a.metric);
         crate::alert_shortcut::run_for_alert(settings.alert_shortcut.as_deref(), &a.metric, &a.message);
     }
 }

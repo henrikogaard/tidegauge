@@ -1052,7 +1052,7 @@ impl Destination {
             "agents" => Some(Self::Agents),
             "settings" => Some(Self::Settings),
             _ => match key.strip_prefix("tool-") {
-                Some(page) => [Page::Startup, Page::Activity, Page::Baselines, Page::Storage, Page::Packages]
+                Some(page) => [Page::Cleanup, Page::Startup, Page::Activity, Page::Baselines, Page::Storage, Page::Packages]
                     .into_iter()
                     .find(|p| p.key() == page)
                     .map(Self::Tool),
@@ -1322,7 +1322,7 @@ fn sidebar_groups(visible: &[Tab], battery: bool) -> Vec<SidebarGroup> {
         SidebarGroup { label: Some(l("Over time", "Over tid")), pages: over_time },
         SidebarGroup {
             label: Some(l("Maintenance", "Vedlikehold")),
-            pages: [Page::Startup, Page::Storage, Page::Packages].into_iter().map(Destination::Tool).collect(),
+            pages: [Page::Cleanup, Page::Startup, Page::Storage, Page::Packages].into_iter().map(Destination::Tool).collect(),
         },
     ]
 }
@@ -4879,13 +4879,14 @@ mod tests {
             Destination::Apps,
             Destination::Agents,
             Destination::Tool(Page::Baselines),
+            Destination::Tool(Page::Cleanup),
             Destination::Tool(Page::Startup),
             Destination::Tool(Page::Storage),
             Destination::Tool(Page::Packages),
         ];
         assert!(few == expected, "History is hidden, so Baselines follows Agents");
         assert!(shortcut_destination(&few, 3) == Some(Destination::Tab(Tab::Sound)));
-        assert!(shortcut_destination(&few, 9) == Some(Destination::Tool(Page::Packages)));
+        assert!(shortcut_destination(&few, 9) == Some(Destination::Tool(Page::Storage)));
         let mut with_history = visible.to_vec();
         with_history.push(Tab::History);
         let listed = order(&with_history, true);

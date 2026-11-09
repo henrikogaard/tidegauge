@@ -11,13 +11,10 @@ use std::collections::HashSet;
 use std::os::macos::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Smallest cache worth listing, in the 1024-based units the app shows.
 pub const MIN_BYTES: u64 = 100 * 1024 * 1024;
-
-/// How long a scan stays current when the page is opened again.
-const FRESH: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -92,30 +89,6 @@ pub struct Inventory {
     /// folder could not be measured). A kind that is neither here nor in
     /// `caches` was confirmed gone.
     pub unmeasured: Vec<Kind>,
-    pub scanned: Instant,
-}
-
-impl Inventory {
-    pub fn is_fresh(&self) -> bool {
-        self.scanned.elapsed() < FRESH
-    }
-    pub fn bytes_of(&self, kind: Kind) -> u64 {
-        self.caches
-            .iter()
-            .find(|c| c.kind == kind)
-            .map_or(0, |c| c.bytes)
-    }
-    /// What is left of a cache: its size, 0 when it is confirmed gone, and
-    /// none when this scan could not measure it.
-    pub fn remaining(&self, kind: Kind) -> Option<u64> {
-        (!self.unmeasured.contains(&kind)).then(|| self.bytes_of(kind))
-    }
-}
-
-/// What an action freed, or none when what is left could not be measured, so
-/// that a failed rescan is never reported as everything freed.
-pub fn freed_result(before: u64, after: Option<u64>) -> Option<u64> {
-    after.map(|after| freed(before, after))
 }
 
 /// The folders that could be measured, with their total. A folder that could
@@ -146,11 +119,6 @@ pub fn listed(caches: &[Cache]) -> Vec<&Cache> {
             .then_with(|| a.paths.cmp(&b.paths))
     });
     shown
-}
-
-/// What an action freed: what the cache measured before, less what is left.
-pub fn freed(before: u64, after: u64) -> u64 {
-    before.saturating_sub(after)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -256,6 +224,13 @@ fn home() -> Option<PathBuf> {
 /// volume, or entering cloud placeholders; a hard link counts once. None
 /// when the folder cannot be read.
 pub fn folder_bytes(root: &Path) -> Option<u64> {
+    folder_bytes_until(root, None)
+}
+
+/// Like [`folder_bytes`], but gives up (None) once `cancel` is set; checked
+/// every 1,000 entries.
+pub fn folder_bytes_until(root: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Option<u64> {
+    let mut entries_seen = 0u32;
     let top = std::fs::symlink_metadata(root).ok()?;
     if !top.is_dir() {
         return None;
@@ -270,6 +245,12 @@ pub fn folder_bytes(root: &Path) -> Option<u64> {
             continue;
         };
         for entry in entries.flatten() {
+            entries_seen = entries_seen.wrapping_add(1);
+            if entries_seen % 1000 == 0
+                && cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                return None;
+            }
             // DirEntry::metadata does not follow links.
             let Ok(meta) = entry.metadata() else {
                 continue;
@@ -433,7 +414,6 @@ pub fn scan() -> Inventory {
         return Inventory {
             caches,
             unmeasured: vec![Kind::Homebrew, Kind::Simulators],
-            scanned: Instant::now(),
         };
     };
     for (kind, rel) in FIXED {
@@ -472,7 +452,6 @@ pub fn scan() -> Inventory {
     Inventory {
         caches,
         unmeasured,
-        scanned: Instant::now(),
     }
 }
 
@@ -531,15 +510,6 @@ pub fn clear(cache: &Cache) -> Result<(), String> {
             run_tool(command)
         }
         Method::Open => Err(Refusal::NotAllowlisted.message()),
-    }
-}
-
-/// Show the Trash in Finder. It is never emptied from here.
-pub fn open_trash() {
-    if let Some(home) = home() {
-        let _ = Command::new("/usr/bin/open")
-            .arg(home.join(".Trash"))
-            .spawn();
     }
 }
 
@@ -699,57 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn freed_is_what_is_gone_and_never_negative() {
-        assert_eq!(freed(3_000, 1_000), 2_000);
-        assert_eq!(freed(3_000, 0), 3_000);
-        assert_eq!(freed(1_000, 1_000), 0);
-        assert_eq!(freed(1_000, 5_000), 0, "a cache that grew freed nothing");
-        let inventory = Inventory {
-            caches: vec![cache(Kind::Bun, 7)],
-            unmeasured: vec![Kind::Homebrew],
-            scanned: Instant::now(),
-        };
-        assert_eq!(inventory.bytes_of(Kind::Bun), 7);
-        assert_eq!(inventory.bytes_of(Kind::Npm), 0);
-    }
-
-    #[test]
-    fn a_cache_that_could_not_be_measured_is_not_reported_as_freed() {
-        let inventory = Inventory {
-            caches: vec![cache(Kind::Bun, 7)],
-            unmeasured: vec![Kind::Homebrew, Kind::Bun],
-            scanned: Instant::now(),
-        };
-        // Confirmed gone: measured as 0, so everything was freed.
-        assert_eq!(inventory.remaining(Kind::Npm), Some(0));
-        assert_eq!(
-            freed_result(3_000, inventory.remaining(Kind::Npm)),
-            Some(3_000)
-        );
-        // Still there and measured: only the difference was freed.
-        let measured = Inventory {
-            unmeasured: Vec::new(),
-            ..inventory.clone()
-        };
-        assert_eq!(measured.remaining(Kind::Bun), Some(7));
-        assert_eq!(
-            freed_result(3_000, measured.remaining(Kind::Bun)),
-            Some(2_993)
-        );
-        // The rescan could not say: no number at all, not "everything".
-        assert_eq!(inventory.remaining(Kind::Homebrew), None);
-        assert_eq!(
-            freed_result(3_000, inventory.remaining(Kind::Homebrew)),
-            None
-        );
-        assert_eq!(
-            inventory.remaining(Kind::Bun),
-            None,
-            "partly measured is unknown"
-        );
-    }
-
-    #[test]
     fn only_measured_folders_are_kept_so_the_size_shown_is_the_size_moved() {
         let sizes = |path: &Path| match path.to_str() {
             Some("/a") => Some(10),
@@ -846,7 +765,6 @@ mod tests {
                 .map(|c| c.kind)
                 .collect::<Vec<_>>()
         );
-        assert!(inventory.is_fresh());
     }
 
     #[test]

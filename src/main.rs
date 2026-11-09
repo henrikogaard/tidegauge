@@ -16,6 +16,8 @@ mod baselines;
 mod bluetooth;
 mod bounded;
 mod caches;
+mod cleanup;
+mod cleanup_panel;
 mod clocks;
 mod controls;
 mod demand;

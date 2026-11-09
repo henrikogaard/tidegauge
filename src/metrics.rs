@@ -71,6 +71,11 @@ pub fn sysctl_str(name: &str) -> Option<String> {
     }
 }
 
+/// Swap in use now, in bytes.
+pub fn swap_used() -> Option<u64> {
+    swap_usage().map(|s| s.xsu_used)
+}
+
 fn swap_usage() -> Option<xsw_usage> {
     unsafe {
         let mut x: xsw_usage = zeroed();

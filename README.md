@@ -118,6 +118,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | Desktop widgets | Small (one reading, chosen when you edit the widget), medium (four readings with sparklines) and large (all six) WidgetKit widgets for the desktop and Notification Center; macOS 14 or later, packaged builds only |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
 | Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
+| Tools · Cleanup | Agent worktrees (Removable only when merged, clean and unused; removed with git, branch kept), Xcode build data whose project is gone, idle build output, known caches, logs and agent scratch, with Safe / Balanced / Deep levels, one confirmation, Trash for folders, and optional read-only review by your own agent CLI |
 | Tools · Startup | Bounded legacy registration inventory, explicit override evidence, Tidegauge login preference and System Settings handoff |
 | Last minute | Apps & processes view of recent per-process CPU, disk I/O and wakeups with observed coverage, not an energy score |
 | Tools · Compare | Frozen 5-, 15- or 30-minute system summaries and equal-length, non-overlapping comparisons |
@@ -257,6 +258,11 @@ The sampler runs on a background thread. It publishes each completed `Snapshot` 
 - [0.1.0 release notes](docs/RELEASE-0.1.0.md): included capabilities and remaining acceptance checks.
 - [Recovery manifest](RECOVERY-MANIFEST.md): provenance of the recovered files.
 - [Historical findings](tidegauge-findings.md) and [historical test plan](tidegauge-test-plan.md): evidence from an earlier environment, not validation of the current checkout.
+
+## Acknowledgements
+
+Cleanup's ideas and its list of cache folders draw on
+[disk-jockey](https://github.com/bmcreations/disk-jockey) (MIT).
 
 ## License
 

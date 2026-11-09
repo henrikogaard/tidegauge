@@ -6,6 +6,36 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- A Cleanup page, first under Maintenance, finds what agent work and
+  developer tools leave behind and frees it after one confirmation:
+  - Agent worktrees in `<repo>/.claude/worktrees`, `.worktrees` folders
+    and `~/.codex/worktrees`, each marked Removable, Review, Active,
+    In use or Orphan. Only a worktree that is merged, has no uncommitted,
+    unpushed or local-only files, and that no app is using can be removed,
+    and it is removed with `git worktree remove` (never forced); its branch
+    stays.
+  - Xcode build data whose project is gone, build output (`node_modules`,
+    `target`, `.build` and others) in projects idle for 30 days, stale git
+    worktree records, more package caches (Gradle, CocoaPods, pip, uv,
+    SwiftPM, Go, Playwright), logs, crash reports and agent scratch
+    folders. Old installers in Downloads are listed only when switched on.
+  - Safe, Balanced and Deep levels pick what goes; you can tick and untick
+    rows. Backups, archives, agent history and unfinished worktrees are
+    shown but can't be ticked. Anything an app is using waits, with the
+    reason shown.
+  - "Is it really files?" shows swap, local snapshots (including a staged
+    macOS update) and booted simulators, which you can shut down.
+  - Settings → General → Cleanup can ask `gh` about squash merges and can
+    turn on agent review: your own Claude Code or Codex reads the ticked
+    items, read-only, and says keep or clean. Both are off by default.
+- Clicking the low-disk alert opens Cleanup.
+
+### Changed
+
+- Known caches moved from Folder sizes to Cleanup.
+
 ## [0.8.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.8.0) — 2026-11-08
 
 ### Added

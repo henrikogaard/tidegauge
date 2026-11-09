@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static TOGGLE_PANEL: AtomicBool = AtomicBool::new(false);
 pub static SHOW_SETTINGS: AtomicBool = AtomicBool::new(false);
+/// Open the window on Cleanup (a click on the low-disk alert).
+pub static SHOW_CLEANUP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_ABOUT: AtomicBool = AtomicBool::new(false);
 pub static QUIT_APP: AtomicBool = AtomicBool::new(false);
 pub static SHOW_CONTEXT_MENU: AtomicBool = AtomicBool::new(false);

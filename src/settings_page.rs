@@ -1259,6 +1259,69 @@ fn sidebar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
     group(l("Sidebar order", "Rekkefølge i sidefeltet"), rows, dark)
 }
 
+/// Settings → General → Cleanup: gh, Downloads, and agent review.
+fn cleanup(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::cleanup::agent::AgentKind;
+    let mut rows = vec![
+        row(
+            l("Ask GitHub about squash merges", "Spør GitHub om squash-flettinger"),
+            Some(l("Uses your gh login to tell merged branches from unfinished work. Off: only local git is asked.", "Bruker gh-innloggingen din til å skille flettede grener fra uferdig arbeid. Av: bare lokal git spørres.").into()),
+            preference_switch("cleanup-gh".into(), l("Ask GitHub about squash merges", "Spør GitHub om squash-flettinger").into(), settings.cleanup_use_gh, dark, this.clone(), |s, on| s.cleanup_use_gh = on),
+            true,
+            dark,
+        ),
+        row(
+            l("Include old installers in Downloads", "Ta med gamle installasjonsfiler i Nedlastinger"),
+            Some(l("Disk images, packages and zip files older than 30 days. macOS may ask for access to Downloads.", "Diskbilder, pakker og zip-filer eldre enn 30 dager. macOS kan be om tilgang til Nedlastinger.").into()),
+            preference_switch("cleanup-downloads".into(), l("Include old installers in Downloads", "Ta med gamle installasjonsfiler i Nedlastinger").into(), settings.cleanup_include_downloads, dark, this.clone(), |s, on| s.cleanup_include_downloads = on),
+            false,
+            dark,
+        ),
+    ];
+    let current = settings.cleanup_agent.as_deref().and_then(AgentKind::from_key);
+    let mut choices = crate::controls::segment_group("cleanup-agent", l("Agent review", "Agentgjennomgang"), dark).child(choice(
+        "cleanup-agent-off".into(),
+        l("Off", "Av"),
+        l("Agent review off", "Agentgjennomgang av").into(),
+        current.is_none(),
+        dark,
+        this.clone(),
+        |s| s.cleanup_agent = None,
+    ));
+    for kind in AgentKind::ALL {
+        let installed = kind.find().is_some();
+        if !installed && current != Some(kind) {
+            continue;
+        }
+        choices = choices.child(choice(
+            format!("cleanup-agent-{}", kind.key()),
+            kind.label(),
+            kind.label().into(),
+            current == Some(kind),
+            dark,
+            this.clone(),
+            move |s| {
+                s.cleanup_agent = Some(kind.key().to_string());
+                s.cleanup_agent_consent = None;
+            },
+        ));
+    }
+    let detail = match current {
+        Some(kind) => match kind.find() {
+            Some(path) => format!(
+                "{} {} · {}",
+                l("Runs read-only:", "Kjører skrivebeskyttet:"),
+                crate::processes::path_summary(&path.display().to_string()),
+                l("the listed paths go to its provider", "de oppførte stiene sendes til leverandøren")
+            ),
+            None => format!("{} {}", kind.label(), l("is not installed.", "er ikke installert.")),
+        },
+        None => l("Your own coding agent checks the ticked items and says keep or clean. It can't remove anything.", "Din egen kodeagent sjekker de avkryssede elementene og sier behold eller rydd. Den kan ikke fjerne noe.").into(),
+    };
+    rows.push(row(l("Ask an agent before cleaning", "Spør en agent før opprydding"), Some(detail), choices, false, dark));
+    group(l("Cleanup", "Opprydding"), rows, dark)
+}
+
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let settings = Settings::load();
     let (general_rows, look_rows) = general(view, &settings, dark, this.clone());
@@ -1282,6 +1345,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     .items_start()
                     .child(overview(&settings, dark, this.clone()))
                     .child(sidebar(&settings, dark, this.clone())),
+                cleanup(&settings, dark, this.clone()),
             ],
         ))
         .child(section(ALERTS, view, vec![notifications(dark), alert_shortcut(&settings, dark, this.clone()), alerts(view, &settings, dark, this.clone())]))
