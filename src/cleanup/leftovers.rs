@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// The caches Tidegauge already knew (`caches.rs`), as candidates.
-pub fn known_caches() -> (Vec<Candidate>, Vec<(String, String)>) {
+pub fn known_caches(cancel: &AtomicBool) -> (Vec<Candidate>, Vec<(String, String)>) {
     use crate::caches::Kind;
-    let inv = crate::caches::scan();
+    let inv = crate::caches::scan_until(Some(cancel));
     let skipped = inv
         .unmeasured
         .iter()
@@ -41,6 +41,8 @@ pub fn known_caches() -> (Vec<Candidate>, Vec<(String, String)>) {
                 Some(p) => p.display().to_string(),
                 None => format!("tool:{:?}", cache.kind),
             };
+            // When it was last used, so Balanced leaves a cache in use alone.
+            let last_used = cache.paths.iter().filter_map(|p| super::worktrees::last_used(p, None)).max();
             Candidate {
                 id,
                 category,
@@ -53,7 +55,7 @@ pub fn known_caches() -> (Vec<Candidate>, Vec<(String, String)>) {
                 watch: Vec::new(),
                 paths: cache.paths.clone(),
                 bytes: Some(cache.bytes),
-                last_used: None,
+                last_used,
                 tier,
                 method: Method::KnownCache(cache),
                 lock: None,
@@ -235,6 +237,20 @@ fn judge_output(
     c.last_used = last;
     c.detail = crate::processes::path_summary(&project.display().to_string());
     Ok(Some(c))
+}
+
+/// Whether `folder` next to `project` is still build output: ignored and
+/// untracked when inside a repo; for a folder outside any repo, not `dist`
+/// or `build`. Checked again right before removal (NFR-2).
+pub fn still_output(project: &Path, folder: &Path) -> bool {
+    match repo_top(project) {
+        Some(top) => {
+            let Ok(rel) = folder.strip_prefix(&top) else { return false };
+            let rel = rel.to_string_lossy();
+            git::is_ignored(&top, &rel) == Some(true) && git::tracks_any(&top, &rel) == Some(false)
+        }
+        None => !matches!(folder.file_name().and_then(|n| n.to_str()), Some("dist" | "build")),
+    }
 }
 
 /// Last activity in a project: its last commit, or the newest top-level
@@ -438,6 +454,11 @@ mod tests {
         let (found, _) = build_output(&[home.clone()], &[], &home, &AtomicBool::new(false));
         let names: Vec<String> = found.iter().map(|c| c.title.clone()).collect();
         assert_eq!(names, vec!["web · node_modules"], "{names:?}");
+        assert!(still_output(&r, &r.join("node_modules")));
+        // Tracked after the scan: no longer output, so the recheck refuses.
+        std::fs::write(r.join("node_modules/keep.js"), "x").unwrap();
+        git(&r, &["add", "-f", "node_modules/keep.js"]);
+        assert!(!still_output(&r, &r.join("node_modules")));
         assert_eq!(found[0].tier, Tier::Rebuild);
         assert_eq!(found[0].watch, vec![r.clone()]);
         // Idle comes from the last commit (ten days ago in the fixture),

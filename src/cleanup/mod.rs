@@ -395,7 +395,7 @@ fn run_scan(cfg: ScanConfig, cancel: Arc<AtomicBool>, state: Arc<Mutex<ScanState
             .filter(|c| c.category == Category::AgentWorktrees)
             .flat_map(|c| c.paths.clone())
             .collect();
-        let (caches, unmeasured) = leftovers::known_caches();
+        let (caches, unmeasured) = leftovers::known_caches(&cancel);
         push(&state, caches);
         for (place, why) in unmeasured {
             skip(&state, Path::new(&place), &why);

@@ -982,7 +982,8 @@ open.
 | FR-16 | `notifications::identifier_carries_metric` | pass; click routing needs a packaged build (not run) | this change |
 | FR-18 | `agent::*` (4 tests), `cleanup_panel::agent_keep_unticks_clean_does_not_tick` | pass; one real run per agent not done | this change |
 | NFR-1 | Timed run on Henrik's Mac | not run | — |
-| NFR-2 | `recheck_refuses_after_new_commit_or_file`, `recheck_refuses_after_folder_swap_and_new_process` | pass | this change |
+| NFR-2 | `recheck_refuses_after_new_commit_or_file`, `recheck_refuses_after_folder_swap_and_new_process`, `leftovers::build_output_rules` (tracked after scan) | pass | this change |
+| FR-10, FR-12 | `cleanup_panel::nested_items_count_once` | pass | this change |
 | NFR-3 | Every call goes through `packages::run_command` or `bounded::Probe`; the shared timeout tests in those modules | pass (existing tests) | this change |
 | NFR-4 | Code path: `gh` and agent run only behind settings that default off | reviewed, no test | this change |
 | NFR-5 | Full suite with `TIDEGAUGE_TEST_LANG=en` and `=nb`, including `locale_guard` | 511 passed, 0 failed each | this change |
@@ -1014,6 +1015,9 @@ open.
 | `dist` and `build` outside any repo were build output | Skipped: without git nothing proves they aren't source |
 | `go clean -modcache` used Go's own setting | `GOMODCACHE` is pinned to the `~/go/pkg/mod` the row shows |
 | A package cache waited for any package tool | Waits only for its own tool (`gate::cache_tools`), found in the rendered check |
+| Recheck of build output compared only path and inode | It also checks again that git ignores and does not track the folder (`leftovers::still_output`) |
+| A ticked orphan inside a ticked whole DerivedData was counted and removed twice | The plan drops any item that sits inside another ticked item; known caches carry a last-used time, so Balanced leaves a DerivedData in use alone |
+| Stop did not interrupt measuring the known caches | `caches::scan_until` passes the cancel flag to every folder walk |
 | Agent CLI flags (D-10) | Checked 2026-11-09 against the installed `claude` and `codex`: Claude Code uses `--tools Read Glob Grep` plus `--no-session-persistence`; Codex adds `--ephemeral` |
 
 ### Change log
@@ -1027,3 +1031,5 @@ open.
 - 2026-11-09: review fixes: D-12 (orphans kept), narrower disposable list,
   long timeout for git writes, scratch and Downloads tightened, per-tool
   cache locks.
+- 2026-11-09: PR review fixes: build-output recheck, no double counting of
+  nested items, cancellable known-cache scan.

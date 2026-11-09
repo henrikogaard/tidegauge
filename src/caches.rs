@@ -223,6 +223,7 @@ fn home() -> Option<PathBuf> {
 /// Allocated bytes under a folder, without following links, leaving the
 /// volume, or entering cloud placeholders; a hard link counts once. None
 /// when the folder cannot be read.
+#[cfg(test)]
 pub fn folder_bytes(root: &Path) -> Option<u64> {
     folder_bytes_until(root, None)
 }
@@ -246,7 +247,7 @@ pub fn folder_bytes_until(root: &Path, cancel: Option<&std::sync::atomic::Atomic
         };
         for entry in entries.flatten() {
             entries_seen = entries_seen.wrapping_add(1);
-            if entries_seen % 1000 == 0
+            if entries_seen.is_multiple_of(1000)
                 && cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
             {
                 return None;
@@ -391,8 +392,9 @@ fn add_folders(
     unmeasured: &mut Vec<Kind>,
     kind: Kind,
     paths: Vec<PathBuf>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) {
-    let (paths, bytes, complete) = measured(paths, folder_bytes);
+    let (paths, bytes, complete) = measured(paths, |p| folder_bytes_until(p, cancel));
     if !complete {
         unmeasured.push(kind);
     }
@@ -407,7 +409,15 @@ fn add_folders(
 }
 
 /// Measure every known cache that exists. Blocking: run it off the main thread.
+#[cfg(test)]
 pub fn scan() -> Inventory {
+    scan_until(None)
+}
+
+/// Like [`scan`], but stops measuring once `cancel` is set; what was not
+/// measured is reported as unmeasured.
+pub fn scan_until(cancel: Option<&std::sync::atomic::AtomicBool>) -> Inventory {
+    let stop = || cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     let mut caches = Vec::new();
     let mut unmeasured = Vec::new();
     let Some(home) = home() else {
@@ -418,17 +428,17 @@ pub fn scan() -> Inventory {
     };
     for (kind, rel) in FIXED {
         match validate(*kind, &home, &home.join(rel)) {
-            Ok(path) => add_folders(&mut caches, &mut unmeasured, *kind, vec![path]),
+            Ok(path) => add_folders(&mut caches, &mut unmeasured, *kind, vec![path], cancel),
             Err(Refusal::Missing) => {}
             Err(_) => unmeasured.push(*kind),
         }
     }
     let stores = pnpm_stores(&home);
     if !stores.is_empty() {
-        add_folders(&mut caches, &mut unmeasured, Kind::Pnpm, stores);
+        add_folders(&mut caches, &mut unmeasured, Kind::Pnpm, stores, cancel);
     }
     match brew_cache() {
-        Ok(Some(path)) => add_folders(&mut caches, &mut unmeasured, Kind::Homebrew, vec![path]),
+        Ok(Some(path)) => add_folders(&mut caches, &mut unmeasured, Kind::Homebrew, vec![path], cancel),
         Ok(None) => {}
         Err(()) => unmeasured.push(Kind::Homebrew),
     }
@@ -438,7 +448,12 @@ pub fn scan() -> Inventory {
         &mut unmeasured,
         Kind::Trash,
         vec![home.join(".Trash")],
+        cancel,
     );
+    if stop() {
+        unmeasured.push(Kind::Simulators);
+        return Inventory { caches, unmeasured };
+    }
     match unavailable_simulators(&home) {
         Ok(Some((items, bytes))) => caches.push(Cache {
             kind: Kind::Simulators,

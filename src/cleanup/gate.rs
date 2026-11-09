@@ -231,6 +231,13 @@ pub fn recheck(candidate: &Candidate, home: &Path, procs: &Procs) -> Result<(), 
         }
         Method::Prune { .. } | Method::KnownCache(_) | Method::Tool(_) => Ok(()),
         Method::Trash => {
+            if candidate.category == Category::BuildOutput {
+                if let (Some(project), Some(folder)) = (candidate.watch.first(), candidate.paths.first()) {
+                    if !super::leftovers::still_output(project, folder) {
+                        return Err(l("Changed since the scan: git now tracks it.", "Endret siden skanningen: git sporer den nå.").into());
+                    }
+                }
+            }
             for path in &candidate.paths {
                 validate(path, home)?;
                 if let Some(id) = candidate.fingerprint.identity {

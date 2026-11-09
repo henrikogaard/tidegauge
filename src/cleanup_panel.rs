@@ -74,6 +74,21 @@ fn ticked(state: &State, c: &Candidate, idle_days: u32, now: i64) -> bool {
             .unwrap_or_else(|| state.level.ticks(c, idle_days, now) && !state.notes.get(&c.id).is_some_and(|n| n.keep))
 }
 
+/// What a cleanup would remove: the ticked items, minus any that sit inside
+/// another ticked item (orphaned build data inside all of DerivedData), so
+/// sizes are counted once and nothing is reported as skipped for being gone.
+fn plan<'a>(st: &State, cands: &'a [Candidate], idle_days: u32, now: i64) -> Vec<&'a Candidate> {
+    let on: Vec<&Candidate> = cands.iter().filter(|c| ticked(st, c, idle_days, now)).collect();
+    on.iter()
+        .copied()
+        .filter(|c| {
+            !on.iter().any(|o| {
+                o.id != c.id && c.paths.iter().any(|p| o.paths.iter().any(|q| p != q && p.starts_with(q)))
+            })
+        })
+        .collect()
+}
+
 /// Start a scan unless one is running, and redraw while it runs.
 pub fn start_scan(this: &Entity<TideGaugeView>, cx: &mut App) {
     if this.read(cx).tools.cleanup.scanning() || this.read(cx).tools.cleanup.cleaning.is_some() {
@@ -303,7 +318,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         body = body.child(report_card(r, st.skipped_open, dark, this.clone()));
     }
 
-    let ready: Vec<&Candidate> = scan.candidates.iter().filter(|c| ticked(st, c, idle, now)).collect();
+    let ready = plan(st, &scan.candidates, idle, now);
     let ready_bytes: u64 = ready.iter().filter_map(|c| c.bytes).sum();
 
     // Header: free space, what is ready, and the bar.
@@ -783,7 +798,7 @@ pub fn clean_up(this: &Entity<TideGaugeView>, window: &mut Window, cx: &mut App)
     let Some(scan) = st.snapshot() else { return };
     let s = settings();
     let now = cleanup::now();
-    let plan: Vec<Candidate> = scan.candidates.iter().filter(|c| ticked(st, c, s.cleanup_build_idle_days.max(1), now)).cloned().collect();
+    let plan: Vec<Candidate> = plan(st, &scan.candidates, s.cleanup_build_idle_days.max(1), now).into_iter().cloned().collect();
     if plan.is_empty() {
         return;
     }
@@ -872,7 +887,7 @@ fn ask_agent(this: &Entity<TideGaugeView>, kind: AgentKind, window: &mut Window,
     let Some(scan) = st.snapshot() else { return };
     let s = settings();
     let now = cleanup::now();
-    let cands: Vec<Candidate> = scan.candidates.iter().filter(|c| ticked(st, c, s.cleanup_build_idle_days.max(1), now)).cloned().collect();
+    let cands: Vec<Candidate> = plan(st, &scan.candidates, s.cleanup_build_idle_days.max(1), now).into_iter().cloned().collect();
     if cands.is_empty() {
         this.update(cx, |v, cx| {
             v.tools.cleanup.message = Some(l("Tick something first; the agent reviews ticked items.", "Kryss av noe først; agenten går gjennom avkryssede elementer.").into());
@@ -938,7 +953,7 @@ fn ask_agent(this: &Entity<TideGaugeView>, kind: AgentKind, window: &mut Window,
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, summary_line, ticked, State};
+    use super::{ago, plan, summary_line, ticked, State};
     use crate::cleanup::{self, AgentNote, Candidate, Category, Level, Tier};
 
     fn cand(id: &str, cat: Category, tier: Tier, bytes: u64, days_idle: i64) -> Candidate {
@@ -977,6 +992,22 @@ mod tests {
         let mut locked = fresh.clone();
         locked.lock = Some("Waits for Xcode".into());
         assert!(!ticked(&st, &locked, 30, now), "a lock wins");
+    }
+
+    #[test]
+    fn nested_items_count_once() {
+        let now = cleanup::now();
+        let all = cand("/u/DerivedData", Category::XcodeBuild, Tier::Rebuild, 100, 40);
+        let orphan = cand("/u/DerivedData/Gone-abc", Category::XcodeBuild, Tier::Safe, 30, 40);
+        let other = cand("/u/.npm/_cacache", Category::PackageCaches, Tier::Safe, 5, 0);
+        let st = State::default();
+        let both = [all.clone(), orphan.clone(), other.clone()];
+        let ids: Vec<&str> = plan(&st, &both, 30, now).iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["/u/DerivedData", "/u/.npm/_cacache"], "the orphan is inside the whole folder");
+        let mut st = State::default();
+        st.overrides.insert("/u/DerivedData".into(), false);
+        let ids: Vec<&str> = plan(&st, &both, 30, now).iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["/u/DerivedData/Gone-abc", "/u/.npm/_cacache"], "only the safe orphan");
     }
 
     #[test]
