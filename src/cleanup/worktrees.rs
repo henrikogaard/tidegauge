@@ -253,12 +253,15 @@ pub fn audit_repo(repo: &Path, cfg: &ScanConfig, home: &Path, procs: &Procs) -> 
         c.last_used = last;
         c.method = if tier == Tier::Keep { Method::None } else { Method::GitWorktree { main: repo.to_path_buf() } };
         c.fingerprint = Fingerprint { head: head.clone(), status: status_hash(&status), identity: gate::identity(&path) };
-        c.facts = vec![
+        if let Some(b) = &w.branch {
+            c.facts.push(("branch_ref", b.clone()));
+        }
+        c.facts.extend([
             ("repo", repo_name.clone()),
             ("branch", branch),
             ("state", state.label().to_string()),
             ("base", base.clone().unwrap_or_default()),
-        ];
+        ]);
         out.push(c);
     }
     if prunable > 0 {
@@ -336,7 +339,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> ScanConfig {
-        ScanConfig { roots: Vec::new(), active_days: 2, use_gh: false, include_downloads: false }
+        ScanConfig { roots: Vec::new(), active_days: 2, use_gh: false, include_downloads: false, build_idle_days: 30, only_worktrees: false }
     }
 
     fn audit(repo: &Path, home: &Path) -> Vec<Candidate> {

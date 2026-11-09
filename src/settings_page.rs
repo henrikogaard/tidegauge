@@ -1319,6 +1319,71 @@ fn cleanup(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
         None => l("Your own coding agent checks the ticked items and says keep or clean. It can't remove anything.", "Din egen kodeagent sjekker de avkryssede elementene og sier behold eller rydd. Den kan ikke fjerne noe.").into(),
     };
     rows.push(row(l("Ask an agent before cleaning", "Spør en agent før opprydding"), Some(detail), choices, false, dark));
+    rows.push(row(
+        l("Delete the branch of a removed worktree", "Slett grenen til et fjernet arbeidstre"),
+        Some(l("Only the local branch, and only when git agrees it is merged. Remote branches are never touched.", "Bare den lokale grenen, og bare når git er enig i at den er flettet. Eksterne grener røres aldri.").into()),
+        preference_switch("cleanup-branches".into(), l("Delete the branch of a removed worktree", "Slett grenen til et fjernet arbeidstre").into(), settings.cleanup_delete_branches, dark, this.clone(), |s, on| s.cleanup_delete_branches = on),
+        false,
+        dark,
+    ));
+    rows.push(row(
+        l("Remove worktrees once they are merged", "Fjern arbeidstrær når de er flettet"),
+        Some(l("Every 30 minutes, without asking: only merged, clean, pushed worktrees no app is using. You get a notification.", "Hvert 30. minutt, uten å spørre: bare flettede, rene og pushede arbeidstrær som ingen app bruker. Du får et varsel.").into()),
+        preference_switch("cleanup-after-merge".into(), l("Remove worktrees once they are merged", "Fjern arbeidstrær når de er flettet").into(), settings.cleanup_after_merge, dark, this.clone(), |s, on| s.cleanup_after_merge = on),
+        false,
+        dark,
+    ));
+    let mut limits = crate::controls::segment_group("cleanup-limit", l("Free-space limit", "Grense for ledig plass"), dark);
+    for gb in [10u32, 20, 50] {
+        limits = limits.child(choice(
+            format!("cleanup-limit-{gb}"),
+            match gb {
+                10 => "10 GB",
+                20 => "20 GB",
+                _ => "50 GB",
+            },
+            format!("{gb} GB"),
+            settings.cleanup_auto_limit_gb == gb,
+            dark,
+            this.clone(),
+            move |s| s.cleanup_auto_limit_gb = gb,
+        ));
+    }
+    rows.push(row(
+        l("Clean up by itself when space runs low", "Rydd opp av seg selv når plassen blir lav"),
+        Some(l("Under the limit, at most every 30 minutes: only Safe items that go to the Trash and merged worktrees. Never tool cleanups. You get a notification.", "Under grensen, høyst hvert 30. minutt: bare trygge elementer som går til papirkurven, og flettede arbeidstrær. Aldri verktøyopprydding. Du får et varsel.").into()),
+        div()
+            .flex()
+            .items_center()
+            .gap(t::SPACE_3)
+            .child(limits)
+            .child(preference_switch("cleanup-auto".into(), l("Clean up by itself when space runs low", "Rydd opp av seg selv når plassen blir lav").into(), settings.cleanup_auto, dark, this.clone(), |s, on| s.cleanup_auto = on)),
+        false,
+        dark,
+    ));
+    rows.push(row(
+        l("Let agents remove merged worktrees", "La agenter fjerne flettede arbeidstrær"),
+        Some(l("Lets `tidegauge cleanup worktrees --apply` and the MCP server remove worktrees that are merged, clean, pushed and unused. Off: they can only list.", "Lar `tidegauge cleanup worktrees --apply` og MCP-serveren fjerne arbeidstrær som er flettet, rene, pushet og ubrukte. Av: de kan bare liste.").into()),
+        preference_switch("cleanup-agent-remove".into(), l("Let agents remove merged worktrees", "La agenter fjerne flettede arbeidstrær").into(), settings.cleanup_agent_remove, dark, this.clone(), |s, on| s.cleanup_agent_remove = on),
+        false,
+        dark,
+    ));
+    let (hooks, mcp) = crate::cleanup::cli::snippets();
+    rows.push(row(
+        l("Let your agents ask Tidegauge", "La agentene spørre Tidegauge"),
+        Some(l("Copy a SessionStart hook that warns when space is low, or an MCP server with disk_status, list_worktrees and remove_merged_worktrees. Paste it into your agent's settings yourself.", "Kopier en SessionStart-hook som varsler når plassen er lav, eller en MCP-server med disk_status, list_worktrees og remove_merged_worktrees. Lim den inn i agentens innstillinger selv.").into()),
+        div()
+            .flex()
+            .gap(t::SPACE_2)
+            .child(crate::controls::button("cleanup-copy-hook", l("Copy hook", "Kopier hook"), false, dark, move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(hooks.clone()))
+            }))
+            .child(crate::controls::button("cleanup-copy-mcp", l("Copy MCP", "Kopier MCP"), false, dark, move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(mcp.clone()))
+            })),
+        false,
+        dark,
+    ));
     group(l("Cleanup", "Opprydding"), rows, dark)
 }
 

@@ -42,7 +42,7 @@ define_class!(
             completion: &DynBlock<dyn Fn()>,
         ) {
             let identifier = response.notification().request().identifier().to_string();
-            if metric_of(&identifier) == Some("low_disk") {
+            if matches!(metric_of(&identifier), Some("low_disk" | "cleanup")) {
                 crate::statusbar::raise(&crate::statusbar::SHOW_CLEANUP);
             } else {
                 crate::statusbar::raise(&crate::statusbar::TOGGLE_PANEL);

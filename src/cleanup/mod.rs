@@ -7,6 +7,8 @@
 //! again right before it goes (`gate::recheck`).
 
 pub mod agent;
+pub mod auto;
+pub mod cli;
 pub mod gate;
 pub mod git;
 pub mod leftovers;
@@ -33,10 +35,11 @@ pub enum Category {
     Downloads,
     Archives,
     AgentHistory,
+    AppLeftovers,
 }
 
 impl Category {
-    pub const ALL: [Category; 10] = [
+    pub const ALL: [Category; 11] = [
         Self::AgentWorktrees,
         Self::XcodeBuild,
         Self::Simulators,
@@ -47,6 +50,7 @@ impl Category {
         Self::Downloads,
         Self::Archives,
         Self::AgentHistory,
+        Self::AppLeftovers,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -60,6 +64,7 @@ impl Category {
             Self::Downloads => l("Downloads and installers", "Nedlastinger og installasjonsfiler"),
             Self::Archives => l("Backups and archives", "Sikkerhetskopier og arkiver"),
             Self::AgentHistory => l("Agent history", "Agenthistorikk"),
+            Self::AppLeftovers => l("Leftovers of removed apps", "Rester etter fjernede apper"),
         }
     }
     pub fn icon(self) -> &'static str {
@@ -74,6 +79,7 @@ impl Category {
             Self::Downloads => "icons/download.svg",
             Self::Archives => "icons/layers.svg",
             Self::AgentHistory => "icons/clock.svg",
+            Self::AppLeftovers => "icons/app-window.svg",
         }
     }
 }
@@ -261,6 +267,10 @@ pub struct ScanConfig {
     pub active_days: u32,
     pub use_gh: bool,
     pub include_downloads: bool,
+    /// Rebuild items idle this long are part of a Balanced cleanup.
+    pub build_idle_days: u32,
+    /// Look for worktrees only (clean after merge, `tidegauge cleanup worktrees`).
+    pub only_worktrees: bool,
 }
 
 impl ScanConfig {
@@ -273,7 +283,15 @@ impl ScanConfig {
             active_days: s.cleanup_active_days.max(1),
             use_gh: s.cleanup_use_gh,
             include_downloads: s.cleanup_include_downloads,
+            build_idle_days: s.cleanup_build_idle_days.max(1),
+            only_worktrees: false,
         }
+    }
+
+    /// From the saved settings, with the folders running agents work in.
+    pub fn current() -> Self {
+        let agents = crate::engine::latest().agents.iter().filter_map(|s| s.folder.as_ref()).map(PathBuf::from).collect();
+        Self::from_settings(&crate::settings::Settings::load(), agents)
     }
 }
 
@@ -329,6 +347,42 @@ fn measure(c: &Candidate, cancel: &AtomicBool) -> Option<u64> {
     Some(total)
 }
 
+/// What the last full scan found ready at the Balanced level, and when:
+/// the menu-bar panel's "ready to free" line (FR-17).
+pub static READY: Mutex<Option<(u64, i64)>> = Mutex::new(None);
+
+/// Ticked items minus any inside another ticked item, so nothing counts twice.
+pub fn without_nested(on: Vec<&Candidate>) -> Vec<&Candidate> {
+    on.iter()
+        .copied()
+        .enumerate()
+        .filter(|(i, c)| {
+            !on.iter().enumerate().any(|(j, o)| {
+                o.id != c.id
+                    && c.paths.iter().any(|p| o.paths.iter().any(|q| (p != q && p.starts_with(q)) || (p == q && j < *i)))
+            })
+        })
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// The size of a Balanced cleanup with no manual ticks.
+pub fn balanced_bytes(cands: &[Candidate], idle_days: u32) -> u64 {
+    let now = now();
+    without_nested(cands.iter().filter(|c| c.selectable() && Level::Balanced.ticks(c, idle_days, now)).collect())
+        .iter()
+        .filter_map(|c| c.bytes)
+        .sum()
+}
+
+/// Run a whole scan on this thread and return the result.
+pub fn scan_blocking(cfg: ScanConfig) -> ScanState {
+    let state = Arc::new(Mutex::new(ScanState::new()));
+    run_scan(cfg, Arc::new(AtomicBool::new(false)), state.clone());
+    let s = state.lock().unwrap().clone();
+    s
+}
+
 /// Start a scan on worker threads (D-9). The view reads the returned state
 /// while it draws; `cancel` stops it within about a second.
 pub fn scan(cfg: ScanConfig, cancel: Arc<AtomicBool>) -> Arc<Mutex<ScanState>> {
@@ -344,7 +398,10 @@ pub fn scan(cfg: ScanConfig, cancel: Arc<AtomicBool>) -> Arc<Mutex<ScanState>> {
 fn push(state: &Mutex<ScanState>, mut found: Vec<Candidate>) {
     let mut s = state.lock().unwrap();
     for c in found.drain(..) {
-        if !s.candidates.iter().any(|x| x.id == c.id) {
+        // A path already listed under another name (the SwiftPM cache is
+        // also a bundle-id folder) is listed once, by whoever came first.
+        let claimed = !c.paths.is_empty() && c.paths.iter().all(|p| s.candidates.iter().any(|x| x.paths.contains(p)));
+        if !claimed && !s.candidates.iter().any(|x| x.id == c.id) {
             s.candidates.push(c);
         }
     }
@@ -386,7 +443,7 @@ fn run_scan(cfg: ScanConfig, cancel: Arc<AtomicBool>, state: Arc<Mutex<ScanState
     }
 
     // Leftovers and known places.
-    if !stop() {
+    if !stop() && !cfg.only_worktrees {
         let worktree_paths: Vec<PathBuf> = state
             .lock()
             .unwrap()
@@ -409,8 +466,9 @@ fn run_scan(cfg: ScanConfig, cancel: Arc<AtomicBool>, state: Arc<Mutex<ScanState
             }
         }
         push(&state, leftovers::catalog(&home, cfg.include_downloads));
+        push(&state, leftovers::app_leftovers(&home));
     }
-    if !stop() {
+    if !stop() && !cfg.only_worktrees {
         let p = pressure::read();
         let sims = pressure::simulator_candidates(&p);
         let mut s = state.lock().unwrap();
@@ -456,6 +514,10 @@ fn run_scan(cfg: ScanConfig, cancel: Arc<AtomicBool>, state: Arc<Mutex<ScanState
     let mut s = state.lock().unwrap();
     s.phase = Phase::Done;
     s.finished = Some(Instant::now());
+    if !cfg.only_worktrees && !stop() {
+        let ready = balanced_bytes(&s.candidates, cfg.build_idle_days);
+        READY.lock().unwrap().replace((ready, now()));
+    }
 }
 
 /// Sizes in a category, for the row and the summary.

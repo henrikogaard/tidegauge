@@ -17,14 +17,25 @@ pub const MAX_ITEMS: usize = 60;
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+    OpenCode,
+    Grok,
+    MistralVibe,
+    Pi,
+    Omp,
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 2] = [Self::ClaudeCode, Self::Codex];
+    pub const ALL: [AgentKind; 7] = [Self::ClaudeCode, Self::Codex, Self::OpenCode, Self::Grok, Self::MistralVibe, Self::Pi, Self::Omp];
+    /// The command's file name, also the settings key.
     pub fn key(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
             Self::Codex => "codex",
+            Self::OpenCode => "opencode",
+            Self::Grok => "grok",
+            Self::MistralVibe => "vibe",
+            Self::Pi => "pi",
+            Self::Omp => "omp",
         }
     }
     pub fn from_key(key: &str) -> Option<Self> {
@@ -34,12 +45,21 @@ impl AgentKind {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::OpenCode => "opencode",
+            Self::Grok => "Grok",
+            Self::MistralVibe => "Mistral Vibe",
+            Self::Pi => "pi",
+            Self::Omp => "omp",
         }
     }
+    /// Who sees the paths: the vendor, or the provider the CLI is set up with.
     pub fn provider(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Anthropic",
             Self::Codex => "OpenAI",
+            Self::Grok => "xAI",
+            Self::MistralVibe => "Mistral",
+            Self::OpenCode | Self::Pi | Self::Omp => l("the model provider it is set up with", "modelleverandøren den er satt opp med"),
         }
     }
     /// The installed CLI, looked up in fixed folders only (no PATH search).
@@ -49,10 +69,12 @@ impl AgentKind {
         [
             home.join(".local/bin"),
             home.join(".claude/local"),
+            home.join(".opencode/bin"),
             PathBuf::from("/opt/homebrew/bin"),
             PathBuf::from("/usr/local/bin"),
             home.join(".bun/bin"),
             home.join(".npm-global/bin"),
+            home.join(".cargo/bin"),
         ]
         .into_iter()
         .map(|d| d.join(name))
@@ -138,24 +160,52 @@ fn first_json(text: &str, ok: impl Fn(&serde_json::Value) -> bool + Copy) -> Opt
     None
 }
 
-fn command(kind: AgentKind, exe: &Path, cands: &[&Candidate], workdir: &Path, out_file: &Path) -> Command {
+/// The read-only command for each agent (D-16), and whether the prompt goes
+/// on standard input.
+fn command(kind: AgentKind, exe: &Path, cands: &[&Candidate], prompt: &str, workdir: &Path, out_file: &Path) -> (Command, bool) {
     let mut c = Command::new(exe);
+    let mut stdin = false;
+    let dirs = || cands.iter().flat_map(|c| c.paths.iter()).take(MAX_ITEMS);
     match kind {
         AgentKind::ClaudeCode => {
             c.args(["-p", "--output-format", "json", "--no-session-persistence", "--tools", "Read", "Glob", "Grep"]);
             c.args(["--disallowedTools", "Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit"]);
-            for p in cands.iter().flat_map(|c| c.paths.iter()).take(MAX_ITEMS) {
+            for p in dirs() {
+                c.arg("--add-dir").arg(p);
+            }
+            stdin = true;
+        }
+        AgentKind::Codex => {
+            c.args(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "-o"]).arg(out_file).arg("-");
+            stdin = true;
+        }
+        AgentKind::OpenCode => {
+            c.args(["run", "--agent", "plan", "--format", "default", prompt]);
+        }
+        AgentKind::Grok => {
+            c.args(["--permission-mode", "plan", "--disable-web-search", "--no-subagents", "--output-format", "plain", "--max-turns", "20"]);
+            for p in dirs() {
+                c.arg("--add-dir").arg(p);
+            }
+            c.arg("-p").arg(prompt);
+        }
+        AgentKind::MistralVibe => {
+            let file = workdir.join("prompt.txt");
+            let _ = std::fs::write(&file, prompt);
+            c.args(["--enabled-tools", "read_file", "--enabled-tools", "grep", "--output", "text", "--max-turns", "20", "--prompt-file"]).arg(file);
+            for p in dirs() {
                 c.arg("--add-dir").arg(p);
             }
         }
-        AgentKind::Codex => {
-            c.args(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "-o"])
-                .arg(out_file)
-                .arg("-");
+        AgentKind::Pi => {
+            c.args(["-p", "--no-session", "--no-extensions", "--no-mcp", "--tools", "read,grep,find,ls", "--", prompt]);
+        }
+        AgentKind::Omp => {
+            c.args(["-p", "--no-session", "--no-lsp", "--tools", "read,grep,find", prompt]);
         }
     }
     c.current_dir(workdir).stdout(Stdio::piped()).stderr(Stdio::null());
-    c
+    (c, stdin)
 }
 
 static PROBE: crate::bounded::Probe = crate::bounded::Probe::new();
@@ -171,8 +221,8 @@ pub fn review(kind: AgentKind, cands: &[&Candidate]) -> Result<Vec<(String, Agen
     let _ = std::fs::remove_dir_all(&workdir);
     std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
     let out_file = workdir.join("answer.txt");
-    let cmd = command(kind, &exe, cands, &workdir, &out_file);
-    let result = PROBE.run_with(cmd, Some(input.into_bytes()), TIMEOUT);
+    let (cmd, stdin) = command(kind, &exe, cands, &input, &workdir, &out_file);
+    let result = PROBE.run_with(cmd, stdin.then(|| input.into_bytes()), TIMEOUT);
     let answer = std::fs::read_to_string(&out_file).ok();
     let _ = std::fs::remove_dir_all(&workdir);
     let Some((code, stdout)) = result else {
@@ -198,6 +248,31 @@ mod tests {
         let mut c = Candidate::folder(Category::AgentWorktrees, PathBuf::from(id), id.into(), tier);
         c.bytes = Some(10);
         c
+    }
+
+    #[test]
+    fn every_agent_runs_read_only() {
+        let a = cand("/a", Tier::Safe);
+        let dir = std::env::temp_dir();
+        for kind in AgentKind::ALL {
+            let (c, _) = command(kind, Path::new("/bin/echo"), &[&a], "{}", &dir, &dir.join("x"));
+            let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            let joined = args.join(" ");
+            let guard = match kind {
+                AgentKind::ClaudeCode => "--tools Read Glob Grep",
+                AgentKind::Codex => "--sandbox read-only",
+                AgentKind::OpenCode => "--agent plan",
+                AgentKind::Grok => "--permission-mode plan",
+                AgentKind::MistralVibe => "--enabled-tools read_file",
+                AgentKind::Pi => "--tools read,grep,find,ls",
+                AgentKind::Omp => "--tools read,grep,find",
+            };
+            assert!(joined.contains(guard), "{kind:?}: {joined}");
+            for bad in ["--auto", "--always-approve", "--auto-approve", "--yolo", "bypass", "danger"] {
+                assert!(!args.iter().any(|a| a.contains(bad)), "{kind:?} has {bad}");
+            }
+            assert_eq!(AgentKind::from_key(kind.key()), Some(kind));
+        }
     }
 
     #[test]

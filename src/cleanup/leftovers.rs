@@ -391,6 +391,127 @@ pub fn catalog(home: &Path, include_downloads: bool) -> Vec<Candidate> {
     out
 }
 
+/// Whether a folder or file name is a bundle id: three or more dot-separated
+/// parts of letters, digits, `-` and `_`.
+pub fn bundle_id(name: &str) -> Option<&str> {
+    let id = name.strip_suffix(".savedState").or_else(|| name.strip_suffix(".plist")).unwrap_or(name);
+    let parts: Vec<&str> = id.split('.').collect();
+    let ok = parts.len() >= 3
+        && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        && parts[0].chars().all(|c| c.is_ascii_lowercase());
+    ok.then_some(id)
+}
+
+/// The vendor part of a bundle id: its first two parts, lowercased.
+pub fn vendor(id: &str) -> String {
+    id.split('.').take(2).collect::<Vec<_>>().join(".").to_lowercase()
+}
+
+/// Bundle ids of the apps installed in the usual folders, up to two folder
+/// levels deep, or none when the list can't be trusted: /Applications
+/// unreadable, or any app whose id could not be read. Then nothing is
+/// called a leftover (fail closed).
+fn installed_ids(home: &Path) -> Option<Vec<String>> {
+    let mut apps = Vec::new();
+    let roots = [
+        PathBuf::from("/Applications"),
+        home.join("Applications"),
+        PathBuf::from("/System/Applications"),
+        home.join("Library/Application Support/JetBrains/Toolbox/apps"),
+        home.join("Library/Application Support/Setapp/Applications"),
+    ];
+    std::fs::read_dir("/Applications").ok()?;
+    let mut stack: Vec<(PathBuf, u32)> = roots.into_iter().map(|r| (r, 0)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "app") {
+                apps.push(p);
+            } else if depth < 3 && e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push((p, depth + 1));
+            }
+        }
+    }
+    let mut ids = Vec::new();
+    for app in &apps {
+        let mut c = std::process::Command::new("/usr/bin/plutil");
+        c.args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
+            .arg(app.join("Contents/Info.plist"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let out = crate::packages::run_command(c, Duration::from_secs(5)).ok()?;
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // An app without an id is unusual but harmless; a failed read is not.
+        if out.status.success() && !id.is_empty() {
+            ids.push(id);
+        }
+    }
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// `~/Library` folders and preference files left by apps that are gone
+/// (FR-21). A vendor with any installed app keeps all its folders, and
+/// Apple's never show. Sandboxed containers are left to macOS.
+pub fn app_leftovers(home: &Path) -> Vec<Candidate> {
+    match installed_ids(home) {
+        Some(ids) => app_leftovers_in(home, &ids),
+        None => Vec::new(),
+    }
+}
+
+fn app_leftovers_in(home: &Path, installed: &[String]) -> Vec<Candidate> {
+    let vendors: std::collections::HashSet<String> = installed.iter().map(|i| vendor(i)).collect();
+    let mut by_id: std::collections::BTreeMap<String, Vec<PathBuf>> = Default::default();
+    for place in ["Application Support", "Caches", "Saved Application State", "HTTPStorages", "WebKit", "Logs", "Preferences"] {
+        let Ok(entries) = std::fs::read_dir(home.join("Library").join(place)) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(id) = bundle_id(&name) else { continue };
+            if (place == "Preferences") != name.ends_with(".plist") {
+                continue;
+            }
+            let v = vendor(id);
+            if v.starts_with("com.apple") || vendors.contains(&v) || id.contains("tidegauge") {
+                continue;
+            }
+            by_id.entry(id.to_string()).or_default().push(e.path());
+        }
+    }
+    by_id
+        .into_iter()
+        .filter_map(|(id, paths)| {
+            let paths: Vec<PathBuf> = paths.into_iter().filter(|p| gate::validate(p, home).is_ok()).collect();
+            if paths.is_empty() {
+                return None;
+            }
+            let last = paths.iter().filter_map(|p| super::worktrees::last_used(p, None)).max();
+            Some(Candidate {
+                id: format!("app:{id}"),
+                category: Category::AppLeftovers,
+                title: id.clone(),
+                detail: format!(
+                    "{} · {}",
+                    crate::locale::count(paths.len() as u64, "place", "places", "sted", "steder"),
+                    l("no installed app from this maker", "ingen installert app fra denne utvikleren")
+                ),
+                watch: Vec::new(),
+                paths,
+                bytes: None,
+                last_used: last,
+                tier: Tier::Rebuild,
+                method: Method::Trash,
+                lock: None,
+                state: None,
+                fingerprint: Default::default(),
+                note: None,
+                facts: vec![("bundle_id", id)],
+            })
+        })
+        .collect()
+}
+
 /// Agent scratch folders in `/private/tmp/claude-<uid>` untouched for three days.
 fn scratch(home: &Path) -> Vec<Candidate> {
     let root = gate::scratch_root();
@@ -496,6 +617,32 @@ mod tests {
         assert_eq!(find("Claude Code transcripts", "Claude Code-samtaler").tier, Tier::Keep);
         assert!(matches!(find("Go modules", "Go-moduler").method, Method::Tool(ToolAction::GoModCache)));
         assert!(!c.iter().any(|c| c.category == Category::Downloads), "downloads off by default");
+    }
+
+    #[test]
+    fn app_leftovers_only_for_gone_vendors() {
+        let home = temp("apps");
+        let lib = home.join("Library");
+        for rel in [
+            "Application Support/com.gone.Editor",
+            "Caches/com.gone.Editor",
+            "Caches/com.google.Chrome",
+            "Caches/com.apple.Safari",
+            "Application Support/Notes Folder",
+            "Containers/com.gone.Sandboxed",
+        ] {
+            std::fs::create_dir_all(lib.join(rel)).unwrap();
+        }
+        std::fs::create_dir_all(lib.join("Preferences")).unwrap();
+        std::fs::write(lib.join("Preferences/com.gone.Editor.plist"), "x").unwrap();
+        let found = app_leftovers_in(&home, &["com.google.drivefs".to_string()]);
+        assert_eq!(found.len(), 1, "{:?}", found.iter().map(|c| &c.title).collect::<Vec<_>>());
+        assert_eq!(found[0].title, "com.gone.Editor");
+        assert_eq!(found[0].paths.len(), 3, "support, cache and preferences");
+        assert_eq!(found[0].tier, Tier::Rebuild);
+        assert_eq!(bundle_id("com.gone.Editor.savedState"), Some("com.gone.Editor"));
+        assert_eq!(bundle_id("Notes Folder"), None);
+        assert_eq!(bundle_id("UBF8T346G9.com.microsoft"), None);
     }
 
     #[test]

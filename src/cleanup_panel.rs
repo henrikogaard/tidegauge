@@ -78,15 +78,7 @@ fn ticked(state: &State, c: &Candidate, idle_days: u32, now: i64) -> bool {
 /// another ticked item (orphaned build data inside all of DerivedData), so
 /// sizes are counted once and nothing is reported as skipped for being gone.
 fn plan<'a>(st: &State, cands: &'a [Candidate], idle_days: u32, now: i64) -> Vec<&'a Candidate> {
-    let on: Vec<&Candidate> = cands.iter().filter(|c| ticked(st, c, idle_days, now)).collect();
-    on.iter()
-        .copied()
-        .filter(|c| {
-            !on.iter().any(|o| {
-                o.id != c.id && c.paths.iter().any(|p| o.paths.iter().any(|q| p != q && p.starts_with(q)))
-            })
-        })
-        .collect()
+    cleanup::without_nested(cands.iter().filter(|c| ticked(st, c, idle_days, now)).collect())
 }
 
 /// Start a scan unless one is running, and redraw while it runs.

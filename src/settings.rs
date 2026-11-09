@@ -148,6 +148,17 @@ pub struct Settings {
     pub cleanup_agent: Option<String>,
     /// When you accepted that the agent's provider sees the listed paths.
     pub cleanup_agent_consent: Option<i64>,
+    /// Clean up Safe, undoable items by itself when free space drops below
+    /// `cleanup_auto_limit_gb` (D-14).
+    pub cleanup_auto: bool,
+    pub cleanup_auto_limit_gb: u32,
+    /// Remove a worktree by itself once its branch is merged (D-14).
+    pub cleanup_after_merge: bool,
+    /// Delete a removed worktree's local branch when git agrees it is merged.
+    pub cleanup_delete_branches: bool,
+    /// Let `tidegauge cleanup worktrees --apply` and the MCP server remove
+    /// merged worktrees. Off: they only list.
+    pub cleanup_agent_remove: bool,
 }
 
 impl Default for Settings {
@@ -206,6 +217,11 @@ impl Default for Settings {
             cleanup_include_downloads: false,
             cleanup_agent: None,
             cleanup_agent_consent: None,
+            cleanup_auto: false,
+            cleanup_auto_limit_gb: 20,
+            cleanup_after_merge: false,
+            cleanup_delete_branches: false,
+            cleanup_agent_remove: false,
         }
     }
 }

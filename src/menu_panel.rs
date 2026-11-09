@@ -295,6 +295,13 @@ fn footer_control(
         })
 }
 
+/// The Balanced total of the last Cleanup scan, when it is at least 5 GB
+/// and the scan is under a day old.
+fn ready_to_free() -> Option<u64> {
+    let (bytes, at) = (*crate::cleanup::READY.lock().unwrap())?;
+    (bytes >= 5_000_000_000 && crate::cleanup::now() - at < 86_400).then_some(bytes)
+}
+
 impl Render for MenuPanel {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let preferences = crate::settings::Settings::load();
@@ -398,6 +405,31 @@ impl Render for MenuPanel {
                                     .child(crate::agents_panel::left_text(plan.left)),
                             )
                     })),
+                )
+            })
+            // What the last Cleanup scan found ready, when it is worth a look (FR-17).
+            .when_some(ready_to_free(), |d, bytes| {
+                d.child(
+                    div()
+                        .id("menu-cleanup-ready")
+                        .role(Role::Button)
+                        .aria_label(SharedString::from(format!("{} {}", crate::engine::fmt_disk_bytes(bytes as f64), l("ready to free", "klar til å frigjøres"))))
+                        .tab_index(0)
+                        .cursor_pointer()
+                        .rounded(t::RADIUS_CONTROL)
+                        .bg(fill)
+                        .px(t::SPACE_3)
+                        .py(t::SPACE_2)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(t::TEXT_BODY)
+                                .child(format!("{} {}", crate::engine::fmt_disk_bytes(bytes as f64), l("ready to free", "klar til å frigjøres"))),
+                        )
+                        .child(div().text_size(t::TEXT_SMALL).text_color(t::accent(dark)).child(l("Open Cleanup", "Åpne Opprydding")))
+                        .on_click(|_, _, _| crate::statusbar::raise(&crate::statusbar::SHOW_CLEANUP)),
                 )
             })
             .when(layout.apps, |d| d.child(caption(l("Busiest apps", "Mest aktive apper"))).child(

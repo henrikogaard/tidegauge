@@ -1,6 +1,6 @@
 # Cleanup page
 
-Status: Building (slices 1–6 implemented; manual checks in section 10 open)
+Status: Building (slices 1–11 implemented; manual checks in section 10 open)
 Size: Full — a new page, new git and agent integrations, and it removes user data.
 Owner: Henrik · Started: 2026-11-09 · Approved: 2026-11-09, Henrik ("do all 6 slices in one go")
 Working assumptions: the draft answers to Q-1–Q-9 in section 8 are adopted
@@ -54,6 +54,14 @@ Trash-first rule.
 | NFR-3 | Every subprocess is bounded | Must | git 10 s per call, `gh` 15 s, agent 180 s; a hung child is killed and reported | S6 |
 | NFR-4 | Tidegauge itself contacts no service; `gh` and the agent run only when you turn them on | Must | With both off, a scan makes no network connection | S3, S6 |
 | NFR-5 | English and Norwegian Bokmål text, light and dark appearance | Must | `locale_guard` tests pass; light and dark screenshots reviewed | S6 |
+| FR-19 | ⌘⌫ on Cleanup starts Clean up (with the same confirmation) | Should | On Cleanup, ⌘⌫ shows the Clean up dialog; elsewhere it does nothing | S4, Henrik 2026-11-09 |
+| FR-20 | A ⌘K command bar lists every page and Cleanup action and runs the one you pick | Should | ⌘K opens it; typing filters; ↑↓ and Return run; Esc closes | S4, Henrik 2026-11-09 |
+| FR-21 | Leftovers of apps that are no longer installed (`~/Library` folders named by a bundle id) | Should | A folder named for a bundle id with no installed app sharing its vendor is listed as Rebuild; `com.apple.*` and installed vendors never | S4, Henrik 2026-11-09 |
+| FR-22 | Opt-in: delete the local branch after removing a merged worktree | Could | With the switch on, `git branch -d` runs after removal; an unmerged branch is refused by git and kept | S5, Henrik 2026-11-09 |
+| FR-23 | Opt-in auto-clean when free space drops below a limit | Could | Off by default; when on and free space is under the limit, Safe-tier items with an undoable method are removed after a recheck, and a notification says what went | S4, S5, Henrik 2026-11-09 |
+| FR-24 | Opt-in: remove worktrees as soon as their branch is merged | Could | Off by default; every 30 minutes Removable worktrees are removed after a recheck, with a notification | S5, Henrik 2026-11-09 |
+| FR-25 | Agents can ask Tidegauge: a `tidegauge cleanup` command, a session-start hook and an MCP server | Could | `tidegauge cleanup status` prints free space and ready totals; `tidegauge cleanup worktrees --merged [--apply]` lists or removes Removable worktrees; `tidegauge hook session-start` warns under the limit; `tidegauge mcp` answers MCP `tools/list` and `tools/call`; Settings shows the snippets and never edits agent config | S5, Henrik 2026-11-09 |
+| FR-26 | Agent review supports Claude Code, Codex, opencode, Grok, Mistral Vibe, pi and omp | Should | Each runs read-only with a fixed command; Settings lists the installed ones | Henrik 2026-11-09 |
 | CON-1 | Rust and gpui-kit, colours from `theme.rs`, tokens from `DESIGN.md` | Must | — | S6 |
 | CON-2 | Folders go to the Trash; Cancel is the first button | Must | — | S6 |
 | CON-3 | `Command::new` uses absolute paths | Must | — | S6 |
@@ -78,9 +86,9 @@ Trash-first rule.
 
 ## 2. Scope
 
-- **In:** FR-1 to FR-16, FR-18, NFR-1 to NFR-5.
-- **Out:** auto-clean without you (D-6); agent hooks and an MCP server; deleting branches (Q-5). Draft: these wait for Henrik's ruling.
-- **Later:** FR-17 menu-bar line; ⌘K command bar; uninstall with leftovers (Q-6); "clean right after a PR merges".
+- **In:** FR-1 to FR-26, NFR-1 to NFR-5. Henrik chose "everything" on 2026-11-09 (D-13).
+- **Out:** nothing.
+- **Later:** nothing.
 
 ## 3. Conceptual design
 
@@ -403,6 +411,39 @@ Choice: Orphan is Keep tier with Show in Finder; Tidegauge never trashes it.
 Consequences: supersedes the Orphan → Safe part of FR-3's tiering. git's own
 `prunable` records are still pruned, except on `/Volumes`.
 
+### D-13: Everything ships, the risky parts off by default (Accepted, 2026-11-09, Henrik)
+Context: Henrik asked for every slice and every Later and Out item.
+Choice: auto-clean, clean-after-merge, branch deletion, hooks and MCP are
+built, each behind a switch that defaults to off. Supersedes D-6 and the
+"never in v1" answer to Q-5.
+
+### D-14: Automatic actions take only Safe, undoable items (Accepted, 2026-11-09)
+Context: FR-23 and FR-24 run without a dialog.
+Choice: they take only Safe-tier items whose method is the Trash or
+`git worktree remove` of a merged, clean, pushed, unused worktree; never a
+tool command (Homebrew, Go, simctl), never Rebuild or Keep. Every item gets
+the same recheck, at most once every 30 minutes, and a notification lists
+what went.
+
+### D-15: Hooks and MCP live in the Tidegauge binary; Tidegauge never edits agent config (Accepted, 2026-11-09)
+Choice: `tidegauge cleanup …`, `tidegauge hook session-start` and
+`tidegauge mcp` run without the window or the single-instance lock.
+Settings shows the snippets with a copy button; you paste them into your
+agent's config yourself. The MCP server and the CLI list freely; removing
+needs `apply: true` (or `--apply`) and the switch "Let agents remove merged
+worktrees", off by default, and takes only Removable worktrees.
+
+### D-16: Agent CLI commands (Accepted, 2026-11-09; flags read from each tool's `--help` on Henrik's Mac)
+| Agent | Command (prompt) | Read-only by |
+|---|---|---|
+| Claude Code | `claude -p --tools Read Glob Grep --disallowedTools …` (stdin) | tool allowlist |
+| Codex | `codex exec --sandbox read-only --ephemeral -o FILE -` (stdin) | sandbox |
+| opencode | `opencode run --agent plan --format default PROMPT` | plan agent denies edits |
+| Grok | `grok -p PROMPT --permission-mode plan --disable-web-search --no-subagents --output-format plain --max-turns 20 --add-dir …` | plan mode |
+| Mistral Vibe | `vibe --enabled-tools read_file --enabled-tools grep --output text --max-turns 20 --prompt-file FILE --add-dir …` | headless tool allowlist |
+| pi | `pi -p --no-session --no-extensions --no-mcp --tools read,grep,find,ls -- PROMPT` | tool allowlist |
+| omp | `omp -p --no-session --no-lsp --tools read,grep,find PROMPT` | tool allowlist |
+
 ## 6. Coverage
 
 | Requirement | Component | Slice |
@@ -418,12 +459,17 @@ Consequences: supersedes the Orphan → Safe part of FR-3's tiering. git's own
 
 | Slice | What it delivers | Requirement IDs | Status |
 |---|---|---|---|
-| 1 | Worktree auditor, safety gate and git removal, behind a plain list on a new Cleanup page: find, classify, remove one worktree with confirmation. This is the riskiest contract (lost work) | FR-2, FR-3, FR-4, FR-13, FR-14, NFR-2, NFR-3 | Planned |
-| 2 | The Levo-style page: header, colour bar, levels, category rows with checkboxes, summary line, one Clean up button; the caches list moves in. New widgets: checkbox, stacked capacity bar | FR-1, FR-9, FR-10, FR-11, FR-12, NFR-1, NFR-5 | Planned |
-| 3 | Leftovers: orphan DerivedData, stale build output, `git worktree prune`, Xcode and Gradle locks | FR-5, FR-6, FR-7, FR-13 | Planned |
-| 4 | More caches from disk-jockey's list (with credit), and the "Is it really files?" card | FR-8, FR-15 | Planned |
-| 5 | Low-disk alert opens Cleanup | FR-16 | Planned |
-| 6 | Agent review (opt-in) | FR-18, NFR-4 | Planned |
+| 1 | Worktree auditor, safety gate and git removal, behind a plain list on a new Cleanup page: find, classify, remove one worktree with confirmation. This is the riskiest contract (lost work) | FR-2, FR-3, FR-4, FR-13, FR-14, NFR-2, NFR-3 | Done |
+| 2 | The Levo-style page: header, colour bar, levels, category rows with checkboxes, summary line, one Clean up button; the caches list moves in. New widgets: checkbox, stacked capacity bar | FR-1, FR-9, FR-10, FR-11, FR-12, NFR-1, NFR-5 | Done |
+| 3 | Leftovers: orphan DerivedData, stale build output, `git worktree prune`, Xcode and Gradle locks | FR-5, FR-6, FR-7, FR-13 | Done |
+| 4 | More caches from disk-jockey's list (with credit), and the "Is it really files?" card | FR-8, FR-15 | Done |
+| 5 | Low-disk alert opens Cleanup | FR-16 | Done |
+| 6 | Agent review (opt-in) | FR-18, NFR-4 | Done |
+| 7 | ⌘⌫ and the menu-bar "ready to free" line | FR-17, FR-19 | Done |
+| 8 | ⌘K command bar | FR-20 | Done |
+| 9 | App leftovers | FR-21 | Done |
+| 10 | Branch deletion, auto-clean, clean after merge | FR-22, FR-23, FR-24 | Done |
+| 11 | `tidegauge cleanup`, session-start hook, MCP server; seven agents | FR-25, FR-26 | Done |
 
 Each slice ships as its own PR with fixture tests (temporary git repos made in
 the test, never real repos), `cargo test`, and a light and dark screenshot
@@ -981,11 +1027,19 @@ open.
 | FR-15 | `pressure::parses_tmutil_update_snapshots`, `parses_simctl_booted` | pass | this change |
 | FR-16 | `notifications::identifier_carries_metric` | pass; click routing needs a packaged build (not run) | this change |
 | FR-18 | `agent::*` (4 tests), `cleanup_panel::agent_keep_unticks_clean_does_not_tick` | pass; one real run per agent not done | this change |
-| NFR-1 | Timed run on Henrik's Mac | not run | — |
+| NFR-1 | Timed run on Henrik's Mac | Cold `cleanup worktrees` in a debug build: 5 min 30 s, almost all spent sizing folders. Over the 60 s target, which is for a warm rescan (not timed) | this change |
 | NFR-2 | `recheck_refuses_after_new_commit_or_file`, `recheck_refuses_after_folder_swap_and_new_process`, `leftovers::build_output_rules` (tracked after scan) | pass | this change |
 | FR-10, FR-12 | `cleanup_panel::nested_items_count_once` | pass | this change |
 | NFR-3 | Every call goes through `packages::run_command` or `bounded::Probe`; the shared timeout tests in those modules | pass (existing tests) | this change |
 | NFR-4 | Code path: `gh` and agent run only behind settings that default off | reviewed, no test | this change |
+| FR-17 | Menu panel reads `cleanup::READY` (set at the end of a full scan) | build only; not clicked | this change |
+| FR-19 | ⌘⌫ handler on the dashboard calls `clean_up` on Cleanup | build only; not pressed | this change |
+| FR-20 | `palette::tests::filters_by_every_word` | pass; bar not opened in a rendered check yet | this change |
+| FR-21 | `leftovers::app_leftovers_only_for_gone_vendors` | pass | this change |
+| FR-22 | `remove::branch_delete_only_when_merged` | pass | this change |
+| FR-23, FR-24 | `auto::auto_takes_only_safe_undoable_items` | pass; the 30-minute loop not run end to end | this change |
+| FR-25 | `cli::mcp_lists_tools_and_rejects_unknown`, `cli_ignores_app_arguments`; read-only run on Henrik's Mac: `cleanup worktrees --merged` listed 85 Removable worktrees (25 GB), two checked by hand as merged, clean and pushed; `hook session-start` silent above the limit; `mcp` answered `initialize` and `tools/list` | pass | this change |
+| FR-26 | `agent::every_agent_runs_read_only` (all seven, no auto-approve flag) | pass; no real run of any agent | this change |
 | NFR-5 | Full suite with `TIDEGAUGE_TEST_LANG=en` and `=nb`, including `locale_guard` | 511 passed, 0 failed each | this change |
 
 ## 11. Codebase deltas and change log
@@ -1013,6 +1067,9 @@ open.
 | Agent scratch was Safe | Rebuild: Balanced takes it after 30 idle days, since a live session can work below the top level |
 | Old `.zip` files in Downloads were listed | Only `.dmg` and `.pkg`: a zip may be your own archive |
 | `dist` and `build` outside any repo were build output | Skipped: without git nothing proves they aren't source |
+| App leftovers trusted any list of installed apps | Fails closed: no list (unreadable /Applications, a failed id read) means no leftovers; Toolbox and Setapp folders and deeper nesting are searched |
+| A path listed twice under two names (SwiftPM cache) | Listed once; identical paths count once in a plan |
+| CLI and MCP removal had no switch | "Let agents remove merged worktrees", off by default |
 | `go clean -modcache` used Go's own setting | `GOMODCACHE` is pinned to the `~/go/pkg/mod` the row shows |
 | A package cache waited for any package tool | Waits only for its own tool (`gate::cache_tools`), found in the rendered check |
 | Recheck of build output compared only path and inode | It also checks again that git ignores and does not track the folder (`leftovers::still_output`) |
@@ -1031,5 +1088,7 @@ open.
 - 2026-11-09: review fixes: D-12 (orphans kept), narrower disposable list,
   long timeout for git writes, scratch and Downloads tightened, per-tool
   cache locks.
+- 2026-11-09: slices 7–11 added and built after Henrik chose "everything"
+  (D-13 to D-16, FR-19 to FR-26).
 - 2026-11-09: PR review fixes: build-output recheck, no double counting of
   nested items, cancellable known-cache scan.

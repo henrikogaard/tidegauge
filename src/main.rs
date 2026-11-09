@@ -47,6 +47,7 @@ mod sensor_max;
 mod network;
 mod notifications;
 mod packages;
+mod palette;
 mod processes;
 mod process_activity;
 mod process_control;
@@ -76,6 +77,11 @@ use std::time::Duration;
 actions!(tidegauge, [Quit, CloseWindow]);
 
 fn main() {
+    // `tidegauge cleanup …`, `hook …` and `mcp` run without the window or
+    // the single-instance lock (FR-25).
+    if let Some(code) = cleanup::cli::run(&std::env::args().collect::<Vec<_>>()) {
+        std::process::exit(code);
+    }
     let _instance = match instance::acquire() {
         Ok(Some(guard)) => guard,
         Ok(None) => {
@@ -90,6 +96,7 @@ fn main() {
     env_logger_init();
     sensors::start();
     disks::start();
+    cleanup::auto::start();
     projects::start_nettop();
     router_ping::start();
     app::start_sampler();

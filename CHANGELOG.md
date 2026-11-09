@@ -31,6 +31,23 @@ hardware acceptance checks. A merge and a published release are separate events.
     turn on agent review: your own Claude Code or Codex reads the ticked
     items, read-only, and says keep or clean. Both are off by default.
 - Clicking the low-disk alert opens Cleanup.
+- Cleanup also lists folders and preferences left in `~/Library` by apps
+  whose maker has no app installed any more.
+- ⌘⌫ on Cleanup asks to clean up, and ⌘K opens a command bar with every
+  page and Cleanup action.
+- The menu-bar panel shows "N GB ready to free" after a scan finds 5 GB or
+  more, and opens Cleanup.
+- Settings → General → Cleanup has new switches, all off by default:
+  delete a removed worktree's local branch when git agrees it is merged;
+  remove merged worktrees every 30 minutes; and clean up Safe items by
+  itself when free space drops under 10, 20 or 50 GB. Each automatic run
+  rechecks every item and sends a notification.
+- `tidegauge cleanup status`, `tidegauge cleanup worktrees [--merged]
+  [--apply]`, `tidegauge hook session-start` and `tidegauge mcp` let
+  agents and scripts ask Tidegauge about disk space and merged worktrees.
+  Settings has buttons to copy the hook and MCP snippets.
+- Agent review works with Claude Code, Codex, opencode, Grok, Mistral
+  Vibe, pi and omp, each run read-only.
 
 ### Changed
 

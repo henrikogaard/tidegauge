@@ -203,6 +203,9 @@ pub fn pump_status_bar(bar: &mut crate::statusbar::StatusBar, cx: &mut gpui_kit:
     let settings = Settings::load();
     let snap = crate::engine::latest();
     bar.sync(&settings, &snap);
+    for note in crate::cleanup::auto::drain_notes() {
+        crate::notifications::send(&note, "cleanup");
+    }
     for a in drain_alerts(&settings) {
         crate::notifications::send(&a.message, &a.metric);
         crate::alert_shortcut::run_for_alert(settings.alert_shortcut.as_deref(), &a.metric, &a.message);

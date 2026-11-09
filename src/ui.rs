@@ -83,7 +83,7 @@ impl Tab {
             Tab::History => l("History", "Historikk"),
         }
     }
-    fn icon(self) -> &'static str {
+    pub(crate) fn icon(self) -> &'static str {
         match self {
             Tab::Overview => "icons/layout-dashboard.svg",
             Tab::Cpu => "icons/cpu.svg",
@@ -143,6 +143,8 @@ pub struct TideGaugeView {
     /// Where the window was last drawn, to close notes when that changes.
     last_here: Option<Destination>,
     agents_scroll: ScrollHandle,
+    /// The ⌘K command bar, while open.
+    pub palette: Option<crate::palette::Palette>,
     pub tools: crate::tools_panel::State,
     tools_scroll: ScrollHandle,
     process_scroll: ScrollHandle,
@@ -264,6 +266,7 @@ impl TideGaugeView {
             last_here: None,
             agents_scroll: ScrollHandle::new(),
             tools: crate::tools_panel::State::default(),
+            palette: None,
             tools_scroll: ScrollHandle::new(),
             process_scroll: ScrollHandle::new(),
             only_remaining: false,
@@ -1084,7 +1087,7 @@ impl Destination {
                 | Self::Agents
         )
     }
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Tab(tab) => tab.label(),
             Self::Apps => l("Apps & processes", "Apper og prosesser"),
@@ -1328,6 +1331,13 @@ fn sidebar_groups(visible: &[Tab], battery: bool) -> Vec<SidebarGroup> {
 }
 
 /// The sidebar's pages top to bottom, which is also the order of ⌘1…⌘9.
+/// Every page the sidebar lists, then Settings: the command bar's pages.
+pub(crate) fn every_page(view: &TideGaugeView) -> Vec<Destination> {
+    let mut all = sidebar_order(&sidebar_groups(&Tab::visible(), battery_listed(&view.snap)));
+    all.push(Destination::Settings);
+    all
+}
+
 fn sidebar_order(groups: &[SidebarGroup]) -> Vec<Destination> {
     groups.iter().flat_map(|g| g.pages.iter().copied()).collect()
 }
@@ -1863,6 +1873,34 @@ impl Render for TideGaugeView {
                     cx.stop_propagation();
                 }
             }))
+            // ⌘⌫ on Cleanup asks to clean up (FR-19); ⌘K opens the command bar (FR-20).
+            .on_key_down({
+                let this = this.clone();
+                move |event, window, cx| {
+                    let keys = &event.keystroke;
+                    let plain_command = keys.modifiers.platform && !keys.modifiers.shift && !keys.modifiers.alt && !keys.modifiers.control;
+                    if !plain_command {
+                        return;
+                    }
+                    if keys.key == "backspace" && this.read(cx).destination() == Destination::Tool(crate::tools_panel::Page::Cleanup) {
+                        crate::cleanup_panel::clean_up(&this, window, cx);
+                        cx.stop_propagation();
+                    } else if keys.key == "k" {
+                        crate::palette::toggle(&this, cx);
+                        cx.stop_propagation();
+                    }
+                }
+            })
+            // While the command bar is open it takes every key first.
+            .capture_key_down({
+                let this = this.clone();
+                move |event, window, cx| {
+                    if crate::palette::key(&this, event, window, cx) {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+            })
             // ⌘1…⌘9 open the first nine sidebar pages in order.
             .on_key_down({
                 let this = this.clone();
@@ -1881,6 +1919,7 @@ impl Render for TideGaugeView {
                 }
             })
             .size_full()
+            .relative()
             .flex()
             .flex_row()
             .text_color(t::ink(dark))
@@ -1903,6 +1942,7 @@ impl Render for TideGaugeView {
                     .child(content)
                     .when_some(self.toast.as_ref(), |d, toast| d.child(toast_view(toast, dark, this.clone()))),
             )
+            .when_some(self.palette.as_ref(), |d, p| d.child(crate::palette::overlay(p, self, dark, this.clone())))
     }
 }
 

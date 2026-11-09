@@ -118,7 +118,7 @@ identity. A preview or QA bundle is ad-hoc signed, and macOS may not list its wi
 | Desktop widgets | Small (one reading, chosen when you edit the widget), medium (four readings with sparklines) and large (all six) WidgetKit widgets for the desktop and Notification Center; macOS 14 or later, packaged builds only |
 | Language | English or Norwegian Bokmål, following macOS or chosen in Settings |
 | Updates | Signed automatic updates, with Check for Updates in Settings, the panel and the menu |
-| Tools · Cleanup | Agent worktrees (Removable only when merged, clean and unused; removed with git, branch kept), Xcode build data whose project is gone, idle build output, known caches, logs and agent scratch, with Safe / Balanced / Deep levels, one confirmation, Trash for folders, and optional read-only review by your own agent CLI |
+| Tools · Cleanup | Agent worktrees (Removable only when merged, clean and unused; removed with git, branch kept), Xcode build data whose project is gone, idle build output, known caches, logs and agent scratch, with Safe / Balanced / Deep levels, one confirmation, Trash for folders, optional read-only review by your own agent CLI (Claude Code, Codex, opencode, Grok, Mistral Vibe, pi, omp), app leftovers, ⌘⌫ and a ⌘K command bar, opt-in auto-clean and clean-after-merge, and `tidegauge cleanup …` / `hook` / `mcp` modes for agents |
 | Tools · Startup | Bounded legacy registration inventory, explicit override evidence, Tidegauge login preference and System Settings handoff |
 | Last minute | Apps & processes view of recent per-process CPU, disk I/O and wakeups with observed coverage, not an energy score |
 | Tools · Compare | Frozen 5-, 15- or 30-minute system summaries and equal-length, non-overlapping comparisons |

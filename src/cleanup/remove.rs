@@ -32,6 +32,7 @@ pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Rep
         return report;
     };
     let before = free_now();
+    let delete_branches = crate::settings::Settings::load().cleanup_delete_branches;
     for c in plan {
         if cancel.load(Ordering::Relaxed) {
             report.skipped.push((c.title.clone(), l("Stopped", "Stoppet").into()));
@@ -43,7 +44,11 @@ pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Rep
                 if matches!(c.method, Method::Trash) {
                     report.trashed_bytes += c.bytes.unwrap_or(0);
                 }
-                report.removed.push(c.title.clone());
+                let mut title = c.title.clone();
+                if delete_branches && delete_branch(&c) {
+                    title = format!("{title} ({})", l("branch deleted", "grenen slettet"));
+                }
+                report.removed.push(title);
             }
             Err(why) => report.skipped.push((c.title.clone(), why)),
         }
@@ -51,6 +56,18 @@ pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Rep
     }
     report.freed_bytes = free_now().saturating_sub(before);
     report
+}
+
+/// After a merged worktree is gone, delete its local branch with
+/// `git branch -d`, which refuses a branch git does not see as merged.
+/// The remote branch is never touched (FR-22).
+pub fn delete_branch(c: &Candidate) -> bool {
+    let Method::GitWorktree { main } = &c.method else { return false };
+    let Some((_, branch)) = c.facts.iter().find(|(k, _)| *k == "branch_ref") else { return false };
+    if branch.starts_with('-') || branch.is_empty() {
+        return false;
+    }
+    super::git::write(main, &["branch", "-d", "--", branch])
 }
 
 fn apply(c: &Candidate) -> Result<(), String> {
@@ -121,7 +138,7 @@ mod tests {
     use super::*;
 
     fn removable(r: &std::path::Path, home: &std::path::Path, name: &str) -> Candidate {
-        let cfg = ScanConfig { roots: vec![], active_days: 2, use_gh: false, include_downloads: false };
+        let cfg = ScanConfig { roots: vec![], active_days: 2, use_gh: false, include_downloads: false, build_idle_days: 30, only_worktrees: false };
         // Recent mtimes would make it Active; age the folder.
         let c = audit_repo(r, &ScanConfig { active_days: 0, ..cfg }, home, &Procs { list: vec![], ok: true }).unwrap();
         let c = c.into_iter().find(|c| c.title.ends_with(name)).unwrap();
@@ -143,6 +160,25 @@ mod tests {
         let list = git(&r, &["worktree", "list"]);
         assert!(!list.contains("done"), "{list}");
         assert!(git(&r, &["branch", "--list", "done"]).contains("done"), "branch stays");
+    }
+
+    #[test]
+    fn branch_delete_only_when_merged() {
+        let home = temp("branch");
+        let r = repo(&home, "r");
+        worktree(&r, "merged");
+        merge(&r, "merged");
+        let c = removable(&r, &home, "merged");
+        apply(&c).unwrap();
+        assert!(delete_branch(&c));
+        assert!(!git(&r, &["branch", "--list", "merged"]).contains("merged"));
+        // An unmerged branch is refused by git -d.
+        let w = worktree(&r, "open");
+        git(&r, &["worktree", "remove", w.to_str().unwrap()]);
+        let mut fake = c.clone();
+        fake.facts = vec![("branch_ref", "open".into())];
+        assert!(!delete_branch(&fake));
+        assert!(git(&r, &["branch", "--list", "open"]).contains("open"));
     }
 
     #[test]
