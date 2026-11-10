@@ -152,6 +152,9 @@ pub struct Settings {
     /// `cleanup_auto_limit_gb` (D-14).
     pub cleanup_auto: bool,
     pub cleanup_auto_limit_gb: u32,
+    /// When the safe step is not enough, also trash build output of projects
+    /// idle 14 days or more, oldest first, until back over the limit (D-19).
+    pub cleanup_auto_build: bool,
     /// Remove a worktree by itself once its branch is merged (D-14).
     pub cleanup_after_merge: bool,
     /// Delete a removed worktree's local branch when git agrees it is merged.
@@ -219,6 +222,7 @@ impl Default for Settings {
             cleanup_agent_consent: None,
             cleanup_auto: false,
             cleanup_auto_limit_gb: 20,
+            cleanup_auto_build: false,
             cleanup_after_merge: false,
             cleanup_delete_branches: false,
             cleanup_agent_remove: false,

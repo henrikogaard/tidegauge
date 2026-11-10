@@ -1362,6 +1362,13 @@ fn cleanup(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
         dark,
     ));
     rows.push(row(
+        l("Also clear old build output", "Fjern også gamle byggresultater"),
+        Some(l("When that is not enough: build output of projects untouched for 14 days goes to the Trash, oldest first, until free space is back over the limit.", "Når det ikke er nok: byggresultater fra prosjekter som ikke er rørt på 14 dager går til papirkurven, eldste først, til ledig plass er over grensen igjen.").into()),
+        preference_switch("cleanup-auto-build".into(), l("Also clear old build output", "Fjern også gamle byggresultater").into(), settings.cleanup_auto_build, dark, this.clone(), |s, on| s.cleanup_auto_build = on),
+        false,
+        dark,
+    ));
+    rows.push(row(
         l("Let agents remove merged worktrees", "La agenter fjerne flettede arbeidstrær"),
         Some(l("Lets `tidegauge cleanup worktrees --apply` and the MCP server remove worktrees that are merged, clean, pushed and unused. Off: they can only list.", "Lar `tidegauge cleanup worktrees --apply` og MCP-serveren fjerne arbeidstrær som er flettet, rene, pushet og ubrukte. Av: de kan bare liste.").into()),
         preference_switch("cleanup-agent-remove".into(), l("Let agents remove merged worktrees", "La agenter fjerne flettede arbeidstrær").into(), settings.cleanup_agent_remove, dark, this.clone(), |s, on| s.cleanup_agent_remove = on),

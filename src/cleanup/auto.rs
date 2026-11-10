@@ -3,7 +3,7 @@
 //! undone or is a merged, clean worktree, after the same recheck as a
 //! manual cleanup, at most once every 30 minutes, and says what went.
 
-use super::{remove, scan_blocking, Candidate, Method, ScanConfig, Tier, WorktreeState};
+use super::{remove, scan_blocking, Candidate, Category, Method, ScanConfig, Tier, WorktreeState};
 use crate::locale::text as l;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Mutex;
@@ -33,6 +33,29 @@ pub fn auto_plan(cands: &[Candidate]) -> Vec<Candidate> {
         })
         .collect();
     super::without_nested(ok).into_iter().cloned().collect()
+}
+
+/// The second step (FR-35, D-19): build output that goes to the Trash, from
+/// projects idle `idle_days` or more, oldest first, until `need` bytes are
+/// covered. Nothing waiting, nothing unmeasured.
+pub fn ladder_plan(cands: &[Candidate], need: u64, now: i64, idle_days: i64) -> Vec<Candidate> {
+    let mut ok: Vec<&Candidate> = cands
+        .iter()
+        .filter(|c| c.category == Category::BuildOutput && matches!(c.method, Method::Trash) && c.tier != Tier::Keep)
+        .filter(|c| c.lock.is_none() && c.bytes.is_some_and(|b| b > 0))
+        .filter(|c| c.last_used.is_some_and(|t| now - t >= idle_days * 86_400))
+        .collect();
+    ok.sort_by_key(|c| c.last_used);
+    let mut out = Vec::new();
+    let mut got = 0u64;
+    for c in super::without_nested(ok) {
+        if got >= need {
+            break;
+        }
+        got += c.bytes.unwrap_or(0);
+        out.push(c.clone());
+    }
+    out
 }
 
 /// Removable worktrees only, for clean-after-merge.
@@ -77,11 +100,26 @@ fn tick() {
         }
     }
     let low = crate::metrics::disk_stats().free < s.cleanup_auto_limit_gb.max(1) as u64 * 1_000_000_000;
+    let limit = s.cleanup_auto_limit_gb.max(1) as u64 * 1_000_000_000;
     if s.cleanup_auto && low && due(&LAST_AUTO, now) {
-        let plan = auto_plan(&scan_blocking(ScanConfig::current()).candidates);
+        let cands = scan_blocking(ScanConfig::current()).candidates;
+        let plan = auto_plan(&cands);
+        let mut got = 0;
         if !plan.is_empty() {
             let r = remove::run(plan, &AtomicBool::new(false), &AtomicUsize::new(0));
+            got = r.freed_bytes + r.trashed_bytes;
             note(l("Cleaned up by itself", "Ryddet av seg selv"), &r);
+        }
+        // Trashed bytes count toward the limit: they are gone once the
+        // Trash is emptied, which the notification says.
+        let free = crate::metrics::disk_stats().free;
+        let need = limit.saturating_sub(free).saturating_sub(got);
+        if s.cleanup_auto_build && need > 0 {
+            let plan = ladder_plan(&cands, need, now, 14);
+            if !plan.is_empty() {
+                let r = remove::run(plan, &AtomicBool::new(false), &AtomicUsize::new(0));
+                note(l("Cleared old build output", "Fjernet gamle byggresultater"), &r);
+            }
         }
     }
 }
@@ -109,6 +147,26 @@ mod tests {
         c.method = method;
         c.bytes = Some(1);
         c
+    }
+
+    #[test]
+    fn ladder_takes_old_build_output_oldest_first_until_enough() {
+        let now = 100 * 86_400;
+        let b = |id: &str, days: i64, bytes: u64| {
+            let mut c = Candidate::folder(Category::BuildOutput, PathBuf::from(id), id.into(), Tier::Rebuild);
+            c.last_used = Some(now - days * 86_400);
+            c.bytes = Some(bytes);
+            c
+        };
+        let mut locked = b("/locked", 90, 9);
+        locked.lock = Some("x".into());
+        let mut keep = b("/keep", 90, 9);
+        keep.tier = Tier::Keep;
+        let cands = vec![b("/young", 3, 50), b("/old", 60, 5), b("/older", 80, 5), b("/mid", 20, 5), locked, keep, c("/cache", Tier::Safe, Method::Trash)];
+        let ids = |need| ladder_plan(&cands, need, now, 14).into_iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(ids(8), vec!["/older", "/old"], "oldest first, stops once enough");
+        assert_eq!(ids(100), vec!["/older", "/old", "/mid"], "never under 14 days idle");
+        assert!(ids(0).is_empty());
     }
 
     #[test]
