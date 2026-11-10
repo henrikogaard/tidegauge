@@ -249,7 +249,7 @@ pub struct ScanState {
 }
 
 impl ScanState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             candidates: Vec::new(),
             skipped: Vec::new(),

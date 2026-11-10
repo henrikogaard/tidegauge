@@ -128,7 +128,7 @@ pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
     match page {
         Page::Startup if this.read(cx).tools.startup.is_none() => refresh_startup(this, cx),
         Page::Baselines => load_baseline(this, cx),
-        Page::Cleanup if !this.read(cx).tools.cleanup.is_fresh() => crate::cleanup_panel::start_scan(this, cx),
+        Page::Cleanup if this.read(cx).tools.cleanup.needs_scan() => crate::cleanup_panel::start_scan(this, cx),
         _ => {}
     }
 }

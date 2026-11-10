@@ -20,6 +20,9 @@ const TILE_ROW: f32 = 108.;
 /// A section's caption, its card of three rows and the gaps around them.
 const SECTION: f32 = 128.;
 
+/// The "ready to free" row and the gap above it.
+const READY_ROW: f32 = 48.;
+
 /// What the panel shows, decided once when it opens and kept until it
 /// closes. The window's size is fixed at that moment, so the tiles and
 /// sections must not come or go while it is open: a section appearing would
@@ -29,6 +32,8 @@ pub struct Layout {
     tiles: Vec<String>,
     plans: bool,
     apps: bool,
+    /// What the last Cleanup scan found ready, when the row is shown.
+    ready: Option<u64>,
 }
 
 impl Layout {
@@ -37,6 +42,7 @@ impl Layout {
         let latest = crate::engine::latest();
         let mut layout = Self::new(&crate::settings::Settings::load(), &latest.plans, crate::metrics::now_unix());
         layout.tiles = crate::settings::panel_tiles_shown(&layout.tiles, latest.battery.confirmed_absent());
+        layout.ready = ready_to_free();
         layout
     }
 
@@ -45,16 +51,18 @@ impl Layout {
             tiles: settings.panel_tiles.clone(),
             plans: settings.panel_show_plans && !current_plans(plans, now).is_empty(),
             apps: settings.panel_show_apps,
+            ready: None,
         }
     }
 
     /// The panel grows or shrinks by a row for every two tiles beyond or
-    /// short of the default four, and by a section for each of AI plans and
-    /// Busiest apps that it leaves out.
+    /// short of the default four, by a section for each of AI plans and
+    /// Busiest apps that it leaves out, and by the Cleanup row when shown.
     pub fn height(&self) -> f32 {
         let rows = self.tiles.len().max(1).div_ceil(2) as f32;
         let missing = [self.plans, self.apps].iter().filter(|shown| !**shown).count() as f32;
-        BASE_HEIGHT + (rows - 2.) * TILE_ROW - missing * SECTION
+        let ready = if self.ready.is_some() { READY_ROW } else { 0. };
+        BASE_HEIGHT + (rows - 2.) * TILE_ROW - missing * SECTION + ready
     }
 
     /// The plans to draw now: none unless the section was open for, else the
@@ -408,7 +416,7 @@ impl Render for MenuPanel {
                 )
             })
             // What the last Cleanup scan found ready, when it is worth a look (FR-17).
-            .when_some(ready_to_free(), |d, bytes| {
+            .when_some(layout.ready, |d, bytes| {
                 d.child(
                     div()
                         .id("menu-cleanup-ready")
@@ -512,7 +520,7 @@ impl Render for MenuPanel {
 #[cfg(test)]
 mod tests {
     // Named imports: the UI kit's glob export includes its own `test`.
-    use super::{spans_both_columns, Layout, BASE_HEIGHT, SECTION, TILE_ROW};
+    use super::{spans_both_columns, Layout, BASE_HEIGHT, READY_ROW, SECTION, TILE_ROW};
     use crate::agents::{Plan, Plans};
     use crate::settings::Settings;
 
@@ -562,6 +570,15 @@ mod tests {
         assert_eq!(height(6, true, true), full + TILE_ROW);
         assert_eq!(height(4, false, true), full - SECTION);
         assert_eq!(height(4, false, false), full - 2. * SECTION);
+    }
+
+    #[test]
+    fn the_cleanup_row_makes_room_so_the_footer_stays_on_screen() {
+        let fresh = Plans::Loaded(vec![plan("claude", 60.)]);
+        let mut layout = Layout::new(&settings(4, true, true), &fresh, NOW);
+        assert_eq!(layout.height(), BASE_HEIGHT);
+        layout.ready = Some(60_000_000_000);
+        assert_eq!(layout.height(), BASE_HEIGHT + READY_ROW);
     }
 
     #[test]

@@ -53,11 +53,10 @@ impl State {
     pub fn scanning(&self) -> bool {
         self.scan.as_ref().is_some_and(|s| s.lock().unwrap().phase != Phase::Done)
     }
-    pub fn is_fresh(&self) -> bool {
-        self.scan.as_ref().is_some_and(|s| {
-            let s = s.lock().unwrap();
-            s.phase != Phase::Done || s.finished.is_some_and(|f| f.elapsed().as_secs() < 60)
-        })
+    /// Opening the page scans only the first time, or again after a scan
+    /// was stopped; otherwise the last result stays until Rescan or a cleanup.
+    pub fn needs_scan(&self) -> bool {
+        self.scan.is_none() || self.cancel.load(Ordering::Relaxed)
     }
 }
 
@@ -147,6 +146,17 @@ pub fn ago(when: i64, now: i64) -> String {
         _ => (s / 31_536_000, "year", "years", "år", "år"),
     };
     format!("{} {}", crate::locale::count(n as u64, one_en, many_en, one_nb, many_nb), l("ago", "siden"))
+}
+
+/// "◐ Looking for worktrees and leftovers… · 83 found so far", with a
+/// turning mark so a running scan is plain to see.
+pub fn scan_status(phase: Phase, found: usize, frame: usize) -> String {
+    let spin = ["◐", "◓", "◑", "◒"][frame % 4];
+    let what = match phase {
+        Phase::Finding => l("Looking for worktrees and leftovers…", "Ser etter arbeidstrær og rester …"),
+        _ => l("Measuring sizes…", "Måler størrelser …"),
+    };
+    format!("{spin} {what} · {found} {}", l("found so far", "funnet så langt"))
 }
 
 /// "A balanced cleanup frees 52 GB: Agent worktrees, Xcode build data and 3 more."
@@ -342,7 +352,12 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             )
             .child(stacked_bar(disk.used, ready_bytes, disk.total, dark))
             .child(level_row(st.level, dark, this.clone()))
-            .child(sub(summary_line(st.level, ready_bytes, &by_category(&ready))).text_color(t::ink_dim(dark))),
+            .child(if scan.phase == Phase::Done {
+                sub(summary_line(st.level, ready_bytes, &by_category(&ready))).text_color(t::ink_dim(dark))
+            } else {
+                let frame = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) / 300) as usize;
+                sub(scan_status(scan.phase, scan.candidates.len(), frame)).text_color(t::accent(dark))
+            }),
     );
 
     if !scan.git {
@@ -398,13 +413,6 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             }
         }
     }
-    if scan.phase != Phase::Done {
-        let what = match scan.phase {
-            Phase::Finding => l("Looking for worktrees and leftovers…", "Ser etter arbeidstrær og rester…"),
-            _ => l("Measuring sizes…", "Måler størrelser…"),
-        };
-        list = list.child(div().px(t::SPACE_4).py(t::SPACE_2).child(sub(what).text_color(t::ink_dim(dark))));
-    }
     body = body.child(list);
 
     // Kept: shown, never ticked.
@@ -416,7 +424,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     // Footer: when it was checked, what was skipped, and the one button.
     let checked = match scan.finished {
         Some(f) => format!("{} {}", l("Checked", "Sjekket"), ago(now - f.elapsed().as_secs() as i64, now)),
-        None => l("Checking…", "Sjekker …").into(),
+        None => l("Scanning…", "Skanner…").into(),
     };
     let mut footer = div().flex().items_center().justify_between().gap(t::SPACE_3).px(t::SPACE_4);
     let mut left = div().flex().items_center().gap(t::SPACE_2).child(sub(checked).text_color(t::ink_dim(dark)));
@@ -945,7 +953,7 @@ fn ask_agent(this: &Entity<TideGaugeView>, kind: AgentKind, window: &mut Window,
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, plan, summary_line, ticked, State};
+    use super::{ago, plan, scan_status, summary_line, ticked, State};
     use crate::cleanup::{self, AgentNote, Candidate, Category, Level, Tier};
 
     fn cand(id: &str, cat: Category, tier: Tier, bytes: u64, days_idle: i64) -> Candidate {
@@ -953,6 +961,28 @@ mod tests {
         c.bytes = Some(bytes);
         c.last_used = Some(cleanup::now() - days_idle * 86_400);
         c
+    }
+
+    #[test]
+    fn opening_the_page_scans_only_once() {
+        let mut st = State::default();
+        assert!(st.needs_scan());
+        let mut done = cleanup::ScanState::new();
+        done.phase = cleanup::Phase::Done;
+        done.finished = Some(std::time::Instant::now() - std::time::Duration::from_secs(3600));
+        st.scan = Some(std::sync::Arc::new(std::sync::Mutex::new(done)));
+        assert!(!st.needs_scan(), "an hour-old result is kept, not rescanned");
+        st.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(st.needs_scan(), "a stopped scan is only partial");
+    }
+
+    #[test]
+    fn a_running_scan_says_so_and_turns() {
+        let a = scan_status(cleanup::Phase::Finding, 83, 0);
+        let b = scan_status(cleanup::Phase::Finding, 83, 1);
+        assert!(a.contains("83"), "{a}");
+        assert_ne!(a, b, "the mark turns between frames");
+        assert_ne!(a, scan_status(cleanup::Phase::Measuring, 83, 0));
     }
 
     #[test]
