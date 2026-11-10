@@ -5,7 +5,9 @@
 use super::gate::{self, Procs};
 use super::{Candidate, Method, ToolAction};
 use crate::locale::text as l;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Clone, Debug, Default)]
@@ -23,12 +25,32 @@ fn free_now() -> u64 {
     crate::metrics::disk_stats().free
 }
 
-/// Remove every candidate in `plan`. `done` counts finished items for the
-/// progress line.
-pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Report {
+/// Live progress of a run, read by the page while it works (FR-39).
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Items finished, removed or skipped.
+    pub done: AtomicUsize,
+    /// Sizes of the items removed so far.
+    pub bytes: AtomicU64,
+    /// The id of the item being removed now.
+    pub current: Mutex<Option<String>>,
+    /// Each finished item's id: true when removed, false when skipped.
+    pub outcome: Mutex<HashMap<String, bool>>,
+}
+
+/// Remove every candidate in `plan`, recording each one in `progress`.
+pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, progress: &Progress) -> Report {
+    let done = &progress.done;
+    let finish = |id: &str, ok: bool| {
+        progress.outcome.lock().unwrap().insert(id.to_string(), ok);
+        done.fetch_add(1, Ordering::Relaxed);
+    };
     let mut report = Report::default();
     let Some(home) = gate::home() else {
         report.errors.push((String::new(), l("Your home folder could not be resolved.", "Hjemmemappen kunne ikke finnes.").into()));
+        for c in &plan {
+            finish(&c.id, false);
+        }
         return report;
     };
     let before = free_now();
@@ -36,8 +58,10 @@ pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Rep
     for c in plan {
         if cancel.load(Ordering::Relaxed) {
             report.skipped.push((c.title.clone(), l("Stopped", "Stoppet").into()));
+            finish(&c.id, false);
             continue;
         }
+        *progress.current.lock().unwrap() = Some(c.id.clone());
         let procs = Procs::read();
         match gate::recheck(&c, &home, &procs).and_then(|()| apply(&c)) {
             Ok(()) => {
@@ -49,11 +73,16 @@ pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Rep
                     title = format!("{title} ({})", l("branch deleted", "grenen slettet"));
                 }
                 report.removed.push(title);
+                progress.bytes.fetch_add(c.bytes.unwrap_or(0), Ordering::Relaxed);
+                finish(&c.id, true);
             }
-            Err(why) => report.skipped.push((c.title.clone(), why)),
+            Err(why) => {
+                report.skipped.push((c.title.clone(), why));
+                finish(&c.id, false);
+            }
         }
-        done.fetch_add(1, Ordering::Relaxed);
     }
+    *progress.current.lock().unwrap() = None;
     report.freed_bytes = free_now().saturating_sub(before);
     report
 }
@@ -262,4 +291,23 @@ mod tests {
         assert!(apply(&c).is_err());
         assert!(w.join("late.txt").exists());
     }
+
+    #[test]
+    fn progress_records_each_item() {
+        use super::{run, Progress};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let mut gone = Candidate::folder(super::super::Category::Logs, "/nowhere/at/all".into(), "gone".into(), super::super::Tier::Safe);
+        gone.bytes = Some(5);
+        let progress = Progress::default();
+        let r = run(vec![gone], &AtomicBool::new(false), &progress);
+        assert_eq!(progress.done.load(Ordering::Relaxed), 1);
+        assert_eq!(progress.outcome.lock().unwrap().get("/nowhere/at/all"), Some(&false), "{:?}", r.skipped);
+        assert!(progress.current.lock().unwrap().is_none());
+        assert_eq!(progress.bytes.load(Ordering::Relaxed), 0);
+        let stopped = Progress::default();
+        let c = Candidate::folder(super::super::Category::Logs, "x".into(), "x".into(), super::super::Tier::Safe);
+        run(vec![c], &AtomicBool::new(true), &stopped);
+        assert_eq!(stopped.outcome.lock().unwrap().get("x"), Some(&false));
+    }
+
 }

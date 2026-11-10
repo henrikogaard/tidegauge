@@ -11,7 +11,7 @@ use crate::ui::{caption, card, chip, empty_state, glyph_tile, sub, TideGaugeView
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -24,8 +24,152 @@ pub enum Sort {
 
 pub struct Cleaning {
     pub total: usize,
-    pub done: Arc<AtomicUsize>,
+    pub total_bytes: u64,
+    /// The planned items' titles by id: what is in this run.
+    pub titles: HashMap<String, String>,
+    pub progress: Arc<cleanup::remove::Progress>,
     pub cancel: Arc<AtomicBool>,
+}
+
+/// Where one item is in a running cleanup (FR-39).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Waiting,
+    Now,
+    Removed,
+    Skipped,
+}
+
+impl Stage {
+    fn icon(self) -> &'static str {
+        match self {
+            Stage::Waiting => "icons/circle-dashed.svg",
+            Stage::Now => "icons/loader-circle.svg",
+            Stage::Removed => "icons/circle-check.svg",
+            Stage::Skipped => "icons/circle-alert.svg",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Stage::Waiting => l("Waiting", "Venter"),
+            Stage::Now => l("Cleaning now", "Ryddes nå"),
+            Stage::Removed => l("Done", "Ferdig"),
+            Stage::Skipped => l("Skipped", "Hoppet over"),
+        }
+    }
+    fn color(self, dark: bool) -> Hsla {
+        match self {
+            Stage::Waiting => t::ink_dim(dark),
+            Stage::Now => t::accent(dark),
+            Stage::Removed => t::ok(dark),
+            Stage::Skipped => t::caution(dark),
+        }
+    }
+}
+
+impl Cleaning {
+    /// The stage of `id`, or None when it isn't part of this run.
+    pub fn stage(&self, id: &str) -> Option<Stage> {
+        if !self.titles.contains_key(id) {
+            return None;
+        }
+        if let Some(ok) = self.progress.outcome.lock().unwrap().get(id) {
+            return Some(if *ok { Stage::Removed } else { Stage::Skipped });
+        }
+        if self.progress.current.lock().unwrap().as_deref() == Some(id) {
+            return Some(Stage::Now);
+        }
+        Some(Stage::Waiting)
+    }
+}
+
+fn stage_icon(stage: Stage, dark: bool) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .size(px(14.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(svg().path(stage.icon()).size(px(13.)).text_color(stage.color(dark)))
+        .into_any_element()
+}
+
+/// The header while a cleanup runs: how far, how much, what now (FR-39).
+fn cleaning_block(c: &Cleaning, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let done = c.progress.done.load(Ordering::Relaxed).min(c.total);
+    let freed = c.progress.bytes.load(Ordering::Relaxed);
+    let skipped = c.progress.outcome.lock().unwrap().values().filter(|ok| !**ok).count();
+    let now = c.progress.current.lock().unwrap().clone().and_then(|id| c.titles.get(&id).cloned());
+    let stopping = c.cancel.load(Ordering::Relaxed);
+    let accent = t::accent(dark);
+    let frac = done as f32 / c.total.max(1) as f32;
+    let target = this.clone();
+    let mut block = div()
+        .flex()
+        .flex_col()
+        .gap(t::SPACE_2)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(t::SPACE_3)
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(t::SPACE_2)
+                        .child(
+                            div()
+                                .text_size(t::TEXT_ROW)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("{} {done} {} {}", l("Cleaning", "Rydder"), l("of", "av"), c.total)),
+                        )
+                        .child(sub(format!("{} {} {} {}", size(freed), l("of", "av"), size(c.total_bytes), l("removed", "fjernet"))).text_color(t::ink_dim(dark))),
+                )
+                .when(!stopping, |d| {
+                    d.child(button("cleanup-stop-run", l("Stop after this item", "Stopp etter dette elementet"), false, dark, move |_, cx| stop_scan(&target, cx)))
+                }),
+        )
+        .child(
+            div()
+                .h(px(8.))
+                .w_full()
+                .rounded_full()
+                .overflow_hidden()
+                .flex()
+                .bg(accent.opacity(0.15))
+                .child(div().h_full().w(relative(frac)).bg(accent)),
+        );
+    let line = if stopping {
+        l("Stopping after this item…", "Stopper etter dette elementet…").to_string()
+    } else {
+        match now {
+            Some(title) => format!("{} {title}", l("Now:", "Nå:")),
+            None => l("Checking the next item…", "Sjekker neste element…").into(),
+        }
+    };
+    block = block.child(sub(line).text_color(accent));
+    if skipped > 0 {
+        block = block.child(
+            sub(format!(
+                "{} — {}",
+                crate::locale::count(skipped as u64, "skipped", "skipped", "hoppet over", "hoppet over"),
+                l("changed or in use; the report says why when it's done.", "endret eller i bruk; rapporten sier hvorfor når den er ferdig.")
+            ))
+            .text_color(t::caution(dark)),
+        );
+    }
+    block
+}
+
+/// What a cleanup will take, by group and size, as chips (FR-39).
+fn will_clean(cats: &[(Category, u64)], dark: bool) -> Div {
+    let mut row = div().flex().flex_wrap().items_center().gap(t::SPACE_2).child(sub(l("Will clean:", "Rydder:")).text_color(t::ink_dim(dark)));
+    for (cat, bytes) in cats {
+        row = row.child(chip(format!("{} · {}", cat.label(), size(*bytes)), None, dark));
+    }
+    row
 }
 
 #[derive(Default)]
@@ -629,15 +773,18 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     ),
             )
             .child(stacked_bar(disk.used, ready_bytes, disk.total, dark))
-            .child(level_row(st.level, idle, !st.overrides.is_empty(), dark, this.clone()))
-            .child(
+            .when_some(st.cleaning.as_ref(), |d, c| d.child(cleaning_block(c, dark, this.clone())))
+            .when(st.cleaning.is_none(), |d| d.child(level_row(st.level, idle, !st.overrides.is_empty(), dark, this.clone())))
+            .when(st.cleaning.is_none(), |d| d.child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap(t::SPACE_3)
-                    .child(if scan.phase == Phase::Done {
-                        sub(summary_line(st.level, ready_bytes, &by_category(&ready))).text_color(t::ink_dim(dark))
+                    .child(if scan.phase == Phase::Done && ready.is_empty() {
+                        sub(summary_line(st.level, ready_bytes, &[])).text_color(t::ink_dim(dark))
+                    } else if scan.phase == Phase::Done {
+                        will_clean(&by_category(&ready), dark)
                     } else {
                         let frame = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) / 300) as usize;
                         sub(scan_status(scan.phase, scan.candidates.len(), frame)).text_color(t::accent(dark))
@@ -653,7 +800,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                             move |window, cx| clean_up(&target, window, cx),
                         ))
                     }),
-            ),
+            )),
     );
 
     if !scan.git {
@@ -752,7 +899,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         footer = footer.child(sub(format!(
             "{} {} {} {}…",
             l("Cleaning", "Rydder"),
-            c.done.load(Ordering::Relaxed).min(c.total),
+            c.progress.done.load(Ordering::Relaxed).min(c.total),
             l("of", "av"),
             c.total
         )));
@@ -893,12 +1040,34 @@ fn category_row(
         dark,
         move |_, cx| set_ticks(&target, ids.clone(), check != Check::On, cx),
     );
+    // During a run: this group's part of it, and one stage for the group.
+    let run = st.cleaning.as_ref().map(|cl| {
+        let stages: Vec<Stage> = items.iter().filter_map(|c| cl.stage(&c.id)).collect();
+        let finished = stages.iter().filter(|s| matches!(s, Stage::Removed | Stage::Skipped)).count();
+        let group = if stages.is_empty() {
+            None
+        } else if stages.contains(&Stage::Now) {
+            Some(Stage::Now)
+        } else if finished == stages.len() {
+            Some(if stages.contains(&Stage::Skipped) { Stage::Skipped } else { Stage::Removed })
+        } else {
+            Some(Stage::Waiting)
+        };
+        (finished, stages.len(), group)
+    });
+    let tick = match run {
+        Some((_, _, Some(sg))) => stage_icon(sg, dark),
+        _ => tick,
+    };
     let last = items.iter().filter_map(|c| c.last_used).max();
     // Counted from the plan, like the size, so nested items count once; out
     // of what can be picked, since items on hold have their own chip.
     let mut meta = format!("{} {} {} {}", picked.0, l("of", "av"), selectable.len(), l("selected", "valgt"));
     if picked.0 > 0 {
         meta = format!("{meta} ({})", size(picked.1));
+    }
+    if let Some((finished, n, Some(_))) = run {
+        meta = format!("{finished} {} {n} {}", l("of", "av"), l("done", "ferdig"));
     }
     if let Some(t) = last {
         meta = format!("{meta} · {} {}", l("used", "brukt"), ago(t, now));
@@ -924,7 +1093,7 @@ fn category_row(
     }
     let measured = items.iter().all(|c| c.bytes.is_some());
     trailing.push(size_cell(measured.then(|| cleanup::category_bytes(items.iter().copied())), dark));
-    div().flex().items_center().pl(t::SPACE_4).child(tick).child(
+    div().flex().items_center().pl(t::SPACE_4).when(matches!(run, Some((_, _, None))), |d| d.opacity(0.45)).child(tick).child(
         crate::ui::list_row(
             format!("cleanup-row-{cat:?}"),
             disclosure(open, glyph_tile(cat.icon(), dark).into_any_element(), dark),
@@ -996,7 +1165,11 @@ fn item_row(st: &State, c: &Candidate, idle: u32, now: i64, busy: bool, dark: bo
     if let Some(t) = c.last_used {
         meta = if meta.is_empty() { ago(t, now) } else { format!("{meta} · {}", ago(t, now)) };
     }
+    let stage = st.cleaning.as_ref().and_then(|cl| cl.stage(&c.id));
     let mut trailing = item_chips(c, dark);
+    if let Some(sg) = stage {
+        trailing.insert(0, chip(sg.label(), Some(sg.color(dark)), dark).into_any_element());
+    }
     trailing.push(size_cell(c.bytes, dark));
     if let Some(p) = c.paths.first().cloned() {
         trailing.push(
@@ -1004,7 +1177,11 @@ fn item_row(st: &State, c: &Candidate, idle: u32, now: i64, busy: bool, dark: bo
                 .into_any_element(),
         );
     }
-    div().flex().items_center().pl(px(40.)).child(tick).child(
+    let tick = match stage {
+        Some(sg) => stage_icon(sg, dark),
+        None => tick,
+    };
+    div().flex().items_center().pl(px(40.)).when(busy && stage.is_none(), |d| d.opacity(0.45)).child(tick).child(
         crate::ui::list_row(format!("cleanup-it-{}", c.id), div().into_any_element(), c.title.clone(), Some(meta), trailing, false, dark, None).flex_1(),
     )
 }
@@ -1159,13 +1336,14 @@ pub fn clean_up(this: &Entity<TideGaugeView>, window: &mut Window, cx: &mut App)
         return;
     }
     let total: u64 = plan.iter().filter_map(|c| c.bytes).sum();
-    let mut lines: Vec<String> = by_category(&plan.iter().collect::<Vec<_>>())
+    let cats = by_category(&plan.iter().collect::<Vec<_>>());
+    let mut lines: Vec<String> = vec![summary_line(st.level, total, &cats), String::new()];
+    lines.extend(cats
         .into_iter()
         .map(|(cat, b)| {
             let n = plan.iter().filter(|c| c.category == cat).count() as u64;
             format!("{} · {} · {}", cat.label(), crate::locale::count(n, "item", "items", "element", "elementer"), size(b))
-        })
-        .collect();
+        }));
     let mut largest: Vec<&Candidate> = plan.iter().collect();
     largest.sort_by_key(|c| std::cmp::Reverse(c.bytes.unwrap_or(0)));
     lines.push(String::new());
@@ -1200,12 +1378,14 @@ fn run_plan<E: 'static>(
         if !matches!(answer.await, Ok(1)) {
             return;
         }
-        let done = Arc::new(AtomicUsize::new(0));
+        let progress = Arc::new(cleanup::remove::Progress::default());
         let cancel = Arc::new(AtomicBool::new(false));
-        let (d, k) = (done.clone(), cancel.clone());
+        let (d, k) = (progress.clone(), cancel.clone());
         let total = plan.len();
+        let total_bytes = plan.iter().filter_map(|c| c.bytes).sum();
+        let titles = plan.iter().map(|c| (c.id.clone(), c.title.clone())).collect();
         this.update(cx, |v, cx| {
-            v.tools.cleanup.cleaning = Some(Cleaning { total, done, cancel });
+            v.tools.cleanup.cleaning = Some(Cleaning { total, total_bytes, titles, progress, cancel });
             v.tools.cleanup.report = None;
             cx.notify();
         });
@@ -1414,6 +1594,25 @@ mod tests {
         st.notes.insert("/r1".into(), AgentNote { keep: false, reason: "y".into() });
         assert!(!ticked(&st, &safe, 30, now));
         assert!(!ticked(&st, &fresh, 30, now), "clean does not tick");
+    }
+
+    #[test]
+    fn each_item_shows_where_it_is_in_a_run() {
+        use super::{Cleaning, Stage};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let progress = Arc::new(cleanup::remove::Progress::default());
+        let titles = [("a", "A"), ("b", "B"), ("c", "C")].iter().map(|(i, t)| (i.to_string(), t.to_string())).collect();
+        let run = Cleaning { total: 3, total_bytes: 30, titles, progress: progress.clone(), cancel: Arc::new(AtomicBool::new(false)) };
+        progress.outcome.lock().unwrap().insert("a".into(), true);
+        progress.outcome.lock().unwrap().insert("b".into(), false);
+        *progress.current.lock().unwrap() = Some("c".into());
+        assert_eq!(run.stage("a"), Some(Stage::Removed));
+        assert_eq!(run.stage("b"), Some(Stage::Skipped));
+        assert_eq!(run.stage("c"), Some(Stage::Now));
+        assert_eq!(run.stage("not-in-run"), None);
+        *progress.current.lock().unwrap() = None;
+        assert_eq!(run.stage("c"), Some(Stage::Waiting));
     }
 
     #[test]

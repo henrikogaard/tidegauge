@@ -80,6 +80,11 @@ hardware acceptance checks. A merge and a published release are separate events.
   picked show a lock with the reason, "Show" is "Show in Finder", the level
   says what it picks, and the Clean up button sits next to the selected
   total. The confirmation names the three largest items.
+- While Cleanup works, the top card shows a progress bar, how many items
+  and how many GB are done, the item being cleaned now, and a "Stop after
+  this item" button. Each item says Waiting, Cleaning now, Done or
+  Skipped, and each group shows how many of its items are done. Before
+  you start, "Will clean" lists each group with its size.
 
 ### Fixed
 

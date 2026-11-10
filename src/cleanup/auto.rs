@@ -5,7 +5,7 @@
 
 use super::{remove, scan_blocking, Candidate, Category, Method, ScanConfig, Tier, WorktreeState};
 use crate::locale::text as l;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 const EVERY: i64 = 30 * 60;
@@ -95,7 +95,7 @@ fn tick() {
         let cfg = ScanConfig { only_worktrees: true, ..ScanConfig::current() };
         let plan = merged_plan(&scan_blocking(cfg).candidates);
         if !plan.is_empty() {
-            let r = remove::run(plan, &AtomicBool::new(false), &AtomicUsize::new(0));
+            let r = remove::run(plan, &AtomicBool::new(false), &remove::Progress::default());
             note(l("Removed merged worktrees", "Fjernet flettede arbeidstrær"), &r);
         }
     }
@@ -106,7 +106,7 @@ fn tick() {
         let plan = auto_plan(&cands);
         let mut got = 0;
         if !plan.is_empty() {
-            let r = remove::run(plan, &AtomicBool::new(false), &AtomicUsize::new(0));
+            let r = remove::run(plan, &AtomicBool::new(false), &remove::Progress::default());
             got = r.freed_bytes + r.trashed_bytes;
             note(l("Cleaned up by itself", "Ryddet av seg selv"), &r);
         }
@@ -117,7 +117,7 @@ fn tick() {
         if s.cleanup_auto_build && need > 0 {
             let plan = ladder_plan(&cands, need, now, 14);
             if !plan.is_empty() {
-                let r = remove::run(plan, &AtomicBool::new(false), &AtomicUsize::new(0));
+                let r = remove::run(plan, &AtomicBool::new(false), &remove::Progress::default());
                 note(l("Cleared old build output", "Fjernet gamle byggresultater"), &r);
             }
         }

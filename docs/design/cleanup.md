@@ -1,6 +1,6 @@
 # Cleanup page
 
-Status: Building (slices 1–17 implemented; manual checks in section 10 open)
+Status: Building (slices 1–18 implemented; manual checks in section 10 open)
 Size: Full — a new page, new git and agent integrations, and it removes user data.
 Owner: Henrik · Started: 2026-11-09 · Approved: 2026-11-09, Henrik ("do all 6 slices in one go")
 Working assumptions: the draft answers to Q-1–Q-9 in section 8 are adopted
@@ -74,6 +74,7 @@ Trash-first rule.
 | FR-36 | Uninstall an app together with its leftovers | Could | Picking an app lists the app and its `~/Library` folders; after confirming, all go to the Trash; running apps, Apple apps and Tidegauge cannot be picked | Levo, Henrik 2026-11-10 |
 | FR-37 | "In use by" names the real user | Should | When the process inside a folder is a shell or helper (`sleep`, `zsh`, `timeout`…), the label names the first program above it; a lone shell keeps its own name | Henrik 2026-11-10 |
 | FR-38 | Selection is self-explanatory | Should | Groups show "n of m selected", the arrow sits before the icon, unpickable items show a lock with the reason, the level says what it picks and warns that it resets own ticks, the Clean up button sits by the selected total, and the confirmation names the largest items | Henrik 2026-11-10 |
+| FR-39 | What will be cleaned and how far it is are visible | Should | Before a run, the header lists each group with its selected size; during a run it shows a bar, items and bytes done, the current item and a stop button, and each item and group shows its stage (waiting, now, done, skipped) | Henrik 2026-11-10 |
 | CON-1 | Rust and gpui-kit, colours from `theme.rs`, tokens from `DESIGN.md` | Must | — | S6 |
 | CON-2 | Folders go to the Trash; Cancel is the first button | Must | — | S6 |
 | CON-3 | `Command::new` uses absolute paths | Must | — | S6 |
@@ -98,7 +99,7 @@ Trash-first rule.
 
 ## 2. Scope
 
-- **In:** FR-1 to FR-38, NFR-1 to NFR-5. Henrik chose "everything" on 2026-11-09 (D-13) and added FR-27–FR-36 on 2026-11-10.
+- **In:** FR-1 to FR-39, NFR-1 to NFR-5. Henrik chose "everything" on 2026-11-09 (D-13) and added FR-27–FR-36 on 2026-11-10.
 - **Out:** nothing.
 - **Later:** nothing.
 
@@ -508,6 +509,7 @@ Context: on Henrik's Mac the workspace folders hold no project record, so
 | 15 | Auto ladder | FR-35 | Done |
 | 16 | Uninstall an app with its leftovers | FR-36 | Done |
 | 17 | Clearer selection and real in-use names | FR-37, FR-38 | Done |
+| 18 | Visible plan and live progress | FR-39 | Done |
 
 Each slice ships as its own PR with fixture tests (temporary git repos made in
 the test, never real repos), `cargo test`, and a light and dark screenshot
@@ -1089,6 +1091,7 @@ open.
 | FR-36 | `uninstall::finds_only_exact_leftovers`, `only_apps_in_applications_and_never_apple_or_tidegauge` | pass; no real uninstall run | this change |
 | FR-37 | `gate::names_who_started_a_helper` | pass | this change |
 | FR-38 | `cleanup_panel::level_hint_says_what_it_picks_and_warns_about_resets`; layout checked on screen | pass | this change |
+| FR-39 | `cleanup_panel::each_item_shows_where_it_is_in_a_run`, `remove::progress_records_each_item` | pass; not yet seen on screen during a run | this change |
 | NFR-5 | Full suite with `TIDEGAUGE_TEST_LANG=en` and `=nb`, including `locale_guard` | 511 passed, 0 failed each | this change |
 
 ## 11. Codebase deltas and change log
@@ -1148,3 +1151,5 @@ open.
   counted and capped but never shut down by the hook.
 - 2026-11-10: slice 17 after Henrik found "In use by sleep" and the
   checkbox and expand arrow unclear.
+- 2026-11-10: slice 18 after Henrik found the running cleanup hard to
+  follow (only "Cleaning 69 of 293…" in the footer).

@@ -16,7 +16,7 @@
 use super::{auto, remove, scan_blocking, Category, Candidate, ScanConfig, WorktreeState};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicBool;
 
 /// Handle a command-line mode; None when `args` is not one, so the app starts.
 pub fn run(args: &[String]) -> Option<i32> {
@@ -116,7 +116,7 @@ pub fn worktrees(merged_only: bool, apply: bool) -> Value {
         });
     }
     let plan = auto::merged_plan(&scan.candidates);
-    let r = remove::run(plan, &AtomicBool::new(false), &AtomicUsize::new(0));
+    let r = remove::run(plan, &AtomicBool::new(false), &remove::Progress::default());
     json!({
         "worktrees": listed,
         "applied": true,
