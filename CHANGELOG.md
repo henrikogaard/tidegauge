@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.9.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.9.0) — 2026-11-10
+
 ### Added
 
 - A Cleanup page, first under Maintenance, finds what agent work and
