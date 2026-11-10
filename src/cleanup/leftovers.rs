@@ -491,7 +491,10 @@ pub fn app_leftovers(home: &Path) -> Vec<Candidate> {
 
 fn app_leftovers_in(home: &Path, installed: &[String]) -> Vec<Candidate> {
     let vendors: std::collections::HashSet<String> = installed.iter().map(|i| vendor(i)).collect();
-    let mut by_id: std::collections::BTreeMap<String, Vec<PathBuf>> = Default::default();
+    // One row per maker: tests can leave thousands of ids from one vendor
+    // (`app.example.tests.<uuid>.plist`), which must not become thousands
+    // of rows.
+    let mut by_vendor: std::collections::BTreeMap<String, (std::collections::BTreeSet<String>, Vec<PathBuf>)> = Default::default();
     for place in ["Application Support", "Caches", "Saved Application State", "HTTPStorages", "WebKit", "Logs", "Preferences"] {
         let Ok(entries) = std::fs::read_dir(home.join("Library").join(place)) else { continue };
         for e in entries.flatten() {
@@ -504,21 +507,28 @@ fn app_leftovers_in(home: &Path, installed: &[String]) -> Vec<Candidate> {
             if v.starts_with("com.apple") || vendors.contains(&v) || id.contains("tidegauge") {
                 continue;
             }
-            by_id.entry(id.to_string()).or_default().push(e.path());
+            let entry = by_vendor.entry(v).or_default();
+            entry.0.insert(id.to_string());
+            entry.1.push(e.path());
         }
     }
-    by_id
+    by_vendor
         .into_iter()
-        .filter_map(|(id, paths)| {
+        .filter_map(|(vendor, (ids, paths))| {
             let paths: Vec<PathBuf> = paths.into_iter().filter(|p| gate::validate(p, home).is_ok()).collect();
             if paths.is_empty() {
                 return None;
             }
             let last = paths.iter().filter_map(|p| super::worktrees::last_used(p, None)).max();
+            let title = match ids.len() {
+                1 => ids.iter().next().cloned().unwrap_or_default(),
+                n => format!("{vendor} · {}", crate::locale::count(n as u64, "app id", "app ids", "app-id", "app-id-er")),
+            };
+            let id = ids.iter().next().cloned().unwrap_or_default();
             Some(Candidate {
-                id: format!("app:{id}"),
+                id: format!("app:{vendor}"),
                 category: Category::AppLeftovers,
-                title: id.clone(),
+                title,
                 detail: format!(
                     "{} · {}",
                     crate::locale::count(paths.len() as u64, "place", "places", "sted", "steder"),
@@ -767,6 +777,15 @@ mod tests {
         assert_eq!(found[0].title, "com.gone.Editor");
         assert_eq!(found[0].paths.len(), 3, "support, cache and preferences");
         assert_eq!(found[0].tier, Tier::Rebuild);
+        // Thousands of test ids from one maker are one row.
+        for i in 0..50 {
+            std::fs::write(lib.join(format!("Preferences/app.tests.run-{i}.plist")), "x").unwrap();
+        }
+        let found = app_leftovers_in(&home, &["com.google.drivefs".to_string()]);
+        assert_eq!(found.len(), 2);
+        let tests = found.iter().find(|c| c.id == "app:app.tests").unwrap();
+        assert_eq!(tests.paths.len(), 50);
+        assert!(tests.title.starts_with("app.tests · 50"), "{}", tests.title);
         assert_eq!(bundle_id("com.gone.Editor.savedState"), Some("com.gone.Editor"));
         assert_eq!(bundle_id("Notes Folder"), None);
         assert_eq!(bundle_id("UBF8T346G9.com.microsoft"), None);

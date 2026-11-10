@@ -366,14 +366,23 @@ pub static READY: Mutex<Option<(u64, i64)>> = Mutex::new(None);
 
 /// Ticked items minus any inside another ticked item, so nothing counts twice.
 pub fn without_nested(on: Vec<&Candidate>) -> Vec<&Candidate> {
+    // Index every path once; then each candidate looks up its own paths and
+    // their parents. Linear in the number of paths, so a scan with tens of
+    // thousands of items does not stall a redraw.
+    let mut owners: HashMap<&Path, Vec<(usize, &str)>> = HashMap::new();
+    for (i, c) in on.iter().enumerate() {
+        for p in &c.paths {
+            owners.entry(p.as_path()).or_default().push((i, c.id.as_str()));
+        }
+    }
+    let other = |path: &Path, me: &str, before: Option<usize>| {
+        owners.get(path).is_some_and(|v| v.iter().any(|(j, id)| *id != me && before.is_none_or(|i| *j < i)))
+    };
     on.iter()
         .copied()
         .enumerate()
         .filter(|(i, c)| {
-            !on.iter().enumerate().any(|(j, o)| {
-                o.id != c.id
-                    && c.paths.iter().any(|p| o.paths.iter().any(|q| (p != q && p.starts_with(q)) || (p == q && j < *i)))
-            })
+            !c.paths.iter().any(|p| other(p, &c.id, Some(*i)) || p.ancestors().skip(1).any(|a| other(a, &c.id, None)))
         })
         .map(|(_, c)| c)
         .collect()
@@ -539,6 +548,29 @@ pub fn category_bytes<'a>(cands: impl Iterator<Item = &'a Candidate>) -> u64 {
 }
 
 #[cfg(test)]
+#[cfg(test)]
+mod nested_tests {
+    use super::*;
+
+    #[test]
+    fn nesting_check_is_fast_and_correct() {
+        let mut cands: Vec<Candidate> = (0..30_000)
+            .map(|i| Candidate::folder(Category::AppLeftovers, PathBuf::from(format!("/h/Library/Preferences/p{i}.plist")), format!("p{i}"), Tier::Rebuild))
+            .collect();
+        cands.push(Candidate::folder(Category::XcodeBuild, PathBuf::from("/h/DD"), "all".into(), Tier::Safe));
+        cands.push(Candidate::folder(Category::XcodeBuild, PathBuf::from("/h/DD/App-1"), "one".into(), Tier::Safe));
+        let mut dup = Candidate::folder(Category::PackageCaches, PathBuf::from("/h/DD"), "dup".into(), Tier::Safe);
+        dup.id = "dup".into();
+        cands.push(dup);
+        let started = std::time::Instant::now();
+        let kept = without_nested(cands.iter().collect());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+        assert_eq!(kept.len(), 30_001, "the nested folder and the later duplicate go");
+        assert!(kept.iter().any(|c| c.title == "all"));
+        assert!(!kept.iter().any(|c| c.title == "one" || c.title == "dup"));
+    }
+}
+
 pub mod test_support {
     use std::path::{Path, PathBuf};
     use std::process::Command;
