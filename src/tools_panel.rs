@@ -17,6 +17,7 @@ pub enum ActivitySort {
 pub enum Page {
     #[default]
     Startup,
+    Cleanup,
     Activity,
     Baselines,
     Storage,
@@ -26,6 +27,7 @@ impl Page {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Startup => l("Startup", "Oppstart"),
+            Self::Cleanup => l("Cleanup", "Opprydding"),
             Self::Activity => l("Recent activity", "Nylig aktivitet"),
             Self::Baselines => l("Before & after", "Før og etter"),
             Self::Storage => l("Folder sizes", "Mappestørrelser"),
@@ -35,6 +37,7 @@ impl Page {
     pub(crate) fn key(self) -> &'static str {
         match self {
             Self::Startup => "startup",
+            Self::Cleanup => "cleanup",
             Self::Activity => "activity",
             Self::Baselines => "baselines",
             Self::Storage => "storage",
@@ -44,6 +47,7 @@ impl Page {
     pub(crate) fn icon(self) -> &'static str {
         match self {
             Self::Startup => "icons/power.svg",
+            Self::Cleanup => "icons/trash.svg",
             Self::Activity => "icons/activity.svg",
             Self::Baselines => "icons/git-compare-arrows.svg",
             Self::Storage => "icons/folder-tree.svg",
@@ -63,9 +67,7 @@ pub struct State {
     pub minutes: u32,
     pub activity_sort: ActivitySort,
     pub scan: Option<crate::storage::Scan>,
-    /// Known caches, measured when the Folder sizes page opens or on Rescan.
-    pub caches: Option<crate::caches::Inventory>,
-    pub caches_busy: bool,
+    pub cleanup: crate::cleanup_panel::State,
     pub packages: Option<crate::packages::Inventory>,
     pub packages_busy: bool,
     pub package_source: Option<crate::packages::Source>,
@@ -97,8 +99,7 @@ impl Default for State {
             minutes: 5,
             activity_sort: ActivitySort::Cpu,
             scan: None,
-            caches: None,
-            caches_busy: false,
+            cleanup: Default::default(),
             packages: None,
             packages_busy: false,
             package_source: None,
@@ -127,16 +128,7 @@ pub fn open_page(this: &Entity<TideGaugeView>, page: Page, cx: &mut App) {
     match page {
         Page::Startup if this.read(cx).tools.startup.is_none() => refresh_startup(this, cx),
         Page::Baselines => load_baseline(this, cx),
-        Page::Storage
-            if !this
-                .read(cx)
-                .tools
-                .caches
-                .as_ref()
-                .is_some_and(|c| c.is_fresh()) =>
-        {
-            refresh_caches(this, cx)
-        }
+        Page::Cleanup if this.read(cx).tools.cleanup.needs_scan() => crate::cleanup_panel::start_scan(this, cx),
         _ => {}
     }
 }
@@ -162,26 +154,6 @@ pub fn refresh_startup(this: &Entity<TideGaugeView>, cx: &mut App) {
     .detach();
 }
 
-pub fn refresh_caches(this: &Entity<TideGaugeView>, cx: &mut App) {
-    if this.read(cx).tools.caches_busy {
-        return;
-    }
-    this.update(cx, |v, cx| {
-        v.tools.caches_busy = true;
-        cx.notify();
-    });
-    let this = this.clone();
-    cx.spawn(async move |cx| {
-        let inventory = smol::unblock(crate::caches::scan).await;
-        this.update(cx, |v, cx| {
-            v.tools.caches = Some(inventory);
-            v.tools.caches_busy = false;
-            cx.notify();
-        });
-    })
-    .detach();
-}
-
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let mut body = div().flex().flex_col().gap(t::SECTION_GAP);
     if let Some(msg) = &view.tools.message {
@@ -189,6 +161,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
     }
     body.child(match view.tools.page {
         Page::Startup => startup(view, dark, this.clone()),
+        Page::Cleanup => crate::cleanup_panel::panel(view, dark, this.clone()),
         Page::Activity => activity(view, dark, this.clone()),
         Page::Baselines => baselines(view, dark, this.clone()),
         Page::Storage => storage(view, dark, this.clone()),
@@ -204,6 +177,7 @@ pub(crate) fn chrome(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeVie
             l("Review the legacy launch registrations found on this Mac.", "Se gjennom eldre oppstartsregistreringer funnet på denne Macen."),
             startup_actions(view, dark, this),
         ),
+        Page::Cleanup => crate::cleanup_panel::chrome_parts(view, dark, this),
         Page::Activity => (
             l("Recent CPU, disk and wakeup activity for each process.", "Nylig CPU-, disk- og oppvåkningsaktivitet for hver prosess."),
             Vec::new(),
@@ -213,7 +187,7 @@ pub(crate) fn chrome(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeVie
             Vec::new(),
         ),
         Page::Storage => (
-            l("Find the largest folders and files inside a folder you choose, or clear a known cache.", "Finn de største mappene og filene i en mappe du velger, eller tøm en kjent buffer."),
+            l("Find the largest folders and files inside a folder you choose.", "Finn de største mappene og filene i en mappe du velger."),
             storage_actions(view, dark, this),
         ),
         Page::Packages => (
@@ -228,6 +202,7 @@ pub(crate) fn chrome(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeVie
 /// what it is for.
 pub(crate) fn about_notes(page: Page) -> Vec<&'static str> {
     match page {
+        Page::Cleanup => crate::cleanup_panel::about_notes(),
         Page::Startup => vec![
             l("Partial inventory of legacy launch registrations. A file is not proof of approval or a running process. Modern app background items and managed items belong in System Settings.", "Delvis oversikt over eldre oppstartsregistreringer. En fil beviser ikke godkjenning eller at prosessen kjører. Moderne bakgrunnselementer og administrerte elementer håndteres i Systeminnstillinger."),
         ],
@@ -243,7 +218,6 @@ pub(crate) fn about_notes(page: Page) -> Vec<&'static str> {
         Page::Storage => vec![
             l("The folder scan reads metadata only: no deletion or file downloads. Allocated bytes are not reclaimable space: APFS sharing, snapshots and compression affect totals. Links and other volumes are skipped; hard links are counted once. Access failures and cloud placeholders leave incomplete results.", "Mappeskanningen leser bare metadata: ingen sletting eller filnedlasting. Tildelte byte er ikke frigjørbar plass: APFS-deling, øyeblikksbilder og komprimering påvirker summene. Lenker og andre volumer hoppes over; harde lenker telles én gang. Tilgangsfeil og skyplassholdere gir ufullstendige resultater."),
             l("Bounded to 100,000 entries, depth 64 and 128 queued folders. Large scans may be partial. Folder totals attribute shared hard links to the first path encountered.", "Begrenset til 100 000 oppføringer, dybde 64 og 128 mapper i kø. Store skanninger kan være delvise. Mapper tilordnes delte harde lenker etter første sti som blir funnet."),
-            l("Known caches come from a fixed list and appear when over 100 MB. A cache folder moves to the Trash, so you can put it back; space is freed once you empty the Trash. Homebrew and Xcode's unavailable simulators are cleared by their own commands, which delete for good. Tidegauge never empties the Trash, never follows links out of a cache and never asks for administrator rights. Sizes are allocated bytes: files shared with projects by hard links (pnpm) may free less. The Trash can only be measured if macOS allows Tidegauge to read it.", "Kjente bufre kommer fra en fast liste og vises når de er over 100 MB. En bufremappe flyttes til papirkurven, så du kan legge den tilbake; plassen frigjøres når du tømmer papirkurven. Homebrew og Xcodes utilgjengelige simulatorer ryddes av sine egne kommandoer, som sletter for godt. Tidegauge tømmer aldri papirkurven, følger aldri lenker ut av en buffer og ber aldri om administratorrettigheter. Størrelsene er tildelte byte: filer som deles med prosjekter via harde lenker (pnpm) kan frigjøre mindre. Papirkurven kan bare måles hvis macOS lar Tidegauge lese den."),
         ],
         Page::Packages => vec![
             l("Refresh is explicit; checking updates may contact package registries. Only detected installations are covered, not every runtime manager or project.", "Oppdatering av listen er manuell; søk etter oppdateringer kan kontakte pakkeregistre. Bare oppdagede installasjoner dekkes, ikke alle kjøremiljøbehandlere eller prosjekter."),
@@ -1032,19 +1006,6 @@ fn storage_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>
             move |_, _| cancel.store(true, std::sync::atomic::Ordering::Relaxed),
         ).into_any_element());
     }
-    if !view.tools.caches_busy {
-        let target = this.clone();
-        actions.push(
-            button(
-                "caches-rescan",
-                l("Rescan caches", "Skann bufre på nytt"),
-                false,
-                dark,
-                move |_, cx| refresh_caches(&target, cx),
-            )
-            .into_any_element(),
-        );
-    }
     actions
 }
 
@@ -1167,7 +1128,17 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         }
         body = body.child(picks);
     }
-    body = body.child(caches_section(view, dark, this.clone()));
+    let to_cleanup = this.clone();
+    body = body.child(
+        card(dark)
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(sub(l("Known caches moved to Cleanup.", "Kjente bufre er flyttet til Opprydding.")).text_color(t::ink_dim(dark)))
+            .child(button("storage-to-cleanup", l("Open Cleanup", "Åpne Opprydding"), false, dark, move |_, cx| {
+                open_page(&to_cleanup, Page::Cleanup, cx)
+            })),
+    );
     let Some(d) = data else {
         return body.child(empty_state(
             Page::Storage.icon(),
@@ -1235,249 +1206,6 @@ fn storage(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div
         body = body.child(list);
     }
     body
-}
-
-/// Icon and name of a known cache.
-fn cache_name(kind: crate::caches::Kind) -> (&'static str, &'static str) {
-    use crate::caches::Kind;
-    match kind {
-        Kind::DerivedData => ("icons/hammer.svg", l("Xcode build data", "Xcode-byggdata")),
-        Kind::DeviceSupport => (
-            "icons/smartphone.svg",
-            l("Xcode device support", "Xcode-enhetsstøtte"),
-        ),
-        Kind::Simulators => (
-            "icons/smartphone.svg",
-            l("Unavailable simulators", "Utilgjengelige simulatorer"),
-        ),
-        Kind::Homebrew => (
-            "icons/beer.svg",
-            l("Homebrew downloads", "Homebrew-nedlastinger"),
-        ),
-        Kind::Npm => ("icons/hexagon.svg", l("npm cache", "npm-buffer")),
-        Kind::Pnpm => ("icons/hexagon.svg", l("pnpm store", "pnpm-lager")),
-        Kind::Yarn => ("icons/hexagon.svg", l("Yarn cache", "Yarn-buffer")),
-        Kind::Bun => ("icons/hexagon.svg", l("Bun cache", "Bun-buffer")),
-        Kind::Cargo => (
-            "icons/package.svg",
-            l("Cargo downloads", "Cargo-nedlastinger"),
-        ),
-        Kind::Trash => ("icons/trash.svg", l("Trash", "Papirkurv")),
-    }
-}
-
-/// Ask first, then clear one cache, rescan, and say what changed. The
-/// confirmation names every folder and the size; Cancel is the first button.
-fn clear_cache(
-    this: &Entity<TideGaugeView>,
-    cache: crate::caches::Cache,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    use crate::caches::{Kind, Method};
-    if this.read(cx).tools.caches_busy {
-        return;
-    }
-    let (_, name) = cache_name(cache.kind);
-    let size = crate::engine::fmt_bytes(cache.bytes as f64);
-    let mut what: Vec<String> = cache
-        .paths
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
-    what.extend(cache.items.iter().take(8).cloned());
-    if cache.items.len() > 8 {
-        what.push(format!("+ {}", cache.items.len() - 8));
-    }
-    let (title, how, confirm) = match (cache.kind, cache.kind.method()) {
-        (Kind::Homebrew, _) => (
-            l("Run Homebrew cleanup?", "Kjøre Homebrew-opprydding?"),
-            l("Runs brew cleanup --prune=all. Homebrew itself deletes its downloaded files and old versions of installed formulae; this cannot be undone. The size shown is the download folder only.", "Kjører brew cleanup --prune=all. Homebrew sletter selv nedlastede filer og gamle versjoner av installerte formler; dette kan ikke angres. Størrelsen som vises gjelder bare nedlastingsmappen."),
-            l("Clean up", "Rydd opp"),
-        ),
-        (Kind::Simulators, _) => (
-            l("Delete unavailable simulators?", "Slette utilgjengelige simulatorer?"),
-            l("Runs xcrun simctl delete unavailable. Xcode's own tool deletes these simulators and their data; this cannot be undone.", "Kjører xcrun simctl delete unavailable. Xcodes eget verktøy sletter disse simulatorene og dataene deres; dette kan ikke angres."),
-            l("Delete", "Slett"),
-        ),
-        (_, Method::Trash) => (
-            l("Move this cache to the Trash?", "Flytte denne bufferen til papirkurven?"),
-            l("The folder moves to the Trash, where you can put it back. Space is freed when you empty the Trash. The tool that uses it rebuilds it when needed.", "Mappen flyttes til papirkurven, hvor du kan legge den tilbake. Plassen frigjøres når du tømmer papirkurven. Verktøyet som bruker den, bygger den opp igjen ved behov."),
-            l("Move to Trash", "Flytt til papirkurven"),
-        ),
-        _ => return,
-    };
-    let detail = format!("{name} · {size}\n{}\n\n{how}", what.join("\n"));
-    let answer = window.prompt(
-        PromptLevel::Warning,
-        title,
-        Some(&detail),
-        &[l("Cancel", "Avbryt"), confirm],
-        cx,
-    );
-    this.update(cx, |v, cx| {
-        v.tools.caches_busy = true;
-        cx.notify();
-    });
-    let this = this.clone();
-    cx.spawn(async move |cx| {
-        if answer.await != Ok(1) {
-            this.update(cx, |v, cx| {
-                v.tools.caches_busy = false;
-                cx.notify();
-            });
-            return;
-        }
-        let target = cache.clone();
-        let result = smol::unblock(move || crate::caches::clear(&target)).await;
-        let inventory = smol::unblock(crate::caches::scan).await;
-        let freed = crate::caches::freed_result(cache.bytes, inventory.remaining(cache.kind));
-        this.update(cx, |v, cx| {
-            v.tools.message = Some(match result {
-                Err(error) => error,
-                Ok(()) if freed.is_none() => l(
-                    "Done. The freed space could not be measured.",
-                    "Ferdig. Plassen som ble frigjort kunne ikke måles.",
-                )
-                .to_string(),
-                Ok(()) if freed == Some(0) => l(
-                    "Done, but the measured size did not change.",
-                    "Ferdig, men den målte størrelsen endret seg ikke.",
-                )
-                .to_string(),
-                Ok(()) if cache.kind.method() == Method::Trash => format!(
-                    "{} {}. {}",
-                    l("Moved to the Trash:", "Flyttet til papirkurven:"),
-                    crate::engine::fmt_bytes(freed.unwrap_or(0) as f64),
-                    l(
-                        "Empty the Trash to free the space.",
-                        "Tøm papirkurven for å frigjøre plassen."
-                    ),
-                ),
-                Ok(()) => format!(
-                    "{} {}",
-                    l("Freed", "Frigjorde"),
-                    crate::engine::fmt_bytes(freed.unwrap_or(0) as f64)
-                ),
-            });
-            v.tools.caches = Some(inventory);
-            v.tools.caches_busy = false;
-            cx.notify();
-        });
-    })
-    .detach();
-}
-
-/// Known caches over the size threshold, each with its one action.
-fn caches_section(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
-    use crate::caches::{Kind, Method};
-    let mut body = div().flex().flex_col().gap(t::SPACE_2);
-    let Some(inventory) = &view.tools.caches else {
-        return body.child(
-            sub(l("Measuring known caches…", "Måler kjente bufre…")).text_color(t::ink_dim(dark)),
-        );
-    };
-    let shown = crate::caches::listed(&inventory.caches);
-    let clearable: u64 = shown
-        .iter()
-        .filter(|c| c.kind != Kind::Trash)
-        .map(|c| c.bytes)
-        .sum();
-    body = body.child(crate::ui::section_header(
-        l(
-            "Free space from known caches",
-            "Frigjør plass fra kjente bufre",
-        ),
-        &if clearable > 0 {
-            crate::engine::fmt_bytes(clearable as f64)
-        } else {
-            String::new()
-        },
-        dark,
-    ));
-    if view.tools.caches_busy {
-        body = body.child(
-            sub(l(
-                "Working… Cache actions are locked until this finishes.",
-                "Arbeider… Bufrehandlinger er låst til dette er ferdig.",
-            ))
-            .text_color(t::ink_dim(dark)),
-        );
-    }
-    if shown.is_empty() {
-        return body.child(
-            sub(l(
-                "No known cache is over 100 MB.",
-                "Ingen kjente bufre er over 100 MB.",
-            ))
-            .text_color(t::ink_dim(dark)),
-        );
-    }
-    let mut list = card(dark).p_0().py_1().gap_0();
-    for cache in shown {
-        let (icon, name) = cache_name(cache.kind);
-        let meta = match cache.paths.as_slice() {
-            [] => crate::locale::count(
-                cache.items.len() as u64,
-                "unavailable simulator",
-                "unavailable simulators",
-                "utilgjengelig simulator",
-                "utilgjengelige simulatorer",
-            ),
-            [one] => crate::processes::path_summary(&one.display().to_string()),
-            many => crate::locale::count(many.len() as u64, "folder", "folders", "mappe", "mapper"),
-        };
-        let id = format!("cache-{:?}", cache.kind);
-        let mut trailing: Vec<AnyElement> = vec![div()
-            .w(px(80.))
-            .flex_shrink_0()
-            .flex()
-            .justify_end()
-            .text_size(t::TEXT_ROW)
-            .font_weight(FontWeight::MEDIUM)
-            .child(crate::engine::fmt_bytes(cache.bytes as f64))
-            .into_any_element()];
-        if cache.kind.method() == Method::Open {
-            trailing.push(
-                button(
-                    format!("{id}-open"),
-                    l("Open Trash", "Åpne papirkurven"),
-                    false,
-                    dark,
-                    move |_, _| crate::caches::open_trash(),
-                )
-                .into_any_element(),
-            );
-        } else if !view.tools.caches_busy {
-            let target = this.clone();
-            let cache = cache.clone();
-            let label = match cache.kind.method() {
-                Method::Trash => l("Move to Trash…", "Flytt til papirkurven…"),
-                _ => l("Clean up…", "Rydd opp…"),
-            };
-            trailing.push(
-                button(
-                    format!("{id}-clear"),
-                    label,
-                    false,
-                    dark,
-                    move |window, cx| clear_cache(&target, cache.clone(), window, cx),
-                )
-                .into_any_element(),
-            );
-        }
-        list = list.child(crate::ui::list_row(
-            id,
-            crate::ui::glyph_tile(icon, dark).into_any_element(),
-            name.to_string(),
-            Some(meta),
-            trailing,
-            false,
-            dark,
-            None,
-        ));
-    }
-    body.child(list)
 }
 
 fn refresh_packages(this: &Entity<TideGaugeView>, updates: bool, cx: &mut App) {

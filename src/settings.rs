@@ -133,6 +133,35 @@ pub struct Settings {
     pub panel_transparency: bool,
     /// How see-through, in percent; shared by the window and the panel.
     pub transparency_amount: f64,
+    /// Extra folders Cleanup searches for repos, beside ~/Dev, ~/Developer,
+    /// ~/Projects and ~/code.
+    pub cleanup_roots: Vec<std::path::PathBuf>,
+    /// A worktree touched within this many days is Active, not Removable.
+    pub cleanup_active_days: u32,
+    /// Build output idle this many days is ticked by a Balanced cleanup.
+    pub cleanup_build_idle_days: u32,
+    /// Ask GitHub's gh whether a branch was squash-merged.
+    pub cleanup_use_gh: bool,
+    /// List old installers in Downloads (macOS may ask for access).
+    pub cleanup_include_downloads: bool,
+    /// The agent CLI that reviews a cleanup ("claude" or "codex"); none = off.
+    pub cleanup_agent: Option<String>,
+    /// When you accepted that the agent's provider sees the listed paths.
+    pub cleanup_agent_consent: Option<i64>,
+    /// Clean up Safe, undoable items by itself when free space drops below
+    /// `cleanup_auto_limit_gb` (D-14).
+    pub cleanup_auto: bool,
+    pub cleanup_auto_limit_gb: u32,
+    /// When the safe step is not enough, also trash build output of projects
+    /// idle 14 days or more, oldest first, until back over the limit (D-19).
+    pub cleanup_auto_build: bool,
+    /// Remove a worktree by itself once its branch is merged (D-14).
+    pub cleanup_after_merge: bool,
+    /// Delete a removed worktree's local branch when git agrees it is merged.
+    pub cleanup_delete_branches: bool,
+    /// Let `tidegauge cleanup worktrees --apply` and the MCP server remove
+    /// merged worktrees. Off: they only list.
+    pub cleanup_agent_remove: bool,
 }
 
 impl Default for Settings {
@@ -184,6 +213,19 @@ impl Default for Settings {
             transparency: Transparency::Off,
             panel_transparency: false,
             transparency_amount: TRANSPARENCY_DEFAULT,
+            cleanup_roots: Vec::new(),
+            cleanup_active_days: 2,
+            cleanup_build_idle_days: 30,
+            cleanup_use_gh: false,
+            cleanup_include_downloads: false,
+            cleanup_agent: None,
+            cleanup_agent_consent: None,
+            cleanup_auto: false,
+            cleanup_auto_limit_gb: 20,
+            cleanup_auto_build: false,
+            cleanup_after_merge: false,
+            cleanup_delete_branches: false,
+            cleanup_agent_remove: false,
         }
     }
 }

@@ -6,6 +6,92 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- A Cleanup page, first under Maintenance, finds what agent work and
+  developer tools leave behind and frees it after one confirmation:
+  - Agent worktrees in `<repo>/.claude/worktrees`, `.worktrees` folders
+    and `~/.codex/worktrees`, each marked Removable, Review, Active,
+    In use or Orphan. Only a worktree that is merged, has no uncommitted,
+    unpushed or local-only files, and that no app is using can be removed,
+    and it is removed with `git worktree remove` (never forced); its branch
+    stays.
+  - Xcode build data whose project is gone, build output (`node_modules`,
+    `target`, `.build` and others) in projects idle for 30 days, stale git
+    worktree records, more package caches (Gradle, CocoaPods, pip, uv,
+    SwiftPM, Go, Playwright), logs, crash reports and agent scratch
+    folders. Old installers in Downloads are listed only when switched on.
+  - Safe, Balanced and Deep levels pick what goes; you can tick and untick
+    rows. Backups, archives, agent history and unfinished worktrees are
+    shown but can't be ticked. Anything an app is using waits, with the
+    reason shown.
+  - "Is it really files?" shows swap, local snapshots (including a staged
+    macOS update) and booted simulators, which you can shut down.
+  - Settings → General → Cleanup can ask `gh` about squash merges and can
+    turn on agent review: your own Claude Code or Codex reads the ticked
+    items, read-only, and says keep or clean. Both are off by default.
+- Clicking the low-disk alert opens Cleanup.
+- Cleanup also lists folders and preferences left in `~/Library` by apps
+  whose maker has no app installed any more.
+- ⌘⌫ on Cleanup asks to clean up, and ⌘K opens a command bar with every
+  page and Cleanup action.
+- The menu-bar panel shows "N GB ready to free" after a scan finds 5 GB or
+  more, and opens Cleanup.
+- Settings → General → Cleanup has new switches, all off by default:
+  delete a removed worktree's local branch when git agrees it is merged;
+  remove merged worktrees every 30 minutes; and clean up Safe items by
+  itself when free space drops under 10, 20 or 50 GB. Each automatic run
+  rechecks every item and sends a notification.
+- `tidegauge cleanup status`, `tidegauge cleanup worktrees [--merged]
+  [--apply]`, `tidegauge hook session-start` and `tidegauge mcp` let
+  agents and scripts ask Tidegauge about disk space and merged worktrees.
+  Settings has buttons to copy the hook and MCP snippets.
+- Agent review works with Claude Code, Codex, opencode, Grok, Mistral
+  Vibe, pi and omp, each run read-only.
+- Cleanup finds more: Android, Dart and Flutter, Maven, nvm, pyenv, asdf,
+  mise and rustup downloads; VS Code, Cursor, Slack, Discord, JetBrains and
+  Unity caches (each waits while its app runs); and XcodeBuildMCP
+  workspaces untouched for 14 days. Installed toolchains and Android
+  emulators are shown but never removed.
+- "Is it really files?" shows running Android emulators and Gradle and
+  Kotlin daemons with their memory.
+- Worktrees on Cleanup lists every worktree, largest first, with its state,
+  changes and last use. One with uncommitted work can be moved to the Trash
+  after you type its folder name; its commits stay on the branch. Worktrees
+  in use, locked by git or orphaned can't be removed.
+- Uninstall apps on Cleanup moves an app and the folders it left in
+  `~/Library` to the Trash together. Apple's apps, running apps and apps an
+  administrator installed can't be picked.
+- A new switch lets automatic cleanup also move build output of projects
+  idle 14 days to the Trash, oldest first, until free space is back over
+  the limit.
+- `tidegauge hook pre-tool` stops agents from booting more than 2
+  simulators or 1 emulator and names the booted ones to reuse;
+  `tidegauge hook session-end` shuts down the simulators agents booted once
+  the last session ends; session start also warns when memory is tight.
+
+### Changed
+
+- Known caches moved from Folder sizes to Cleanup.
+- Opening Cleanup shows the last result instead of scanning again; a
+  running scan shows its progress in the header.
+- Cleanup's list is easier to read: the open/close arrow sits in front of
+  each group, groups say how many items are selected, items that can't be
+  picked show a lock with the reason, "Show" is "Show in Finder", the level
+  says what it picks, and the Clean up button sits next to the selected
+  total. The confirmation names the three largest items.
+- While Cleanup works, the top card shows a progress bar, how many items
+  and how many GB are done, the item being cleaned now, and a "Stop after
+  this item" button. Each item says Waiting, Cleaning now, Done or
+  Skipped, and each group shows how many of its items are done. Before
+  you start, "Will clean" lists each group with its size.
+
+### Fixed
+
+- The menu-bar panel's buttons stay visible when it shows "ready to free".
+- "In use by sleep" (or another shell helper) now names the program that
+  started it, such as the agent.
+
 ## [0.8.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.8.0) — 2026-11-08
 
 ### Added

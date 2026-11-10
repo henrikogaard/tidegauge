@@ -1,0 +1,398 @@
+//! The safety gate: what may be listed, what waits, and the last check
+//! before anything is removed (FR-9, FR-13, FR-14, NFR-2).
+
+use super::{Candidate, Category, Method};
+use crate::locale::text as l;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
+
+/// The processes of this user, with what they are and where they run.
+#[derive(Clone, Debug, Default)]
+pub struct Procs {
+    pub list: Vec<Proc>,
+    /// False when the process list could not be read; then everything is
+    /// treated as in use (fail closed).
+    pub ok: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Proc {
+    #[allow(dead_code)]
+    pub pid: i32,
+    /// The parent, to name who really uses a folder (FR-37).
+    pub ppid: i32,
+    pub name: String,
+    pub cwd: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl Procs {
+    pub fn read() -> Self {
+        let uid = unsafe { libc::getuid() };
+        let pids = crate::processes::list_pids();
+        let mut list = Vec::new();
+        for pid in &pids {
+            let Some(bsd) = crate::processes::proc_bsd(*pid) else { continue };
+            if bsd.pbi_uid != uid {
+                continue;
+            }
+            let exe = crate::processes::proc_path(*pid);
+            let name = Path::new(&exe)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let cwd = crate::processes::proc_cwd(*pid);
+            let args = if matches!(name.as_str(), "java" | "node") {
+                crate::processes::proc_args(*pid).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            list.push(Proc { pid: *pid, ppid: bsd.pbi_ppid as i32, name, cwd: PathBuf::from(cwd), args });
+        }
+        Self { ok: !pids.is_empty() && !list.is_empty(), list }
+    }
+
+    /// The first process whose working folder is inside `path`.
+    pub fn inside(&self, path: &Path) -> Option<&Proc> {
+        self.list
+            .iter()
+            .find(|p| !p.cwd.as_os_str().is_empty() && p.cwd.starts_with(path))
+    }
+
+    /// Who uses `path`: the first process inside it, named by the program
+    /// that started it when that process is only a shell or a helper such as
+    /// `sleep` (FR-37). Falls back to the helper's own name.
+    pub fn user_of(&self, path: &Path) -> Option<String> {
+        let first = self.inside(path)?;
+        let mut p = first;
+        for _ in 0..8 {
+            if !HELPERS.contains(&p.name.as_str()) {
+                return Some(p.name.clone());
+            }
+            match self.list.iter().find(|q| q.pid == p.ppid && q.pid != p.pid) {
+                Some(parent) => p = parent,
+                None => break,
+            }
+        }
+        Some(first.name.clone())
+    }
+
+    fn running(&self, test: impl Fn(&Proc) -> bool) -> Option<&Proc> {
+        self.list.iter().find(|p| test(p))
+    }
+}
+
+/// Shells and small helpers that only run for someone else; the folder's
+/// real user is the program above them.
+const HELPERS: [&str; 15] =
+    ["sleep", "sh", "bash", "zsh", "fish", "dash", "env", "timeout", "gtimeout", "nohup", "xargs", "tail", "cat", "caffeinate", "login"];
+
+/// Why something must wait right now, or none.
+pub fn lock(candidate: &Candidate, procs: &Procs) -> Option<String> {
+    if !procs.ok {
+        return Some(l("Can't check running apps", "Kan ikke sjekke kjørende apper").into());
+    }
+    let waits = |app: &str| format!("{} {app}", l("Waits for", "Venter på"));
+    let named = |names: &[&str]| procs.running(|p| names.contains(&p.name.as_str()));
+    match candidate.category {
+        Category::XcodeBuild => named(&["Xcode", "xcodebuild", "XCBBuildService"]).map(|_| waits("Xcode")),
+        Category::Simulators => named(&["Simulator", "launchd_sim"]).map(|_| waits("Simulator")),
+        Category::PackageCaches => {
+            if candidate.id.contains(".gradle") {
+                return procs
+                    .running(|p| p.name == "java" && p.args.iter().any(|a| a.contains("GradleDaemon")))
+                    .map(|_| waits("Gradle"));
+            }
+            let tools = cache_tools(&candidate.id);
+            procs
+                .running(|p| {
+                    tools.contains(&p.name.as_str())
+                        || (p.name == "node"
+                            && p.args.iter().take(2).any(|a| tools.iter().any(|t| a.contains(&format!("/{t}")))))
+                })
+                .map(|p| waits(&p.name))
+        }
+        Category::AppCaches => {
+            let apps = app_names(&candidate.id);
+            named(apps).map(|p| waits(&p.name))
+        }
+        _ => candidate
+            .watch
+            .iter()
+            .find_map(|path| procs.user_of(path))
+            .map(|name| format!("{} {name}", l("In use by", "I bruk av"))),
+    }
+}
+
+/// The programs that use one package cache, by its id (path or tool tag).
+/// Only these make it wait: a running cargo says nothing about pip's cache.
+pub fn cache_tools(id: &str) -> &'static [&'static str] {
+    const MAP: [(&str, &[&str]); 14] = [
+        ("/.npm", &["npm"]),
+        ("pnpm", &["pnpm"]),
+        ("Yarn", &["yarn"]),
+        ("/.bun", &["bun"]),
+        ("/.cargo", &["cargo"]),
+        ("Homebrew", &["brew"]),
+        ("CocoaPods", &["pod"]),
+        ("/pip", &["pip", "pip3"]),
+        ("pypoetry", &["poetry"]),
+        ("/uv", &["uv"]),
+        ("swiftpm", &["swift-build", "swift-package", "xcodebuild"]),
+        ("/go/pkg/mod", &["go"]),
+        ("/.m2/", &["mvn", "mvnd"]),
+        ("pub-cache", &["dart", "flutter"]),
+    ];
+    MAP.iter().find(|(k, _)| id.contains(k)).map_or(&[], |(_, t)| t)
+}
+
+/// The apps that use one app cache, by its path. An app's cache is cleared
+/// only while it is not running (FR-27).
+pub fn app_names(id: &str) -> &'static [&'static str] {
+    const MAP: [(&str, &[&str]); 6] = [
+        ("/Code/", &["Code", "Electron", "Code Helper"]),
+        ("/Cursor/", &["Cursor", "Cursor Helper"]),
+        ("/Slack/", &["Slack", "Slack Helper"]),
+        ("/discord/", &["Discord", "Discord Helper"]),
+        ("JetBrains", &["idea", "webstorm", "pycharm", "clion", "goland", "rustrover", "rider", "phpstorm", "studio", "fleet"]),
+        ("/Unity/", &["Unity", "Unity Hub"]),
+    ];
+    MAP.iter().find(|(k, _)| id.contains(k)).map_or(&[], |(_, t)| t)
+}
+
+/// The user's home folder, resolved.
+pub fn home() -> Option<PathBuf> {
+    let home = std::fs::canonicalize(std::env::var_os("HOME").map(PathBuf::from)?).ok()?;
+    (home.is_absolute() && home.components().count() > 2).then_some(home)
+}
+
+/// Agent scratch is the one place outside home: `/private/tmp/claude-<uid>`.
+pub fn scratch_root() -> PathBuf {
+    PathBuf::from(format!("/private/tmp/claude-{}", unsafe { libc::getuid() }))
+}
+
+/// Paths that are never offered, nor any folder holding one.
+fn protected(home: &Path) -> Vec<PathBuf> {
+    [
+        ".ssh",
+        "Library/Keychains",
+        "Library/MobileDevice/Provisioning Profiles",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".claude/CLAUDE.md",
+        ".codex/config.toml",
+        ".config/gh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".docker/config.json",
+    ]
+    .iter()
+    .map(|r| home.join(r))
+    .collect()
+}
+
+const PROTECTED_NAMES: [&str; 3] = ["gradle.properties", "debug.keystore", "release.keystore"];
+
+/// Whether `path` is protected, holds a protected path, or is home itself.
+pub fn is_protected(path: &Path, home: &Path) -> bool {
+    if path == home || home.starts_with(path) {
+        return true;
+    }
+    if protected(home).iter().any(|p| p.starts_with(path) || path.starts_with(p)) {
+        return true;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if PROTECTED_NAMES.contains(&name) || name.ends_with(".keystore") || name.ends_with(".jks") {
+        return true;
+    }
+    false
+}
+
+/// A path that may be moved to the Trash: absolute, inside home (or the
+/// user's agent scratch), not a link nor behind one, owned by the user,
+/// and not protected. Returns the path to use.
+pub fn validate(path: &Path, home: &Path) -> Result<PathBuf, String> {
+    let refuse = |en: &'static str, nb: &'static str| Err(l(en, nb).to_string());
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+        return refuse("Not a plain path.", "Ikke en vanlig sti.");
+    }
+    let scratch = scratch_root();
+    let in_scratch = path.starts_with(&scratch) && path != scratch;
+    if !in_scratch && (!path.starts_with(home) || path == home) {
+        return refuse("Outside your home folder.", "Utenfor hjemmemappen din.");
+    }
+    if is_protected(path, home) {
+        return refuse("A protected file or folder.", "En beskyttet fil eller mappe.");
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return refuse("It no longer exists.", "Den finnes ikke lenger.");
+    };
+    if meta.file_type().is_symlink() {
+        return refuse("It is a link, so it was left alone.", "Det er en lenke, så den ble latt være.");
+    }
+    if meta.uid() != unsafe { libc::getuid() } {
+        return refuse("It belongs to another user.", "Den tilhører en annen bruker.");
+    }
+    if std::fs::canonicalize(path).ok().as_deref() != Some(path) {
+        return refuse("It sits behind a link, so it was left alone.", "Den ligger bak en lenke, så den ble latt være.");
+    }
+    Ok(path.to_path_buf())
+}
+
+/// What a folder looked like when it was scanned.
+pub fn identity(path: &Path) -> Option<(u64, u64)> {
+    std::fs::symlink_metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// The last check, right before removal: refuses when anything that made the
+/// candidate safe has changed since the scan.
+pub fn recheck(candidate: &Candidate, home: &Path, procs: &Procs) -> Result<(), String> {
+    if !procs.ok {
+        return Err(l("Running apps could not be checked.", "Kjørende apper kunne ikke sjekkes.").into());
+    }
+    let shutdown = matches!(candidate.method, Method::Tool(super::ToolAction::ShutdownSimulator(_)));
+    if let Some(reason) = lock(candidate, procs).filter(|_| !shutdown) {
+        return Err(reason);
+    }
+    match &candidate.method {
+        Method::GitWorktree { .. } => {
+            let path = &candidate.paths[0];
+            validate(path, home)?;
+            let changed = |en: &'static str, nb: &'static str| {
+                Err(format!("{} {}", l("Changed since the scan:", "Endret siden skanningen:"), l(en, nb)))
+            };
+            if identity(path) != candidate.fingerprint.identity {
+                return changed("the folder was replaced", "mappen ble byttet ut");
+            }
+            if super::git::head(path) != candidate.fingerprint.head {
+                return changed("new commit", "ny commit");
+            }
+            match super::git::status(path) {
+                Some(s) if s.changed.is_empty() && super::worktrees::status_hash(&s) == candidate.fingerprint.status => Ok(()),
+                Some(_) => changed("files changed", "filer endret"),
+                None => Err(l("git did not answer.", "git svarte ikke.").into()),
+            }
+        }
+        Method::TrashWorktree { main } => {
+            let path = &candidate.paths[0];
+            validate(path, home)?;
+            if identity(path) != candidate.fingerprint.identity {
+                return Err(l("Changed since the scan: the folder was replaced.", "Endret siden skanningen: mappen ble byttet ut.").into());
+            }
+            match super::git::link_target(path) {
+                Some((m, true)) if std::fs::canonicalize(&m).ok() == std::fs::canonicalize(main).ok() => Ok(()),
+                _ => Err(l("It is no longer a worktree of that repo.", "Den er ikke lenger et arbeidstre i det repoet.").into()),
+            }
+        }
+        Method::Prune { .. } | Method::KnownCache(_) | Method::Tool(_) => Ok(()),
+        Method::Trash => {
+            if candidate.category == Category::BuildOutput {
+                if let (Some(project), Some(folder)) = (candidate.watch.first(), candidate.paths.first()) {
+                    if !super::leftovers::still_output(project, folder) {
+                        return Err(l("Changed since the scan: git now tracks it.", "Endret siden skanningen: git sporer den nå.").into());
+                    }
+                }
+            }
+            let uninstall = candidate.id.starts_with("uninstall:");
+            if uninstall {
+                let app = &candidate.paths[0];
+                super::uninstall::validate_app(app, home)?;
+                if identity(app) != candidate.fingerprint.identity {
+                    return Err(l("Changed since the scan: the folder was replaced.", "Endret siden skanningen: mappen ble byttet ut.").into());
+                }
+                if super::uninstall::running(app) {
+                    return Err(l("The app is running. Quit it first.", "Appen kjører. Avslutt den først.").into());
+                }
+            }
+            for path in candidate.paths.iter().skip(usize::from(uninstall)) {
+                validate(path, home)?;
+                if let Some(id) = candidate.fingerprint.identity {
+                    if candidate.paths.len() == 1 && identity(path) != Some(id) {
+                        return Err(l("Changed since the scan: the folder was replaced.", "Endret siden skanningen: mappen ble byttet ut.").into());
+                    }
+                }
+            }
+            Ok(())
+        }
+        Method::None => Err(l("Kept items are never removed.", "Elementer som beholdes fjernes aldri.").into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_cache_waits_only_for_its_own_tool() {
+        use super::super::{Candidate, Category, Tier};
+        let procs = Procs {
+            list: vec![Proc { pid: 1, ppid: 0, name: "cargo".into(), cwd: PathBuf::from("/"), args: vec![] }],
+            ok: true,
+        };
+        let pip = Candidate::folder(Category::PackageCaches, PathBuf::from("/Users/u/Library/Caches/pip"), "pip".into(), Tier::Safe);
+        let cargo = Candidate::folder(Category::PackageCaches, PathBuf::from("/Users/u/.cargo/registry/cache"), "c".into(), Tier::Rebuild);
+        assert_eq!(lock(&pip, &procs), None);
+        assert!(lock(&cargo, &procs).is_some());
+        let xcode = Procs { list: vec![Proc { pid: 2, name: "Xcode".into(), ..Default::default() }], ok: true };
+        let dd = Candidate::folder(Category::XcodeBuild, PathBuf::from("/Users/u/Library/Developer/Xcode/DerivedData/A"), "a".into(), Tier::Safe);
+        assert!(lock(&dd, &xcode).is_some());
+    }
+
+    #[test]
+    fn protected_paths_never_listed() {
+        let home = Path::new("/Users/u");
+        for p in [
+            "/Users/u/.ssh",
+            "/Users/u/.ssh/id_ed25519",
+            "/Users/u/Library/Keychains",
+            "/Users/u/.claude/settings.json",
+            "/Users/u/app/android/gradle.properties",
+            "/Users/u/app/debug.keystore",
+            "/Users/u/app/sign.jks",
+            "/Users/u",
+        ] {
+            assert!(is_protected(Path::new(p), home), "{p}");
+        }
+        assert!(!is_protected(Path::new("/Users/u/Dev/r/target"), home));
+    }
+
+    #[test]
+    fn parent_of_protected_refused() {
+        let home = Path::new("/Users/u");
+        assert!(is_protected(Path::new("/Users/u/Library"), home));
+        assert!(is_protected(Path::new("/Users/u/.claude"), home));
+        assert!(is_protected(Path::new("/Users"), home));
+    }
+
+    #[test]
+    fn validate_refuses_links_and_outside_home() {
+        let dir = super::super::test_support::temp("gate");
+        let home = std::fs::canonicalize(&dir).unwrap();
+        let real = home.join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, home.join("link")).unwrap();
+        assert!(validate(&real, &home).is_ok());
+        assert!(validate(&home.join("link"), &home).is_err());
+        assert!(validate(Path::new("/etc"), &home).is_err());
+        assert!(validate(&home, &home).is_err());
+        assert!(validate(&home.join("real/../real"), &home).is_err());
+    }
+
+    #[test]
+    fn names_who_started_a_helper() {
+        let dir = PathBuf::from("/Users/x/Dev/app");
+        let p = |pid, ppid, name: &str, cwd: &str| Proc { pid, ppid, name: name.into(), cwd: PathBuf::from(cwd), args: vec![] };
+        let procs = Procs {
+            list: vec![p(30, 20, "sleep", "/Users/x/Dev/app/src"), p(20, 10, "zsh", "/Users/x/Dev/app"), p(10, 1, "claude", "/Users/x")],
+            ok: true,
+        };
+        assert_eq!(procs.user_of(&dir).as_deref(), Some("claude"));
+        let alone = Procs { list: vec![p(20, 5, "zsh", "/Users/x/Dev/app")], ok: true };
+        assert_eq!(alone.user_of(&dir).as_deref(), Some("zsh"), "a terminal tab still names its shell");
+        let looped = Procs { list: vec![p(7, 7, "sleep", "/Users/x/Dev/app")], ok: true };
+        assert_eq!(looped.user_of(&dir).as_deref(), Some("sleep"));
+        assert_eq!(procs.user_of(Path::new("/elsewhere")), None);
+    }
+
+}

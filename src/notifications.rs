@@ -38,10 +38,15 @@ define_class!(
         fn did_receive(
             &self,
             _center: &UNUserNotificationCenter,
-            _response: &UNNotificationResponse,
+            response: &UNNotificationResponse,
             completion: &DynBlock<dyn Fn()>,
         ) {
-            crate::statusbar::raise(&crate::statusbar::TOGGLE_PANEL);
+            let identifier = response.notification().request().identifier().to_string();
+            if matches!(metric_of(&identifier), Some("low_disk" | "cleanup")) {
+                crate::statusbar::raise(&crate::statusbar::SHOW_CLEANUP);
+            } else {
+                crate::statusbar::raise(&crate::statusbar::TOGGLE_PANEL);
+            }
             completion.call(());
         }
     }
@@ -74,20 +79,38 @@ pub fn initialize() {
 
     #[cfg(debug_assertions)]
     if std::env::var("TIDEGAUGE_NOTIFICATION_PREVIEW").as_deref() == Ok("1") {
-        send(crate::locale::text(
-            "This is a test alert from Tidegauge.",
-            "Dette er et testvarsel fra Tidegauge.",
-        ));
+        // TIDEGAUGE_NOTIFICATION_METRIC=low_disk checks where a click goes.
+        let metric = std::env::var("TIDEGAUGE_NOTIFICATION_METRIC").unwrap_or_else(|_| "test".into());
+        send(
+            crate::locale::text(
+                "This is a test alert from Tidegauge.",
+                "Dette er et testvarsel fra Tidegauge.",
+            ),
+            &metric,
+        );
     }
 }
 
-fn request(message: &str) -> Retained<UNNotificationRequest> {
+/// The alert's metric, carried in the request identifier
+/// (`tidegauge-<metric>-<pid>-<time>-<seq>`) so a click can route by it.
+fn identifier(metric: &str, pid: u32, time: f64, seq: u64) -> String {
+    let metric: String = metric.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    format!("tidegauge-{metric}-{pid}-{time}-{seq}")
+}
+
+fn metric_of(identifier: &str) -> Option<&str> {
+    let rest = identifier.strip_prefix("tidegauge-")?;
+    let metric = rest.split('-').next()?;
+    (!metric.is_empty() && !metric.bytes().all(|b| b.is_ascii_digit())).then_some(metric)
+}
+
+fn request(message: &str, metric: &str) -> Retained<UNNotificationRequest> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str("Tidegauge"));
     content.setBody(&NSString::from_str(message));
-    let identifier = NSString::from_str(&format!(
-        "tidegauge-{}-{}-{}",
+    let identifier = NSString::from_str(&identifier(
+        metric,
         std::process::id(),
         crate::metrics::now_unix(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -209,23 +232,27 @@ pub fn open_system_settings() {
 
 /// A real alert through the normal path, asking for permission if needed.
 pub fn send_test() {
-    send(crate::locale::text(
-        "This is a test alert from Tidegauge.",
-        "Dette er et testvarsel fra Tidegauge.",
-    ));
+    send(
+        crate::locale::text(
+            "This is a test alert from Tidegauge.",
+            "Dette er et testvarsel fra Tidegauge.",
+        ),
+        "test",
+    );
 }
 
-pub fn send(message: &str) {
+pub fn send(message: &str, metric: &str) {
     if !is_app_bundle() {
         return;
     }
     let message = message.to_owned();
+    let metric = metric.to_owned();
     let completion = RcBlock::new(move |granted: Bool, error: *mut NSError| {
         refresh_permission(true);
         if !granted.as_bool() || !error.is_null() {
             return;
         }
-        let request = request(&message);
+        let request = request(&message, &metric);
         UNUserNotificationCenter::currentNotificationCenter()
             .addNotificationRequest_withCompletionHandler(&request, None);
     });
@@ -238,13 +265,23 @@ pub fn send(message: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identifier_carries_metric() {
+        let id = super::identifier("low_disk", 42, 1.5, 3);
+        assert_eq!(id, "tidegauge-low_disk-42-1.5-3");
+        assert_eq!(super::metric_of(&id), Some("low_disk"));
+        assert_eq!(super::metric_of("tidegauge-42-1.5-3"), None, "old identifiers carry no metric");
+        assert_eq!(super::metric_of(&super::identifier("cpu-high;x", 1, 1.0, 1)), Some("cpuhighx"));
+        assert_eq!(super::metric_of("other-low_disk"), None);
+    }
+
     use super::*;
 
     #[test]
     fn native_alert_preserves_body_and_app_title() {
         let body = "Høy CPU-bruk: 99% — \"test\"\nNy linje";
-        let first = request(body);
-        let second = request(body);
+        let first = request(body, "test");
+        let second = request(body, "test");
         assert_eq!(first.content().title().to_string(), "Tidegauge");
         assert_eq!(first.content().body().to_string(), body);
         assert!(first.trigger().is_none());
@@ -289,6 +326,6 @@ mod tests {
     fn unbundled_binary_does_not_request_notifications() {
         assert!(!is_app_bundle());
         initialize();
-        send("This test must not prompt or send an alert.");
+        send("This test must not prompt or send an alert.", "test");
     }
 }

@@ -1259,6 +1259,141 @@ fn sidebar(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
     group(l("Sidebar order", "Rekkefølge i sidefeltet"), rows, dark)
 }
 
+/// Settings → General → Cleanup: gh, Downloads, and agent review.
+fn cleanup(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    use crate::cleanup::agent::AgentKind;
+    let mut rows = vec![
+        row(
+            l("Ask GitHub about squash merges", "Spør GitHub om squash-flettinger"),
+            Some(l("Uses your gh login to tell merged branches from unfinished work. Off: only local git is asked.", "Bruker gh-innloggingen din til å skille flettede grener fra uferdig arbeid. Av: bare lokal git spørres.").into()),
+            preference_switch("cleanup-gh".into(), l("Ask GitHub about squash merges", "Spør GitHub om squash-flettinger").into(), settings.cleanup_use_gh, dark, this.clone(), |s, on| s.cleanup_use_gh = on),
+            true,
+            dark,
+        ),
+        row(
+            l("Include old installers in Downloads", "Ta med gamle installasjonsfiler i Nedlastinger"),
+            Some(l("Disk images, packages and zip files older than 30 days. macOS may ask for access to Downloads.", "Diskbilder, pakker og zip-filer eldre enn 30 dager. macOS kan be om tilgang til Nedlastinger.").into()),
+            preference_switch("cleanup-downloads".into(), l("Include old installers in Downloads", "Ta med gamle installasjonsfiler i Nedlastinger").into(), settings.cleanup_include_downloads, dark, this.clone(), |s, on| s.cleanup_include_downloads = on),
+            false,
+            dark,
+        ),
+    ];
+    let current = settings.cleanup_agent.as_deref().and_then(AgentKind::from_key);
+    let mut choices = crate::controls::segment_group("cleanup-agent", l("Agent review", "Agentgjennomgang"), dark).child(choice(
+        "cleanup-agent-off".into(),
+        l("Off", "Av"),
+        l("Agent review off", "Agentgjennomgang av").into(),
+        current.is_none(),
+        dark,
+        this.clone(),
+        |s| s.cleanup_agent = None,
+    ));
+    for kind in AgentKind::ALL {
+        let installed = kind.find().is_some();
+        if !installed && current != Some(kind) {
+            continue;
+        }
+        choices = choices.child(choice(
+            format!("cleanup-agent-{}", kind.key()),
+            kind.label(),
+            kind.label().into(),
+            current == Some(kind),
+            dark,
+            this.clone(),
+            move |s| {
+                s.cleanup_agent = Some(kind.key().to_string());
+                s.cleanup_agent_consent = None;
+            },
+        ));
+    }
+    let detail = match current {
+        Some(kind) => match kind.find() {
+            Some(path) => format!(
+                "{} {} · {}",
+                l("Runs read-only:", "Kjører skrivebeskyttet:"),
+                crate::processes::path_summary(&path.display().to_string()),
+                l("the listed paths go to its provider", "de oppførte stiene sendes til leverandøren")
+            ),
+            None => format!("{} {}", kind.label(), l("is not installed.", "er ikke installert.")),
+        },
+        None => l("Your own coding agent checks the ticked items and says keep or clean. It can't remove anything.", "Din egen kodeagent sjekker de avkryssede elementene og sier behold eller rydd. Den kan ikke fjerne noe.").into(),
+    };
+    rows.push(row(l("Ask an agent before cleaning", "Spør en agent før opprydding"), Some(detail), choices, false, dark));
+    rows.push(row(
+        l("Delete the branch of a removed worktree", "Slett grenen til et fjernet arbeidstre"),
+        Some(l("Only the local branch, and only when git agrees it is merged. Remote branches are never touched.", "Bare den lokale grenen, og bare når git er enig i at den er flettet. Eksterne grener røres aldri.").into()),
+        preference_switch("cleanup-branches".into(), l("Delete the branch of a removed worktree", "Slett grenen til et fjernet arbeidstre").into(), settings.cleanup_delete_branches, dark, this.clone(), |s, on| s.cleanup_delete_branches = on),
+        false,
+        dark,
+    ));
+    rows.push(row(
+        l("Remove worktrees once they are merged", "Fjern arbeidstrær når de er flettet"),
+        Some(l("Every 30 minutes, without asking: only merged, clean, pushed worktrees no app is using. You get a notification.", "Hvert 30. minutt, uten å spørre: bare flettede, rene og pushede arbeidstrær som ingen app bruker. Du får et varsel.").into()),
+        preference_switch("cleanup-after-merge".into(), l("Remove worktrees once they are merged", "Fjern arbeidstrær når de er flettet").into(), settings.cleanup_after_merge, dark, this.clone(), |s, on| s.cleanup_after_merge = on),
+        false,
+        dark,
+    ));
+    let mut limits = crate::controls::segment_group("cleanup-limit", l("Free-space limit", "Grense for ledig plass"), dark);
+    for gb in [10u32, 20, 50] {
+        limits = limits.child(choice(
+            format!("cleanup-limit-{gb}"),
+            match gb {
+                10 => "10 GB",
+                20 => "20 GB",
+                _ => "50 GB",
+            },
+            format!("{gb} GB"),
+            settings.cleanup_auto_limit_gb == gb,
+            dark,
+            this.clone(),
+            move |s| s.cleanup_auto_limit_gb = gb,
+        ));
+    }
+    rows.push(row(
+        l("Clean up by itself when space runs low", "Rydd opp av seg selv når plassen blir lav"),
+        Some(l("Under the limit, at most every 30 minutes: only Safe items that go to the Trash and merged worktrees. Never tool cleanups. You get a notification.", "Under grensen, høyst hvert 30. minutt: bare trygge elementer som går til papirkurven, og flettede arbeidstrær. Aldri verktøyopprydding. Du får et varsel.").into()),
+        div()
+            .flex()
+            .items_center()
+            .gap(t::SPACE_3)
+            .child(limits)
+            .child(preference_switch("cleanup-auto".into(), l("Clean up by itself when space runs low", "Rydd opp av seg selv når plassen blir lav").into(), settings.cleanup_auto, dark, this.clone(), |s, on| s.cleanup_auto = on)),
+        false,
+        dark,
+    ));
+    rows.push(row(
+        l("Also clear old build output", "Fjern også gamle byggresultater"),
+        Some(l("When that is not enough: build output of projects untouched for 14 days goes to the Trash, oldest first, until free space is back over the limit.", "Når det ikke er nok: byggresultater fra prosjekter som ikke er rørt på 14 dager går til papirkurven, eldste først, til ledig plass er over grensen igjen.").into()),
+        preference_switch("cleanup-auto-build".into(), l("Also clear old build output", "Fjern også gamle byggresultater").into(), settings.cleanup_auto_build, dark, this.clone(), |s, on| s.cleanup_auto_build = on),
+        false,
+        dark,
+    ));
+    rows.push(row(
+        l("Let agents remove merged worktrees", "La agenter fjerne flettede arbeidstrær"),
+        Some(l("Lets `tidegauge cleanup worktrees --apply` and the MCP server remove worktrees that are merged, clean, pushed and unused. Off: they can only list.", "Lar `tidegauge cleanup worktrees --apply` og MCP-serveren fjerne arbeidstrær som er flettet, rene, pushet og ubrukte. Av: de kan bare liste.").into()),
+        preference_switch("cleanup-agent-remove".into(), l("Let agents remove merged worktrees", "La agenter fjerne flettede arbeidstrær").into(), settings.cleanup_agent_remove, dark, this.clone(), |s, on| s.cleanup_agent_remove = on),
+        false,
+        dark,
+    ));
+    let (hooks, mcp) = crate::cleanup::cli::snippets();
+    rows.push(row(
+        l("Let your agents ask Tidegauge", "La agentene spørre Tidegauge"),
+        Some(l("Copy a SessionStart hook that warns when space is low, or an MCP server with disk_status, list_worktrees and remove_merged_worktrees. Paste it into your agent's settings yourself.", "Kopier en SessionStart-hook som varsler når plassen er lav, eller en MCP-server med disk_status, list_worktrees og remove_merged_worktrees. Lim den inn i agentens innstillinger selv.").into()),
+        div()
+            .flex()
+            .gap(t::SPACE_2)
+            .child(crate::controls::button("cleanup-copy-hook", l("Copy hook", "Kopier hook"), false, dark, move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(hooks.clone()))
+            }))
+            .child(crate::controls::button("cleanup-copy-mcp", l("Copy MCP", "Kopier MCP"), false, dark, move |_, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(mcp.clone()))
+            })),
+        false,
+        dark,
+    ));
+    group(l("Cleanup", "Opprydding"), rows, dark)
+}
+
 pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let settings = Settings::load();
     let (general_rows, look_rows) = general(view, &settings, dark, this.clone());
@@ -1282,6 +1417,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                     .items_start()
                     .child(overview(&settings, dark, this.clone()))
                     .child(sidebar(&settings, dark, this.clone())),
+                cleanup(&settings, dark, this.clone()),
             ],
         ))
         .child(section(ALERTS, view, vec![notifications(dark), alert_shortcut(&settings, dark, this.clone()), alerts(view, &settings, dark, this.clone())]))
