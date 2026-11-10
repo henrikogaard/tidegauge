@@ -12,6 +12,7 @@ pub mod cli;
 pub mod gate;
 pub mod git;
 pub mod hooks;
+pub mod uninstall;
 pub mod leftovers;
 pub mod pressure;
 pub mod remove;

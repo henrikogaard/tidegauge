@@ -148,11 +148,14 @@ pub fn decide(kind: Device, booted: &[Simulator], emulators: usize, caps: Caps, 
             }
             let list = booted.iter().map(|s| format!("{} ({})", s.name, s.udid)).collect::<Vec<_>>().join(", ");
             format!(
-                "{} {}: {}.",
+                "{} ({} {} {}): {}. {}",
                 l("Simulator cap reached", "Grensen for simulatorer er nådd"),
-                format!("({} of {})", booted.len(), caps.simulators),
+                booted.len(),
+                l("of", "av"),
+                caps.simulators,
                 if list.is_empty() { "-".to_string() } else { list },
-            ) + &l(" Reuse one of these instead of booting another.", " Bruk en av disse i stedet for å starte en til.")
+                l("Reuse one of these instead of booting another.", "Bruk en av disse i stedet for å starte en til."),
+            )
         }
         Device::Emulator => {
             if emulators < caps.emulators {
@@ -170,7 +173,7 @@ pub fn decide(kind: Device, booted: &[Simulator], emulators: usize, caps: Caps, 
     };
     if pressure {
         reason.push(' ');
-        reason.push_str(&l(
+        reason.push_str(l(
             "Memory is under pressure: reuse booted devices and do not start parallel builds.",
             "Minnet er under press: bruk enhetene som allerede kjører, og ikke start parallelle bygg.",
         ));

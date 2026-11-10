@@ -49,6 +49,9 @@ pub struct State {
     /// The worktree waiting for its typed name, and what is typed (FR-34).
     pub confirm: Option<String>,
     pub confirm_text: String,
+    /// The uninstall view (FR-36): apps, once measured.
+    pub apps_view: bool,
+    pub apps: Option<Vec<Candidate>>,
 }
 
 impl State {
@@ -229,6 +232,73 @@ fn analyzer(view: &TideGaugeView, scan: &ScanState, now: i64, busy: bool, dark: 
                     ),
             );
         }
+    }
+    list
+}
+
+/// Measure the apps for the uninstall view off the main thread.
+fn load_apps(this: &Entity<TideGaugeView>, cx: &mut App) {
+    let this = this.clone();
+    cx.spawn(async move |cx| {
+        let apps = smol::unblock(|| cleanup::gate::home().map(|h| cleanup::uninstall::apps(&h)).unwrap_or_default()).await;
+        this.update(cx, |v, cx| {
+            v.tools.cleanup.apps = Some(apps);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// Ask, then move the app and its leftovers to the Trash (FR-36).
+fn uninstall(this: &Entity<TideGaugeView>, c: Candidate, window: &mut Window, cx: &mut App) {
+    if this.read(cx).tools.cleanup.cleaning.is_some() {
+        return;
+    }
+    let mut lines: Vec<String> = c.paths.iter().take(12).map(|p| p.display().to_string()).collect();
+    if c.paths.len() > 12 {
+        lines.push(format!("+ {}", c.paths.len() - 12));
+    }
+    lines.push(String::new());
+    lines.push(l("All of it goes to the Trash, so you can put it back.", "Alt går til papirkurven, så du kan legge det tilbake.").into());
+    let title = format!("{} {}?", l("Uninstall", "Avinstaller"), c.title);
+    let answer = window.prompt(PromptLevel::Warning, &title, Some(&lines.join("\n")), &[l("Cancel", "Avbryt"), l("Uninstall", "Avinstaller")], cx);
+    this.update(cx, |v, _| v.tools.cleanup.apps = None);
+    run_plan(this, vec![c], answer, cx);
+}
+
+/// Apps you can uninstall, largest first, with their leftovers (FR-36).
+fn apps_view(st: &State, busy: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let mut list = card(dark).p_0().py_2().gap_0();
+    list = list.child(
+        div()
+            .px(t::SPACE_4)
+            .pb(t::SPACE_1)
+            .flex()
+            .flex_col()
+            .gap(t::SPACE_1)
+            .child(caption(l("Uninstall apps", "Avinstaller apper"), dark))
+            .child(sub(l("The app and what it left in your Library go to the Trash together. Apple's apps and running apps can't be picked.", "Appen og det den la igjen i biblioteket ditt går til papirkurven sammen. Apples apper og apper som kjører kan ikke velges.")).text_color(t::ink_dim(dark))),
+    );
+    let Some(apps) = &st.apps else {
+        return list.child(div().px(t::SPACE_4).py(t::SPACE_2).child(sub(l("Measuring apps…", "Måler apper …")).text_color(t::ink_dim(dark))));
+    };
+    for c in apps.iter().take(400) {
+        let mut trailing = vec![size_cell(c.bytes, dark)];
+        let p = c.paths[0].clone();
+        trailing.push(button(format!("cleanup-app-show-{}", c.id), l("Show", "Vis"), false, dark, move |_, _| crate::storage::reveal(&p)).into_any_element());
+        match &c.lock {
+            Some(why) => trailing.push(chip(why.clone(), Some(t::ink_dim(dark)), dark).into_any_element()),
+            None if !busy => {
+                let target = this.clone();
+                let cand = c.clone();
+                trailing.push(
+                    crate::controls::button_destructive(format!("cleanup-app-rm-{}", c.id), l("Uninstall…", "Avinstaller…"), dark, move |window, cx| uninstall(&target, cand.clone(), window, cx))
+                        .into_any_element(),
+                );
+            }
+            None => {}
+        }
+        list = list.child(crate::ui::list_row(format!("cleanup-app-{}", c.id), glyph_tile("icons/app-window.svg", dark).into_any_element(), c.title.clone(), Some(c.detail.clone()), trailing, false, dark, None));
     }
     list
 }
@@ -418,9 +488,27 @@ fn title_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) 
             button("cleanup-analyzer", label, st.analyzer, dark, move |_, cx| {
                 target.update(cx, |v, cx| {
                     v.tools.cleanup.analyzer = !v.tools.cleanup.analyzer;
+                    v.tools.cleanup.apps_view = false;
                     v.tools.cleanup.confirm = None;
                     cx.notify();
                 })
+            })
+            .into_any_element(),
+        );
+        let target = this.clone();
+        let label = if st.apps_view { l("Back to cleanup", "Tilbake til opprydding") } else { l("Uninstall apps", "Avinstaller apper") };
+        out.push(
+            button("cleanup-apps", label, st.apps_view, dark, move |_, cx| {
+                let load = target.update(cx, |v, cx| {
+                    let st = &mut v.tools.cleanup;
+                    st.apps_view = !st.apps_view;
+                    st.analyzer = false;
+                    cx.notify();
+                    st.apps_view && st.apps.is_none()
+                });
+                if load {
+                    load_apps(&target, cx);
+                }
             })
             .into_any_element(),
         );
@@ -543,7 +631,9 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         }
     }
 
-    if st.analyzer {
+    if st.apps_view {
+        body = body.child(apps_view(st, st.cleaning.is_some(), dark, this.clone()));
+    } else if st.analyzer {
         body = body.child(analyzer(view, &scan, now, st.cleaning.is_some(), dark, this.clone()));
     } else {
         // Ready to free, by category.

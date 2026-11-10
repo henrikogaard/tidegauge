@@ -48,10 +48,37 @@ hardware acceptance checks. A merge and a published release are separate events.
   Settings has buttons to copy the hook and MCP snippets.
 - Agent review works with Claude Code, Codex, opencode, Grok, Mistral
   Vibe, pi and omp, each run read-only.
+- Cleanup finds more: Android, Dart and Flutter, Maven, nvm, pyenv, asdf,
+  mise and rustup downloads; VS Code, Cursor, Slack, Discord, JetBrains and
+  Unity caches (each waits while its app runs); and XcodeBuildMCP
+  workspaces untouched for 14 days. Installed toolchains and Android
+  emulators are shown but never removed.
+- "Is it really files?" shows running Android emulators and Gradle and
+  Kotlin daemons with their memory.
+- Worktrees on Cleanup lists every worktree, largest first, with its state,
+  changes and last use. One with uncommitted work can be moved to the Trash
+  after you type its folder name; its commits stay on the branch. Worktrees
+  in use, locked by git or orphaned can't be removed.
+- Uninstall apps on Cleanup moves an app and the folders it left in
+  `~/Library` to the Trash together. Apple's apps, running apps and apps an
+  administrator installed can't be picked.
+- A new switch lets automatic cleanup also move build output of projects
+  idle 14 days to the Trash, oldest first, until free space is back over
+  the limit.
+- `tidegauge hook pre-tool` stops agents from booting more than 2
+  simulators or 1 emulator and names the booted ones to reuse;
+  `tidegauge hook session-end` shuts down the simulators agents booted once
+  the last session ends; session start also warns when memory is tight.
 
 ### Changed
 
 - Known caches moved from Folder sizes to Cleanup.
+- Opening Cleanup shows the last result instead of scanning again; a
+  running scan shows its progress in the header.
+
+### Fixed
+
+- The menu-bar panel's buttons stay visible when it shows "ready to free".
 
 ## [0.8.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.8.0) — 2026-11-08
 

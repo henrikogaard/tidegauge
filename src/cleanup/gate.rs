@@ -267,7 +267,18 @@ pub fn recheck(candidate: &Candidate, home: &Path, procs: &Procs) -> Result<(), 
                     }
                 }
             }
-            for path in &candidate.paths {
+            let uninstall = candidate.id.starts_with("uninstall:");
+            if uninstall {
+                let app = &candidate.paths[0];
+                super::uninstall::validate_app(app, home)?;
+                if identity(app) != candidate.fingerprint.identity {
+                    return Err(l("Changed since the scan: the folder was replaced.", "Endret siden skanningen: mappen ble byttet ut.").into());
+                }
+                if super::uninstall::running(app) {
+                    return Err(l("The app is running. Quit it first.", "Appen kjører. Avslutt den først.").into());
+                }
+            }
+            for path in candidate.paths.iter().skip(usize::from(uninstall)) {
                 validate(path, home)?;
                 if let Some(id) = candidate.fingerprint.identity {
                     if candidate.paths.len() == 1 && identity(path) != Some(id) {

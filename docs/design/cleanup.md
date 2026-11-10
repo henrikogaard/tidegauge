@@ -1,6 +1,6 @@
 # Cleanup page
 
-Status: Building (slices 12–16 of 16; added 2026-11-10)
+Status: Building (slices 1–16 implemented; manual checks in section 10 open)
 Size: Full — a new page, new git and agent integrations, and it removes user data.
 Owner: Henrik · Started: 2026-11-09 · Approved: 2026-11-09, Henrik ("do all 6 slices in one go")
 Working assumptions: the draft answers to Q-1–Q-9 in section 8 are adopted
@@ -500,11 +500,11 @@ Context: on Henrik's Mac the workspace folders hold no project record, so
 | 9 | App leftovers | FR-21 | Done |
 | 10 | Branch deletion, auto-clean, clean after merge | FR-22, FR-23, FR-24 | Done |
 | 11 | `tidegauge cleanup`, session-start hook, MCP server; seven agents | FR-25, FR-26 | Done |
-| 12 | Catalog additions, XcodeBuildMCP workspaces, emulators and daemons in the pressure card | FR-27, FR-28, FR-29 | Building |
-| 13 | Device-cap, session-end and memory hooks | FR-30, FR-31, FR-32 | Building |
-| 14 | Worktree analyzer with manual removal to the Trash | FR-33, FR-34 | Building |
-| 15 | Auto ladder | FR-35 | Building |
-| 16 | Uninstall an app with its leftovers | FR-36 | Building |
+| 12 | Catalog additions, XcodeBuildMCP workspaces, emulators and daemons in the pressure card | FR-27, FR-28, FR-29 | Done |
+| 13 | Device-cap, session-end and memory hooks | FR-30, FR-31, FR-32 | Done |
+| 14 | Worktree analyzer with manual removal to the Trash | FR-33, FR-34 | Done |
+| 15 | Auto ladder | FR-35 | Done |
+| 16 | Uninstall an app with its leftovers | FR-36 | Done |
 
 Each slice ships as its own PR with fixture tests (temporary git repos made in
 the test, never real repos), `cargo test`, and a light and dark screenshot
@@ -1075,6 +1075,15 @@ open.
 | FR-23, FR-24 | `auto::auto_takes_only_safe_undoable_items` | pass; the 30-minute loop not run end to end | this change |
 | FR-25 | `cli::mcp_lists_tools_and_rejects_unknown`, `cli_ignores_app_arguments`; read-only run on Henrik's Mac: `cleanup worktrees --merged` listed 85 Removable worktrees (25 GB), two checked by hand as merged, clean and pushed; `hook session-start` silent above the limit; `mcp` answered `initialize` and `tools/list` | pass | this change |
 | FR-26 | `agent::every_agent_runs_read_only` (all seven, no auto-approve flag) | pass; no real run of any agent | this change |
+| FR-27 | `leftovers::new_catalog_entries_follow_their_tiers` | pass | this change |
+| FR-28 | `leftovers::xcodebuildmcp_workspaces_only_when_idle` | pass | this change |
+| FR-29 | `pressure::knows_emulators_and_daemons` | pass; card not checked on screen | this change |
+| FR-30 | `hooks::denies_at_cap_and_lists_devices`, `allows_already_booted_and_under_cap`, `emulator_cap_and_pressure`, `unrelated_bash_is_no_boot`, `malformed_input_prints_nothing` | pass; not run inside a real agent | this change |
+| FR-31 | `hooks::session_add_remove_and_stale`, `last_session_shuts_down_only_new_simulators`, `session_file_roundtrip_under_lock` | pass | this change |
+| FR-32 | `hooks::emulator_cap_and_pressure` | pass | this change |
+| FR-33, FR-34 | `remove::dirty_worktree_can_be_trashed_by_hand_only_when_safe` | pass; the Trash move itself is not run in tests (it would use the real Trash) | this change |
+| FR-35 | `auto::ladder_takes_old_build_output_oldest_first_until_enough` | pass | this change |
+| FR-36 | `uninstall::finds_only_exact_leftovers`, `only_apps_in_applications_and_never_apple_or_tidegauge` | pass; no real uninstall run | this change |
 | NFR-5 | Full suite with `TIDEGAUGE_TEST_LANG=en` and `=nb`, including `locale_guard` | 511 passed, 0 failed each | this change |
 
 ## 11. Codebase deltas and change log
@@ -1129,3 +1138,6 @@ open.
   nested items, cancellable known-cache scan.
 - 2026-11-10: slices 12–16 added after Henrik asked for every missing disk-jockey
   and Levo feature plus a worktree analyzer; Q-2 reversed by D-18.
+- 2026-11-10: slices 12–16 built. Sandboxed containers stay out of the
+  uninstall list (reading them prompts for privacy access); emulators are
+  counted and capped but never shut down by the hook.
