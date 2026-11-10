@@ -1,6 +1,6 @@
 # Cleanup page
 
-Status: Building (slices 1–11 implemented; manual checks in section 10 open)
+Status: Building (slices 12–16 of 16; added 2026-11-10)
 Size: Full — a new page, new git and agent integrations, and it removes user data.
 Owner: Henrik · Started: 2026-11-09 · Approved: 2026-11-09, Henrik ("do all 6 slices in one go")
 Working assumptions: the draft answers to Q-1–Q-9 in section 8 are adopted
@@ -62,6 +62,16 @@ Trash-first rule.
 | FR-24 | Opt-in: remove worktrees as soon as their branch is merged | Could | Off by default; every 30 minutes Removable worktrees are removed after a recheck, with a notification | S5, Henrik 2026-11-09 |
 | FR-25 | Agents can ask Tidegauge: a `tidegauge cleanup` command, a session-start hook and an MCP server | Could | `tidegauge cleanup status` prints free space and ready totals; `tidegauge cleanup worktrees --merged [--apply]` lists or removes Removable worktrees; `tidegauge hook session-start` warns under the limit; `tidegauge mcp` answers MCP `tools/list` and `tools/call`; Settings shows the snippets and never edits agent config | S5, Henrik 2026-11-09 |
 | FR-26 | Agent review supports Claude Code, Codex, opencode, Grok, Mistral Vibe, pi and omp | Should | Each runs read-only with a fixed command; Settings lists the installed ones | Henrik 2026-11-09 |
+| FR-27 | More tool data in the catalog: Android, Dart/Flutter, Electron app and editor caches, Unity, version-manager downloads; installed toolchains, emulators and Docker's disk are shown as Keep | Should | Each listed folder exists, passes the gate, and has the tier in D-17; Keep items are never ticked | disk-jockey README (read 2026-11-10), Henrik 2026-11-10 |
+| FR-28 | XcodeBuildMCP workspaces untouched for 14 days are listed as Xcode build data | Should | A workspace folder with no file newer than 14 days is Safe; a newer one is not listed; it waits while Xcode builds | disk-jockey README, Henrik 2026-11-10 |
+| FR-29 | "Is it really files?" also shows running Android emulators and idle Gradle and Kotlin daemons with their memory | Should | The card lists each with its memory; nothing is stopped from the card | disk-jockey README, Henrik 2026-11-10 |
+| FR-30 | `tidegauge hook pre-tool` caps booted devices across agent sessions | Should | A boot over the cap (2 simulators, 1 emulator) is denied with the booted devices to reuse; booting a booted device and every other call pass silently; the hook never prints "allow" | disk-jockey README, Henrik 2026-11-10 |
+| FR-31 | `tidegauge hook session-end` shuts down simulators booted during agent sessions when the last session ends | Should | With other sessions open nothing happens; at the last end only simulators booted after the first session started are shut down | disk-jockey README, Henrik 2026-11-10 |
+| FR-32 | Agents are told about memory pressure | Could | Session start and a denied boot add one line when swap is over 2 GB | disk-jockey README, Henrik 2026-11-10 |
+| FR-33 | A worktree analyzer lists every worktree, largest first, with its state, branch, changes and unpushed commits | Should | Every audited worktree appears once with size and reasons; Show in Finder and Open in Terminal work | Henrik 2026-11-10 |
+| FR-34 | A worktree with uncommitted work can be removed by hand after typing its name; the folder goes to the Trash | Should | Without the exact name nothing happens; the recheck still runs; the folder lands in the Trash and git forgets it (`worktree prune`); in-use and orphan worktrees cannot be removed | Henrik 2026-11-10 (reverses Q-2) |
+| FR-35 | Smarter auto mode: under the limit, after safe items, it trashes build output of projects idle 14 days or more, oldest first, until free space is back over the limit | Could | Off unless its own switch is on; never Rebuild tool commands, Keep, Review or in-use items; stops once over the limit | disk-jockey README, Henrik 2026-11-10 |
+| FR-36 | Uninstall an app together with its leftovers | Could | Picking an app lists the app and its `~/Library` folders; after confirming, all go to the Trash; running apps, Apple apps and Tidegauge cannot be picked | Levo, Henrik 2026-11-10 |
 | CON-1 | Rust and gpui-kit, colours from `theme.rs`, tokens from `DESIGN.md` | Must | — | S6 |
 | CON-2 | Folders go to the Trash; Cancel is the first button | Must | — | S6 |
 | CON-3 | `Command::new` uses absolute paths | Must | — | S6 |
@@ -86,7 +96,7 @@ Trash-first rule.
 
 ## 2. Scope
 
-- **In:** FR-1 to FR-26, NFR-1 to NFR-5. Henrik chose "everything" on 2026-11-09 (D-13).
+- **In:** FR-1 to FR-36, NFR-1 to NFR-5. Henrik chose "everything" on 2026-11-09 (D-13) and added FR-27–FR-36 on 2026-11-10.
 - **Out:** nothing.
 - **Later:** nothing.
 
@@ -444,6 +454,26 @@ worktrees", off by default, and takes only Removable worktrees.
 | pi | `pi -p --no-session --no-extensions --no-mcp --tools read,grep,find,ls -- PROMPT` | tool allowlist |
 | omp | `omp -p --no-session --no-lsp --tools read,grep,find PROMPT` | tool allowlist |
 
+### D-17: Tiers for the new catalog entries (Accepted, 2026-11-10)
+Context: FR-27 adds data that ranges from pure caches to installed toolchains.
+Choice: download and build caches are Safe or Rebuild; anything that holds
+something you installed or made (emulators, toolchains, Docker's disk) is Keep.
+Consequences: Docker is never touched; its own Clean up is the way.
+
+### D-18: Uncommitted worktrees go to the Trash, not `--force` (Accepted, 2026-11-10; supersedes the Q-2 draft answer)
+Context: disk-jockey discards uncommitted changes after a typed "yes".
+Choice: the folder moves to the Trash, then `git worktree prune` drops the
+record. Changes can be dragged back; commits stay on the branch.
+Consequences: space is freed when the Trash is emptied; the branch stays.
+
+### D-19: The auto ladder only trashes (Accepted, 2026-11-10; extends D-14)
+Context: FR-35. Choice: the second step takes only build output with the
+Trash method, from projects idle 14 days or more, oldest first.
+
+### D-20: XcodeBuildMCP workspaces by age (Accepted, 2026-11-10)
+Context: on Henrik's Mac the workspace folders hold no project record, so
+"project gone" cannot be proven. Choice: 14 days with no newer file.
+
 ## 6. Coverage
 
 | Requirement | Component | Slice |
@@ -470,6 +500,11 @@ worktrees", off by default, and takes only Removable worktrees.
 | 9 | App leftovers | FR-21 | Done |
 | 10 | Branch deletion, auto-clean, clean after merge | FR-22, FR-23, FR-24 | Done |
 | 11 | `tidegauge cleanup`, session-start hook, MCP server; seven agents | FR-25, FR-26 | Done |
+| 12 | Catalog additions, XcodeBuildMCP workspaces, emulators and daemons in the pressure card | FR-27, FR-28, FR-29 | Building |
+| 13 | Device-cap, session-end and memory hooks | FR-30, FR-31, FR-32 | Building |
+| 14 | Worktree analyzer with manual removal to the Trash | FR-33, FR-34 | Building |
+| 15 | Auto ladder | FR-35 | Building |
+| 16 | Uninstall an app with its leftovers | FR-36 | Building |
 
 Each slice ships as its own PR with fixture tests (temporary git repos made in
 the test, never real repos), `cargo test`, and a light and dark screenshot
@@ -1092,3 +1127,5 @@ open.
   (D-13 to D-16, FR-19 to FR-26).
 - 2026-11-09: PR review fixes: build-output recheck, no double counting of
   nested items, cancellable known-cache scan.
+- 2026-11-10: slices 12–16 added after Henrik asked for every missing disk-jockey
+  and Levo feature plus a worktree analyzer; Q-2 reversed by D-18.

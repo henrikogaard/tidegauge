@@ -87,6 +87,10 @@ pub fn lock(candidate: &Candidate, procs: &Procs) -> Option<String> {
                 })
                 .map(|p| waits(&p.name))
         }
+        Category::AppCaches => {
+            let apps = app_names(&candidate.id);
+            named(apps).map(|p| waits(&p.name))
+        }
         _ => candidate
             .watch
             .iter()
@@ -111,6 +115,20 @@ pub fn cache_tools(id: &str) -> &'static [&'static str] {
         ("/uv", &["uv"]),
         ("swiftpm", &["swift-build", "swift-package", "xcodebuild"]),
         ("/go/pkg/mod", &["go"]),
+    ];
+    MAP.iter().find(|(k, _)| id.contains(k)).map_or(&[], |(_, t)| t)
+}
+
+/// The apps that use one app cache, by its path. An app's cache is cleared
+/// only while it is not running (FR-27).
+pub fn app_names(id: &str) -> &'static [&'static str] {
+    const MAP: [(&str, &[&str]); 6] = [
+        ("/Code/", &["Code", "Electron", "Code Helper"]),
+        ("/Cursor/", &["Cursor", "Cursor Helper"]),
+        ("/Slack/", &["Slack", "Slack Helper"]),
+        ("/discord/", &["Discord", "Discord Helper"]),
+        ("JetBrains", &["idea", "webstorm", "pycharm", "clion", "goland", "rustrover", "rider", "phpstorm", "studio", "fleet"]),
+        ("/Unity/", &["Unity", "Unity Hub"]),
     ];
     MAP.iter().find(|(k, _)| id.contains(k)).map_or(&[], |(_, t)| t)
 }

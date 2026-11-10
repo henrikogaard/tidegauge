@@ -726,6 +726,7 @@ fn kept_card(st: &State, kept: &[&Candidate], now: i64, busy: bool, dark: bool, 
 }
 
 fn pressure_card(p: &cleanup::pressure::Pressure, dark: bool) -> Div {
+    use cleanup::pressure::HelperKind;
     let mut lines = Vec::new();
     if let Some(swap) = p.swap_used.filter(|s| *s >= 512 << 20) {
         lines.push(format!(
@@ -748,6 +749,21 @@ fn pressure_card(p: &cleanup::pressure::Pressure, dark: bool) -> Div {
             "{} — {}",
             crate::locale::count(p.simulators.len() as u64, "booted simulator", "booted simulators", "startet simulator", "startede simulatorer"),
             l("shut them down under Kept to free memory.", "slå dem av under Beholdes for å frigjøre minne.")
+        ));
+    }
+    // Emulators and build daemons, grouped by kind with their memory.
+    for kind in [HelperKind::Emulator, HelperKind::Gradle, HelperKind::Kotlin] {
+        let of: Vec<&cleanup::pressure::Helper> = p.helpers.iter().filter(|h| h.kind == kind).collect();
+        if of.is_empty() {
+            continue;
+        }
+        let bytes: u64 = of.iter().map(|h| h.bytes).sum();
+        lines.push(format!(
+            "{} × {} · {} — {}",
+            of.len(),
+            kind.label(),
+            size(bytes),
+            l("quit them in Apps & processes when no build needs them.", "avslutt dem i Apper og prosesser når ingen bygg trenger dem.")
         ));
     }
     let mut c = card(dark).gap(t::SPACE_1).child(caption(l("Is it really files?", "Er det egentlig filer?"), dark));

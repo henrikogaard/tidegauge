@@ -353,6 +353,33 @@ pub fn catalog(home: &Path, include_downloads: bool) -> Vec<Candidate> {
         ("Library/Application Support/MobileSync/Backup", C::Archives, Tier::Keep, l("iPhone and iPad backups", "Sikkerhetskopier av iPhone og iPad")),
         (".claude/projects", C::AgentHistory, Tier::Keep, l("Claude Code transcripts", "Claude Code-samtaler")),
         (".codex/sessions", C::AgentHistory, Tier::Keep, l("Codex sessions", "Codex-økter")),
+        // FR-27, D-17: download caches are Safe, package stores Rebuild,
+        // anything installed or made by you Keep.
+        (".android/cache", C::PackageCaches, Tier::Safe, l("Android SDK downloads", "Android SDK-nedlastinger")),
+        (".pub-cache", C::PackageCaches, Tier::Rebuild, l("Dart and Flutter packages", "Dart- og Flutter-pakker")),
+        (".m2/repository", C::PackageCaches, Tier::Rebuild, l("Maven packages", "Maven-pakker")),
+        (".nvm/.cache", C::PackageCaches, Tier::Safe, l("nvm downloads", "nvm-nedlastinger")),
+        (".pyenv/cache", C::PackageCaches, Tier::Safe, l("pyenv downloads", "pyenv-nedlastinger")),
+        (".asdf/downloads", C::PackageCaches, Tier::Safe, l("asdf downloads", "asdf-nedlastinger")),
+        ("Library/Caches/mise", C::PackageCaches, Tier::Safe, l("mise cache", "mise-buffer")),
+        (".rustup/downloads", C::PackageCaches, Tier::Safe, l("rustup downloads", "rustup-nedlastinger")),
+        ("Library/Application Support/Code/CachedData", C::AppCaches, Tier::Safe, l("VS Code cache", "VS Code-buffer")),
+        ("Library/Application Support/Code/Cache", C::AppCaches, Tier::Safe, l("VS Code web cache", "VS Code-nettbuffer")),
+        ("Library/Application Support/Code/CachedExtensionVSIXs", C::AppCaches, Tier::Safe, l("VS Code extension downloads", "VS Code-utvidelsesnedlastinger")),
+        ("Library/Application Support/Cursor/CachedData", C::AppCaches, Tier::Safe, l("Cursor cache", "Cursor-buffer")),
+        ("Library/Application Support/Cursor/Cache", C::AppCaches, Tier::Safe, l("Cursor web cache", "Cursor-nettbuffer")),
+        ("Library/Application Support/Slack/Cache", C::AppCaches, Tier::Safe, l("Slack cache", "Slack-buffer")),
+        ("Library/Application Support/Slack/Service Worker/CacheStorage", C::AppCaches, Tier::Safe, l("Slack offline cache", "Slack-frakoblet buffer")),
+        ("Library/Application Support/discord/Cache", C::AppCaches, Tier::Safe, l("Discord cache", "Discord-buffer")),
+        ("Library/Caches/JetBrains", C::AppCaches, Tier::Rebuild, l("JetBrains caches and indexes", "JetBrains-bufre og indekser")),
+        ("Library/Unity/cache", C::AppCaches, Tier::Rebuild, l("Unity package cache", "Unity-pakkebuffer")),
+        (".android/avd", C::DevTools, Tier::Keep, l("Android emulators", "Android-emulatorer")),
+        ("Library/Android/sdk/system-images", C::DevTools, Tier::Keep, l("Android system images", "Android-systembilder")),
+        (".nvm/versions", C::DevTools, Tier::Keep, l("Node versions (nvm)", "Node-versjoner (nvm)")),
+        (".pyenv/versions", C::DevTools, Tier::Keep, l("Python versions (pyenv)", "Python-versjoner (pyenv)")),
+        (".asdf/installs", C::DevTools, Tier::Keep, l("asdf tools", "asdf-verktøy")),
+        (".local/share/mise/installs", C::DevTools, Tier::Keep, l("mise tools", "mise-verktøy")),
+        (".rustup/toolchains", C::DevTools, Tier::Keep, l("Rust toolchains", "Rust-verktøykjeder")),
     ]
     .into_iter()
     .filter_map(|(rel, cat, tier, title)| place(home, rel, cat, tier, title))
@@ -373,6 +400,7 @@ pub fn catalog(home: &Path, include_downloads: bool) -> Vec<Candidate> {
         out.push(c);
     }
     out.extend(scratch(home));
+    out.extend(xcodebuildmcp(home, 14));
     if include_downloads {
         if let Some(c) = files_candidate(
             C::Downloads,
@@ -533,10 +561,109 @@ fn scratch(home: &Path) -> Vec<Candidate> {
         .collect()
 }
 
+/// The newest modification time under `dir`, walking at most `cap` entries.
+/// None when it could not be read or the walk hit the cap, so a folder too
+/// big to judge is never called idle.
+fn newest_mtime(dir: &Path, cap: usize) -> Option<std::time::SystemTime> {
+    let mut newest = std::fs::symlink_metadata(dir).ok()?.modified().ok()?;
+    let mut stack = vec![dir.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            seen += 1;
+            if seen > cap {
+                return None;
+            }
+            let Ok(m) = e.metadata() else { continue };
+            if let Ok(t) = m.modified() {
+                newest = newest.max(t);
+            }
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(e.path());
+            }
+        }
+    }
+    Some(newest)
+}
+
+/// XcodeBuildMCP keeps a workspace folder per project (logs, result bundles,
+/// test products) and never removes it. With no project record to check, a
+/// folder counts as leftover after `days` with no newer file (FR-28, D-20).
+pub fn xcodebuildmcp(home: &Path, days: u64) -> Vec<Candidate> {
+    xcodebuildmcp_in(&home.join("Library/Developer/XcodeBuildMCP/workspaces"), home, days)
+}
+
+fn xcodebuildmcp_in(dir: &Path, home: &Path, days: u64) -> Vec<Candidate> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let limit = std::time::Duration::from_secs(days * 86_400);
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let folder = e.path();
+        if !e.file_type().is_ok_and(|t| t.is_dir()) || gate::validate(&folder, home).is_err() {
+            continue;
+        }
+        let Some(newest) = newest_mtime(&folder, 20_000) else { continue };
+        if newest.elapsed().map_or(true, |age| age < limit) {
+            continue;
+        }
+        let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // "brev-fc1df51c6e4f" → "brev"
+        let project = match name.rsplit_once('-') {
+            Some((p, h)) if h.len() == 12 && h.chars().all(|c| c.is_ascii_hexdigit()) => p.to_string(),
+            _ => name.clone(),
+        };
+        let mut c = Candidate::folder(Category::XcodeBuild, folder, format!("XcodeBuildMCP · {project}"), Tier::Safe);
+        c.last_used = newest.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64);
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
     use super::*;
+
+    #[test]
+    fn xcodebuildmcp_workspaces_only_when_idle() {
+        let home = temp("xbmcp");
+        let ws = home.join("ws");
+        let old = ws.join("brev-fc1df51c6e4f");
+        let new = ws.join("kan-187836c9ad13");
+        for d in [&old, &new] {
+            std::fs::create_dir_all(d.join("logs")).unwrap();
+            std::fs::write(d.join("logs/a.log"), "x").unwrap();
+        }
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(20 * 86_400);
+        for p in [old.join("logs/a.log"), old.join("logs"), old.clone()] {
+            std::fs::File::open(&p).unwrap().set_modified(past).unwrap();
+        }
+        let found = xcodebuildmcp_in(&ws, &home, 14);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].paths[0].ends_with("brev-fc1df51c6e4f"));
+        assert_eq!(found[0].title, "XcodeBuildMCP · brev");
+        assert_eq!(found[0].tier, Tier::Safe);
+        // A fresh file deep inside makes it recent again.
+        std::fs::write(old.join("logs/b.log"), "x").unwrap();
+        assert!(xcodebuildmcp_in(&ws, &home, 14).is_empty());
+    }
+
+    #[test]
+    fn new_catalog_entries_follow_their_tiers() {
+        let home = temp("catalog2");
+        for rel in [".android/cache", ".android/avd", ".rustup/toolchains", "Library/Application Support/Code/CachedData", "Library/Caches/JetBrains"] {
+            std::fs::create_dir_all(home.join(rel)).unwrap();
+        }
+        let home = std::fs::canonicalize(&home).unwrap();
+        let found = catalog(&home, false);
+        let tier = |end: &str| found.iter().find(|c| c.paths[0].ends_with(end)).map(|c| (c.category, c.tier));
+        assert_eq!(tier(".android/cache"), Some((Category::PackageCaches, Tier::Safe)));
+        assert_eq!(tier(".android/avd"), Some((Category::DevTools, Tier::Keep)));
+        assert_eq!(tier(".rustup/toolchains"), Some((Category::DevTools, Tier::Keep)));
+        assert_eq!(tier("Code/CachedData"), Some((Category::AppCaches, Tier::Safe)));
+        assert_eq!(tier("Caches/JetBrains"), Some((Category::AppCaches, Tier::Rebuild)));
+        assert!(found.iter().filter(|c| c.tier == Tier::Keep).all(|c| matches!(c.method, Method::None)));
+    }
 
     #[test]
     fn derived_orphan_when_workspace_missing() {

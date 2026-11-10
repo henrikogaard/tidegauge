@@ -13,6 +13,60 @@ pub struct Pressure {
     pub snapshots: Option<u32>,
     pub update_snapshots: u32,
     pub simulators: Vec<Simulator>,
+    /// Running emulators and build daemons, with their memory (FR-29).
+    pub helpers: Vec<Helper>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Helper {
+    pub kind: HelperKind,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelperKind {
+    Emulator,
+    Gradle,
+    Kotlin,
+}
+
+impl HelperKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Emulator => l("Android emulator", "Android-emulator"),
+            Self::Gradle => l("Gradle daemon", "Gradle-daemon"),
+            Self::Kotlin => l("Kotlin daemon", "Kotlin-daemon"),
+        }
+    }
+}
+
+/// What a process is, from its name and (for Java) its arguments.
+pub fn helper_kind(name: &str, args: &[String]) -> Option<HelperKind> {
+    if name.starts_with("qemu-system") {
+        return Some(HelperKind::Emulator);
+    }
+    if name == "java" {
+        if args.iter().any(|a| a.contains("GradleDaemon")) {
+            return Some(HelperKind::Gradle);
+        }
+        if args.iter().any(|a| a.contains("KotlinCompileDaemon")) {
+            return Some(HelperKind::Kotlin);
+        }
+    }
+    None
+}
+
+fn helpers() -> Vec<Helper> {
+    let procs = super::gate::Procs::read();
+    procs
+        .list
+        .iter()
+        .filter_map(|p| {
+            let kind = helper_kind(&p.name, &p.args)?;
+            let bytes = crate::processes::proc_rusage(p.pid).map_or(0, |r| r.ri_phys_footprint);
+            Some(Helper { kind, bytes })
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +78,7 @@ pub struct Simulator {
 
 impl Pressure {
     pub fn is_empty(&self) -> bool {
-        self.swap_used.unwrap_or(0) < 512 << 20 && self.snapshots.unwrap_or(0) == 0 && self.simulators.is_empty()
+        self.swap_used.unwrap_or(0) < 512 << 20 && self.snapshots.unwrap_or(0) == 0 && self.simulators.is_empty() && self.helpers.is_empty()
     }
 }
 
@@ -57,6 +111,7 @@ pub fn read() -> Pressure {
         snapshots: all,
         update_snapshots: update,
         simulators,
+        helpers: helpers(),
     }
 }
 
@@ -119,6 +174,16 @@ mod tests {
         let t = "Snapshots for disk /:\ncom.apple.TimeMachine.2026-11-09-101010.local\ncom.apple.os.update-ABCDEF\ncom.apple.os.update-123456\n";
         assert_eq!(parse_snapshots(t), (3, 2));
         assert_eq!(parse_snapshots("Snapshots for disk /:\n"), (0, 0));
+    }
+
+    #[test]
+    fn knows_emulators_and_daemons() {
+        let args = |a: &str| vec!["java".to_string(), a.to_string()];
+        assert_eq!(helper_kind("qemu-system-aarch64", &[]), Some(HelperKind::Emulator));
+        assert_eq!(helper_kind("java", &args("org.gradle.launcher.daemon.bootstrap.GradleDaemon")), Some(HelperKind::Gradle));
+        assert_eq!(helper_kind("java", &args("org.jetbrains.kotlin.daemon.KotlinCompileDaemon")), Some(HelperKind::Kotlin));
+        assert_eq!(helper_kind("java", &args("com.example.Server")), None);
+        assert_eq!(helper_kind("node", &[]), None);
     }
 
     #[test]

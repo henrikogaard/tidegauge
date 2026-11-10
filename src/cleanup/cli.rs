@@ -5,6 +5,9 @@
 //!   their state; `--apply` removes the Removable ones (after the recheck).
 //! - `tidegauge hook session-start`: one line for an agent's SessionStart
 //!   hook when free space is under the limit; silent otherwise.
+//! - `tidegauge hook pre-tool` and `hook session-end`: cap booted simulators
+//!   and emulators, and shut down the simulators a session left behind
+//!   (see `hooks`).
 //! - `tidegauge mcp`: an MCP server on stdio with `disk_status`,
 //!   `list_worktrees` and `remove_merged_worktrees` (needs `apply: true`).
 //!
@@ -25,18 +28,27 @@ pub fn run(args: &[String]) -> Option<i32> {
             let apply = rest.contains(&"--apply");
             Some(print(&worktrees(merged, apply)))
         }
-        ["hook", "session-start", ..] => {
+        ["hook", "session-start", rest @ ..] => {
             if let Some(line) = session_warning() {
                 println!("{line}");
             }
+            if let Some(line) = super::hooks::memory_line() {
+                println!("{line}");
+            }
+            super::hooks::session_start(rest);
             Some(0)
         }
+        ["hook", "session-end", rest @ ..] => {
+            super::hooks::session_end(rest);
+            Some(0)
+        }
+        ["hook", "pre-tool", rest @ ..] => Some(super::hooks::run_pre_tool(rest)),
         ["mcp", ..] => {
             serve(std::io::stdin().lock(), std::io::stdout().lock());
             Some(0)
         }
         ["cleanup", ..] | ["hook", ..] => {
-            eprintln!("usage: tidegauge cleanup status | cleanup worktrees [--merged] [--apply] | hook session-start | mcp");
+            eprintln!("usage: tidegauge cleanup status | cleanup worktrees [--merged] [--apply] | hook session-start | hook pre-tool [--simulators N] [--emulators N] | hook session-end | mcp");
             Some(2)
         }
         _ => None,
@@ -182,7 +194,12 @@ fn serve(mut input: impl BufRead, mut output: impl Write) {
 /// The snippets Settings shows for an agent's config.
 pub fn snippets() -> (String, String) {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "/Applications/Tidegauge.app/Contents/MacOS/tidegauge".into());
-    let hooks = json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": format!("\"{exe}\" hook session-start"), "timeout": 10}]}]}});
+    let hook = |sub: &str, timeout: u32| json!({"type": "command", "command": format!("\"{exe}\" hook {sub}"), "timeout": timeout});
+    let hooks = json!({"hooks": {
+        "SessionStart": [{"hooks": [hook("session-start", 10)]}],
+        "PreToolUse": [{"matcher": "Bash|mcp__.*", "hooks": [hook("pre-tool", 5)]}],
+        "SessionEnd": [{"hooks": [hook("session-end", 15)]}],
+    }});
     let mcp = json!({"mcpServers": {"tidegauge": {"command": exe, "args": ["mcp"]}}});
     (
         serde_json::to_string_pretty(&hooks).unwrap_or_default(),

@@ -11,6 +11,7 @@ pub mod auto;
 pub mod cli;
 pub mod gate;
 pub mod git;
+pub mod hooks;
 pub mod leftovers;
 pub mod pressure;
 pub mod remove;
@@ -36,10 +37,12 @@ pub enum Category {
     Archives,
     AgentHistory,
     AppLeftovers,
+    AppCaches,
+    DevTools,
 }
 
 impl Category {
-    pub const ALL: [Category; 11] = [
+    pub const ALL: [Category; 13] = [
         Self::AgentWorktrees,
         Self::XcodeBuild,
         Self::Simulators,
@@ -51,6 +54,8 @@ impl Category {
         Self::Archives,
         Self::AgentHistory,
         Self::AppLeftovers,
+        Self::AppCaches,
+        Self::DevTools,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -65,6 +70,8 @@ impl Category {
             Self::Archives => l("Backups and archives", "Sikkerhetskopier og arkiver"),
             Self::AgentHistory => l("Agent history", "Agenthistorikk"),
             Self::AppLeftovers => l("Leftovers of removed apps", "Rester etter fjernede apper"),
+            Self::AppCaches => l("App and editor caches", "Buffere i apper og editorer"),
+            Self::DevTools => l("Toolchains and emulators", "Verktøykjeder og emulatorer"),
         }
     }
     pub fn icon(self) -> &'static str {
@@ -80,6 +87,8 @@ impl Category {
             Self::Archives => "icons/layers.svg",
             Self::AgentHistory => "icons/clock.svg",
             Self::AppLeftovers => "icons/app-window.svg",
+            Self::AppCaches => "icons/layout-grid.svg",
+            Self::DevTools => "icons/terminal.svg",
         }
     }
 }
