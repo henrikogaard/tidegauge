@@ -756,6 +756,11 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
             l("of", "av"),
             c.total
         )));
+    } else if scan.phase != Phase::Done {
+        // Cleaning waits for the scan; a button here would do nothing.
+        if !ready.is_empty() {
+            footer = footer.child(sub(l("Clean up after the scan finishes", "Rydd opp når skanningen er ferdig")).text_color(t::ink_dim(dark)));
+        }
     } else if ready_bytes > 0 || !ready.is_empty() {
         let target = this.clone();
         footer = footer.child(button_accent(

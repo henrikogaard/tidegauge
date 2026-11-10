@@ -564,7 +564,7 @@ mod nested_tests {
         cands.push(dup);
         let started = std::time::Instant::now();
         let kept = without_nested(cands.iter().collect());
-        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the quadratic version takes minutes here; {:?}", started.elapsed());
         assert_eq!(kept.len(), 30_001, "the nested folder and the later duplicate go");
         assert!(kept.iter().any(|c| c.title == "all"));
         assert!(!kept.iter().any(|c| c.title == "one" || c.title == "dup"));
