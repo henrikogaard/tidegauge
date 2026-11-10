@@ -230,7 +230,7 @@ pub fn audit_repo(repo: &Path, cfg: &ScanConfig, home: &Path, procs: &Procs) -> 
         let mut facts = Facts {
             locked: w.locked,
             detached: w.detached,
-            in_use: if procs.ok { procs.inside(&path).map(|p| p.name.clone()) } else { Some(l("unknown", "ukjent").into()) },
+            in_use: if procs.ok { procs.user_of(&path) } else { Some(l("unknown", "ukjent").into()) },
             changed: status.changed.len() as u32,
             ignored_kept: status.ignored.iter().filter(|i| !disposable(i)).cloned().collect(),
             unpushed: git::unpushed(&path),
@@ -481,7 +481,7 @@ mod tests {
         let w = worktree(&r, "busy");
         merge(&r, "busy");
         age(&w);
-        let procs = Procs { list: vec![gate::Proc { pid: 1, name: "zsh".into(), cwd: w.join("src"), args: vec![] }], ok: true };
+        let procs = Procs { list: vec![gate::Proc { pid: 1, ppid: 0, name: "zsh".into(), cwd: w.join("src"), args: vec![] }], ok: true };
         let c = audit_repo(&r, &cfg(), &home, &procs).unwrap();
         assert_eq!(state_of(&c, "busy"), WorktreeState::InUse);
         let blind = audit_repo(&r, &cfg(), &home, &Procs::default()).unwrap();

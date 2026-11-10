@@ -75,10 +75,17 @@ hardware acceptance checks. A merge and a published release are separate events.
 - Known caches moved from Folder sizes to Cleanup.
 - Opening Cleanup shows the last result instead of scanning again; a
   running scan shows its progress in the header.
+- Cleanup's list is easier to read: the open/close arrow sits in front of
+  each group, groups say how many items are selected, items that can't be
+  picked show a lock with the reason, "Show" is "Show in Finder", the level
+  says what it picks, and the Clean up button sits next to the selected
+  total. The confirmation names the three largest items.
 
 ### Fixed
 
 - The menu-bar panel's buttons stay visible when it shows "ready to free".
+- "In use by sleep" (or another shell helper) now names the program that
+  started it, such as the agent.
 
 ## [0.8.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.8.0) — 2026-11-08
 

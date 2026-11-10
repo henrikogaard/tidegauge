@@ -210,7 +210,7 @@ mod tests {
         let w = worktree(&r, "b");
         merge(&r, "b");
         let c = removable(&r, &home, "b");
-        let busy = Procs { list: vec![gate::Proc { pid: 9, name: "node".into(), cwd: w.clone(), args: vec![] }], ok: true };
+        let busy = Procs { list: vec![gate::Proc { pid: 9, ppid: 1, name: "node".into(), cwd: w.clone(), args: vec![] }], ok: true };
         assert!(gate::recheck(&c, &home, &busy).is_err(), "process inside");
         assert!(gate::recheck(&c, &home, &Procs::default()).is_err(), "blind fails closed");
         let moved = home.join("moved");
@@ -234,7 +234,7 @@ mod tests {
         assert!(matches!(t.method, Method::TrashWorktree { .. }));
         assert_eq!(crate::cleanup_panel::confirm_name(&t), "wip");
         gate::recheck(&t, &home, &none).unwrap();
-        let busy = Procs { list: vec![gate::Proc { pid: 9, name: "zsh".into(), cwd: w.clone(), args: vec![] }], ok: true };
+        let busy = Procs { list: vec![gate::Proc { pid: 9, ppid: 1, name: "zsh".into(), cwd: w.clone(), args: vec![] }], ok: true };
         assert!(gate::recheck(&t, &home, &busy).is_err(), "in use");
         assert!(gate::recheck(&t, &home, &Procs::default()).is_err(), "blind fails closed");
         // In use at scan time: not offered at all.

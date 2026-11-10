@@ -410,7 +410,31 @@ pub enum Check {
     On,
 }
 
-fn checkbox(id: String, aria: String, state: Check, enabled: bool, dark: bool, action: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
+/// A checkbox, or a lock with its reason on hover when the item can't be
+/// picked (FR-38): a faded empty box read as "not selected yet".
+#[allow(clippy::too_many_arguments)]
+fn checkbox(
+    id: String,
+    aria: String,
+    state: Check,
+    enabled: bool,
+    why: Option<String>,
+    dark: bool,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    if let (false, Some(why)) = (enabled, why) {
+        return div()
+            .id(SharedString::from(id))
+            .aria_label(SharedString::from(format!("{aria}: {why}")))
+            .flex_shrink_0()
+            .size(px(14.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(svg().path("icons/lock.svg").size(px(12.)).text_color(t::caution(dark)))
+            .tooltip(crate::controls::tip(why, dark))
+            .into_any_element();
+    }
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
     let accent = t::accent(dark);
@@ -601,17 +625,35 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
                             .items_baseline()
                             .gap(t::SPACE_2)
                             .child(div().text_size(t::TEXT_TITLE).font_weight(FontWeight::SEMIBOLD).text_color(t::ok(dark)).child(size(ready_bytes)))
-                            .child(sub(l("ready", "klar")).text_color(t::ink_dim(dark))),
+                            .child(sub(l("selected", "valgt")).text_color(t::ink_dim(dark))),
                     ),
             )
             .child(stacked_bar(disk.used, ready_bytes, disk.total, dark))
-            .child(level_row(st.level, dark, this.clone()))
-            .child(if scan.phase == Phase::Done {
-                sub(summary_line(st.level, ready_bytes, &by_category(&ready))).text_color(t::ink_dim(dark))
-            } else {
-                let frame = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) / 300) as usize;
-                sub(scan_status(scan.phase, scan.candidates.len(), frame)).text_color(t::accent(dark))
-            }),
+            .child(level_row(st.level, idle, !st.overrides.is_empty(), dark, this.clone()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(t::SPACE_3)
+                    .child(if scan.phase == Phase::Done {
+                        sub(summary_line(st.level, ready_bytes, &by_category(&ready))).text_color(t::ink_dim(dark))
+                    } else {
+                        let frame = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) / 300) as usize;
+                        sub(scan_status(scan.phase, scan.candidates.len(), frame)).text_color(t::accent(dark))
+                    })
+                    .when(scan.phase == Phase::Done && st.cleaning.is_none() && !ready.is_empty() && !st.analyzer && !st.apps_view, |d| {
+                        let target = this.clone();
+                        d.child(button_accent(
+                            "cleanup-run-top",
+                            format!("{} {}…", l("Clean up", "Rydd opp"), size(ready_bytes)),
+                            true,
+                            dark,
+                            t::accent(dark),
+                            move |window, cx| clean_up(&target, window, cx),
+                        ))
+                    }),
+            ),
     );
 
     if !scan.git {
@@ -663,7 +705,9 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         }
         let busy = st.cleaning.is_some();
         for (cat, items) in &cats {
-            list = list.child(category_row(st, *cat, items, idle, now, busy, dark, this.clone()));
+            let in_plan: Vec<&&Candidate> = ready.iter().filter(|c| c.category == *cat).collect();
+            let picked = (in_plan.len(), in_plan.iter().filter_map(|c| c.bytes).sum::<u64>());
+            list = list.child(category_row(st, *cat, items, picked, idle, now, busy, dark, this.clone()));
             if st.open.contains(cat) {
                 let mut items = items.clone();
                 items.sort_by_key(|c| std::cmp::Reverse(c.bytes.unwrap_or(0)));
@@ -716,7 +760,7 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         let target = this.clone();
         footer = footer.child(button_accent(
             "cleanup-run",
-            format!("{} {}", l("Clean up", "Rydd opp"), size(ready_bytes)),
+            format!("{} {}…", l("Clean up", "Rydd opp"), size(ready_bytes)),
             true,
             dark,
             t::accent(dark),
@@ -746,7 +790,21 @@ fn by_category(ready: &[&Candidate]) -> Vec<(Category, u64)> {
     out
 }
 
-fn level_row(level: Level, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
+/// What a level picks, in one line (FR-38).
+pub fn level_hint(level: Level, idle: u32, changed: bool) -> String {
+    let what = match level {
+        Level::Safe => l("Picks only what refills by itself or is already merged.", "Velger bare det som fylles på av seg selv eller allerede er flettet.").to_string(),
+        Level::Balanced => format!("{} {idle} {}", l("Also picks build output unused for", "Velger også byggfiler som ikke er brukt på"), l("days.", "dager.")),
+        Level::Deep => format!("{} 7 {}", l("Also picks build output unused for", "Velger også byggfiler som ikke er brukt på"), l("days.", "dager.")),
+    };
+    if changed {
+        format!("{what} {}", l("You changed some ticks; picking a level resets them.", "Du har endret noen haker; et nytt nivå nullstiller dem."))
+    } else {
+        what
+    }
+}
+
+fn level_row(level: Level, idle: u32, changed: bool, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
     let mut g = segment_group("cleanup-level", l("Cleanup level", "Oppryddingsnivå"), dark);
     for lv in [Level::Safe, Level::Balanced, Level::Deep] {
         let target = this.clone();
@@ -758,7 +816,7 @@ fn level_row(level: Level, dark: bool, this: Entity<TideGaugeView>) -> impl Into
             })
         }));
     }
-    div().flex().child(g)
+    div().flex().items_center().gap(t::SPACE_3).child(g).child(sub(level_hint(level, idle, changed)).text_color(t::ink_dim(dark)))
 }
 
 fn sort_row(sort: Sort, dark: bool, this: Entity<TideGaugeView>) -> impl IntoElement {
@@ -805,6 +863,7 @@ fn category_row(
     st: &State,
     cat: Category,
     items: &[&Candidate],
+    picked: (usize, u64),
     idle: u32,
     now: i64,
     busy: bool,
@@ -822,37 +881,48 @@ fn category_row(
     let target = this.clone();
     let tick = checkbox(
         format!("cleanup-cat-{cat:?}"),
-        cat.label().into(),
+        format!("{} {}", l("Select all in", "Velg alt i"), cat.label()),
         check,
         !selectable.is_empty() && !busy,
+        selectable.is_empty().then(|| items.iter().find_map(|c| c.lock.clone()).unwrap_or_else(|| l("Can't be picked right now", "Kan ikke velges akkurat nå").into())),
         dark,
         move |_, cx| set_ticks(&target, ids.clone(), check != Check::On, cx),
     );
     let last = items.iter().filter_map(|c| c.last_used).max();
-    let mut meta = crate::locale::count(items.len() as u64, "item", "items", "element", "elementer");
+    // Counted from the plan, like the size, so nested items count once; out
+    // of what can be picked, since items on hold have their own chip.
+    let mut meta = format!("{} {} {} {}", picked.0, l("of", "av"), selectable.len(), l("selected", "valgt"));
+    if picked.0 > 0 {
+        meta = format!("{meta} ({})", size(picked.1));
+    }
     if let Some(t) = last {
         meta = format!("{meta} · {} {}", l("used", "brukt"), ago(t, now));
     }
-    let locks = items.iter().filter_map(|c| c.lock.clone()).next();
+    let locks: Vec<&String> = items.iter().filter_map(|c| c.lock.as_ref()).collect();
     let open = st.open.contains(&cat);
     let target = this.clone();
     let mut trailing = Vec::new();
-    if let Some(lock) = locks {
-        trailing.push(chip(lock, Some(t::caution(dark)), dark).into_any_element());
+    // One reason when it holds every item; otherwise how many wait, so the
+    // row doesn't read as if all of it were in use.
+    if let Some(first) = locks.first() {
+        let label = if locks.len() == items.len() && locks.iter().all(|r| r == first) {
+            (*first).clone()
+        } else {
+            crate::locale::count(locks.len() as u64, "item on hold", "items on hold", "element venter", "elementer venter")
+        };
+        trailing.push(
+            chip(label, Some(t::caution(dark)), dark)
+                .id(SharedString::from(format!("cleanup-hold-{cat:?}")))
+                .tooltip(crate::controls::tip(l("In use right now, so they stay. Open the group to see which.", "I bruk akkurat nå, så de blir. Åpne gruppen for å se hvilke."), dark))
+                .into_any_element(),
+        );
     }
     let measured = items.iter().all(|c| c.bytes.is_some());
     trailing.push(size_cell(measured.then(|| cleanup::category_bytes(items.iter().copied())), dark));
-    trailing.push(
-        svg()
-            .path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
-            .size(px(12.))
-            .text_color(t::ink_dim(dark))
-            .into_any_element(),
-    );
     div().flex().items_center().pl(t::SPACE_4).child(tick).child(
         crate::ui::list_row(
             format!("cleanup-row-{cat:?}"),
-            glyph_tile(cat.icon(), dark).into_any_element(),
+            disclosure(open, glyph_tile(cat.icon(), dark).into_any_element(), dark),
             cat.label().to_string(),
             Some(meta),
             trailing,
@@ -870,6 +940,17 @@ fn category_row(
         )
         .flex_1(),
     )
+}
+
+/// The open/closed arrow in front of a group's icon, where macOS puts it.
+fn disclosure(open: bool, icon: AnyElement, dark: bool) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(t::SPACE_2)
+        .child(svg().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(t::ink_dim(dark)))
+        .child(icon)
+        .into_any_element()
 }
 
 fn item_chips(c: &Candidate, dark: bool) -> Vec<AnyElement> {
@@ -902,6 +983,7 @@ fn item_row(st: &State, c: &Candidate, idle: u32, now: i64, busy: bool, dark: bo
         c.title.clone(),
         if on { Check::On } else { Check::Off },
         c.selectable() && !busy,
+        (!c.selectable()).then(|| c.lock.clone().unwrap_or_else(|| l("Can't be picked right now", "Kan ikke velges akkurat nå").into())),
         dark,
         move |_, cx| set_ticks(&target, vec![id.clone()], !on, cx),
     );
@@ -913,7 +995,7 @@ fn item_row(st: &State, c: &Candidate, idle: u32, now: i64, busy: bool, dark: bo
     trailing.push(size_cell(c.bytes, dark));
     if let Some(p) = c.paths.first().cloned() {
         trailing.push(
-            button(format!("cleanup-show-{}", c.id), l("Show", "Vis"), false, dark, move |_, _| crate::storage::reveal(&p))
+            button(format!("cleanup-show-{}", c.id), l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| crate::storage::reveal(&p))
                 .into_any_element(),
         );
     }
@@ -928,21 +1010,14 @@ fn kept_card(st: &State, kept: &[&Candidate], now: i64, busy: bool, dark: bool, 
     let mut c = card(dark).p_0().py_2().gap_0().opacity(0.85);
     c = c.child(crate::ui::list_row(
         "cleanup-kept",
-        glyph_tile("icons/info.svg", dark).into_any_element(),
+        disclosure(st.kept_open, glyph_tile("icons/info.svg", dark).into_any_element(), dark),
         l("Kept", "Beholdes").to_string(),
         Some(format!(
             "{} · {}",
             crate::locale::count(kept.len() as u64, "item", "items", "element", "elementer"),
             l("work in progress or real data; never removed here", "pågående arbeid eller ekte data; fjernes aldri her")
         )),
-        vec![
-            size_cell(Some(total), dark),
-            svg()
-                .path(if st.kept_open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
-                .size(px(12.))
-                .text_color(t::ink_dim(dark))
-                .into_any_element(),
-        ],
+        vec![size_cell(Some(total), dark)],
         st.kept_open,
         dark,
         Some(std::rc::Rc::new(move |cx: &mut App| {
@@ -975,7 +1050,7 @@ fn kept_card(st: &State, kept: &[&Candidate], now: i64, busy: bool, dark: bool, 
                 }
             } else if let Some(p) = k.paths.first().cloned() {
                 trailing.push(
-                    button(format!("cleanup-show-{}", k.id), l("Show", "Vis"), false, dark, move |_, _| crate::storage::reveal(&p))
+                    button(format!("cleanup-show-{}", k.id), l("Show in Finder", "Vis i Finder"), false, dark, move |_, _| crate::storage::reveal(&p))
                         .into_any_element(),
                 );
             }
@@ -1086,6 +1161,13 @@ pub fn clean_up(this: &Entity<TideGaugeView>, window: &mut Window, cx: &mut App)
             format!("{} · {} · {}", cat.label(), crate::locale::count(n, "item", "items", "element", "elementer"), size(b))
         })
         .collect();
+    let mut largest: Vec<&Candidate> = plan.iter().collect();
+    largest.sort_by_key(|c| std::cmp::Reverse(c.bytes.unwrap_or(0)));
+    lines.push(String::new());
+    lines.push(l("Largest:", "Største:").into());
+    for c in largest.iter().take(3) {
+        lines.push(format!("{} · {}", c.title, c.bytes.map(size).unwrap_or_default()));
+    }
     lines.push(String::new());
     if plan.iter().any(|c| matches!(c.method, Method::GitWorktree { .. })) {
         lines.push(l("Worktrees are removed with git; their branches stay.", "Arbeidstrær fjernes med git; grenene blir værende.").into());
@@ -1238,7 +1320,7 @@ fn ask_agent(this: &Entity<TideGaugeView>, kind: AgentKind, window: &mut Window,
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, plan, scan_status, summary_line, ticked, State};
+    use super::{ago, level_hint, plan, scan_status, summary_line, ticked, State};
     use crate::cleanup::{self, AgentNote, Candidate, Category, Level, Tier};
 
     fn cand(id: &str, cat: Category, tier: Tier, bytes: u64, days_idle: i64) -> Candidate {
@@ -1327,6 +1409,14 @@ mod tests {
         st.notes.insert("/r1".into(), AgentNote { keep: false, reason: "y".into() });
         assert!(!ticked(&st, &safe, 30, now));
         assert!(!ticked(&st, &fresh, 30, now), "clean does not tick");
+    }
+
+    #[test]
+    fn level_hint_says_what_it_picks_and_warns_about_resets() {
+        let b = level_hint(Level::Balanced, 14, false);
+        assert!(b.contains("14"), "{b}");
+        assert!(level_hint(Level::Deep, 14, false).contains('7'));
+        assert_ne!(level_hint(Level::Safe, 14, false), level_hint(Level::Safe, 14, true), "own ticks get a warning");
     }
 
     #[test]

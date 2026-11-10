@@ -19,6 +19,8 @@ pub struct Procs {
 pub struct Proc {
     #[allow(dead_code)]
     pub pid: i32,
+    /// The parent, to name who really uses a folder (FR-37).
+    pub ppid: i32,
     pub name: String,
     pub cwd: PathBuf,
     pub args: Vec<String>,
@@ -45,7 +47,7 @@ impl Procs {
             } else {
                 Vec::new()
             };
-            list.push(Proc { pid: *pid, name, cwd: PathBuf::from(cwd), args });
+            list.push(Proc { pid: *pid, ppid: bsd.pbi_ppid as i32, name, cwd: PathBuf::from(cwd), args });
         }
         Self { ok: !pids.is_empty() && !list.is_empty(), list }
     }
@@ -57,10 +59,33 @@ impl Procs {
             .find(|p| !p.cwd.as_os_str().is_empty() && p.cwd.starts_with(path))
     }
 
+    /// Who uses `path`: the first process inside it, named by the program
+    /// that started it when that process is only a shell or a helper such as
+    /// `sleep` (FR-37). Falls back to the helper's own name.
+    pub fn user_of(&self, path: &Path) -> Option<String> {
+        let first = self.inside(path)?;
+        let mut p = first;
+        for _ in 0..8 {
+            if !HELPERS.contains(&p.name.as_str()) {
+                return Some(p.name.clone());
+            }
+            match self.list.iter().find(|q| q.pid == p.ppid && q.pid != p.pid) {
+                Some(parent) => p = parent,
+                None => break,
+            }
+        }
+        Some(first.name.clone())
+    }
+
     fn running(&self, test: impl Fn(&Proc) -> bool) -> Option<&Proc> {
         self.list.iter().find(|p| test(p))
     }
 }
+
+/// Shells and small helpers that only run for someone else; the folder's
+/// real user is the program above them.
+const HELPERS: [&str; 15] =
+    ["sleep", "sh", "bash", "zsh", "fish", "dash", "env", "timeout", "gtimeout", "nohup", "xargs", "tail", "cat", "caffeinate", "login"];
 
 /// Why something must wait right now, or none.
 pub fn lock(candidate: &Candidate, procs: &Procs) -> Option<String> {
@@ -94,8 +119,8 @@ pub fn lock(candidate: &Candidate, procs: &Procs) -> Option<String> {
         _ => candidate
             .watch
             .iter()
-            .find_map(|path| procs.inside(path))
-            .map(|p| format!("{} {}", l("In use by", "I bruk av"), p.name)),
+            .find_map(|path| procs.user_of(path))
+            .map(|name| format!("{} {name}", l("In use by", "I bruk av"))),
     }
 }
 
@@ -302,7 +327,7 @@ mod tests {
     fn package_cache_waits_only_for_its_own_tool() {
         use super::super::{Candidate, Category, Tier};
         let procs = Procs {
-            list: vec![Proc { pid: 1, name: "cargo".into(), cwd: PathBuf::from("/"), args: vec![] }],
+            list: vec![Proc { pid: 1, ppid: 0, name: "cargo".into(), cwd: PathBuf::from("/"), args: vec![] }],
             ok: true,
         };
         let pip = Candidate::folder(Category::PackageCaches, PathBuf::from("/Users/u/Library/Caches/pip"), "pip".into(), Tier::Safe);
@@ -353,4 +378,21 @@ mod tests {
         assert!(validate(&home, &home).is_err());
         assert!(validate(&home.join("real/../real"), &home).is_err());
     }
+
+    #[test]
+    fn names_who_started_a_helper() {
+        let dir = PathBuf::from("/Users/x/Dev/app");
+        let p = |pid, ppid, name: &str, cwd: &str| Proc { pid, ppid, name: name.into(), cwd: PathBuf::from(cwd), args: vec![] };
+        let procs = Procs {
+            list: vec![p(30, 20, "sleep", "/Users/x/Dev/app/src"), p(20, 10, "zsh", "/Users/x/Dev/app"), p(10, 1, "claude", "/Users/x")],
+            ok: true,
+        };
+        assert_eq!(procs.user_of(&dir).as_deref(), Some("claude"));
+        let alone = Procs { list: vec![p(20, 5, "zsh", "/Users/x/Dev/app")], ok: true };
+        assert_eq!(alone.user_of(&dir).as_deref(), Some("zsh"), "a terminal tab still names its shell");
+        let looped = Procs { list: vec![p(7, 7, "sleep", "/Users/x/Dev/app")], ok: true };
+        assert_eq!(looped.user_of(&dir).as_deref(), Some("sleep"));
+        assert_eq!(procs.user_of(Path::new("/elsewhere")), None);
+    }
+
 }
