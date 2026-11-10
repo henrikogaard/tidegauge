@@ -237,7 +237,9 @@ pub fn run_pre_tool(args: &[&str]) -> i32 {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionFile {
     pub sessions: BTreeMap<String, u64>,
-    pub baseline: Vec<String>,
+    /// Simulators booted when the first session started; None when that
+    /// could not be read, and then nothing is ever shut down.
+    pub baseline: Option<Vec<String>>,
 }
 
 impl SessionFile {
@@ -245,7 +247,7 @@ impl SessionFile {
         let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
         SessionFile {
             sessions: v["sessions"].as_object().map(|o| o.iter().filter_map(|(k, t)| Some((k.clone(), t.as_u64()?))).collect()).unwrap_or_default(),
-            baseline: v["baseline"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+            baseline: v["baseline"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()),
         }
     }
 
@@ -259,7 +261,7 @@ impl SessionFile {
 }
 
 /// Register a session. `baseline_now` is read only when no session is live.
-pub fn add_session(file: &mut SessionFile, id: &str, now: u64, baseline_now: impl FnOnce() -> Vec<String>) {
+pub fn add_session(file: &mut SessionFile, id: &str, now: u64, baseline_now: impl FnOnce() -> Option<Vec<String>>) {
     file.drop_stale(now);
     if file.sessions.is_empty() {
         file.baseline = baseline_now();
@@ -270,12 +272,12 @@ pub fn add_session(file: &mut SessionFile, id: &str, now: u64, baseline_now: imp
 /// Remove a session; the udids to shut down when it was the last one.
 pub fn end_session(file: &mut SessionFile, id: &str, now: u64, booted_now: &[String]) -> Vec<String> {
     file.drop_stale(now);
-    file.sessions.remove(id);
-    if !file.sessions.is_empty() {
+    // A session that never registered says nothing about what it booted.
+    if file.sessions.remove(id).is_none() || !file.sessions.is_empty() {
         return Vec::new();
     }
-    let out = to_shut_down(&file.baseline, booted_now);
-    file.baseline.clear();
+    let out = file.baseline.as_deref().map(|b| to_shut_down(b, booted_now)).unwrap_or_default();
+    file.baseline = None;
     out
 }
 
@@ -327,15 +329,18 @@ fn session_path() -> PathBuf {
     config_dir().join("hook-sessions.json")
 }
 
-fn booted_udids() -> Vec<String> {
-    booted_simulators().unwrap_or_default().into_iter().map(|s| s.udid).collect()
+fn booted_udids() -> Option<Vec<String>> {
+    booted_simulators().map(|v| v.into_iter().map(|s| s.udid).collect())
 }
 
 /// `hook session-start`: register the session. Never fails the hook.
 pub fn session_start(args: &[&str]) {
     let id = session_arg(args).or_else(|| session_from_json(&read_stdin()));
     let Some(id) = id else { return };
-    with_file(&session_path(), |f| add_session(f, &id, unix_now(), booted_udids));
+    // Read simctl before taking the lock, so a slow simctl never makes
+    // another session's hook time out unregistered.
+    let booted = booted_udids();
+    with_file(&session_path(), |f| add_session(f, &id, unix_now(), || booted));
 }
 
 /// The extra SessionStart line when swap is high.
@@ -355,15 +360,11 @@ pub fn session_end(args: &[&str]) {
     let id = session_arg(args).or_else(|| session_from_json(&read_stdin()));
     let Some(id) = id else { return };
     let now = unix_now();
+    // Unknown booted list: forget the session, shut nothing down.
+    let booted = booted_udids();
     let down = with_file(&session_path(), |f| {
-        let was_empty_after = {
-            let mut probe = f.clone();
-            probe.drop_stale(now);
-            probe.sessions.remove(&id);
-            probe.sessions.is_empty()
-        };
-        let booted = if was_empty_after { booted_udids() } else { Vec::new() };
-        end_session(f, &id, now, &booted)
+        let out = end_session(f, &id, now, booted.as_deref().unwrap_or(&[]));
+        if booted.is_none() { Vec::new() } else { out }
     })
     .unwrap_or_default();
     for udid in down {
@@ -444,25 +445,30 @@ mod tests {
     #[test]
     fn session_add_remove_and_stale() {
         let mut f = SessionFile::default();
-        add_session(&mut f, "a", 1000, || vec!["U1".into()]);
+        add_session(&mut f, "a", 1000, || Some(vec!["U1".into()]));
         add_session(&mut f, "b", 1010, || panic!("baseline only for the first session"));
-        assert_eq!(f.baseline, vec!["U1".to_string()]);
+        assert_eq!(f.baseline, Some(vec!["U1".to_string()]));
         assert_eq!(f.sessions.len(), 2);
         // A day later both are stale: a new session starts over with a new baseline.
-        add_session(&mut f, "c", 1010 + STALE_SECS + 5, || vec!["U9".into()]);
+        add_session(&mut f, "c", 1010 + STALE_SECS + 5, || Some(vec!["U9".into()]));
         assert_eq!(f.sessions.keys().collect::<Vec<_>>(), vec!["c"]);
-        assert_eq!(f.baseline, vec!["U9".to_string()]);
+        assert_eq!(f.baseline, Some(vec!["U9".to_string()]));
     }
 
     #[test]
     fn last_session_shuts_down_only_new_simulators() {
         let mut f = SessionFile::default();
-        add_session(&mut f, "a", 1000, || vec!["U1".into()]);
-        add_session(&mut f, "b", 1001, Vec::new);
+        add_session(&mut f, "a", 1000, || Some(vec!["U1".into()]));
+        add_session(&mut f, "b", 1001, || None);
         let now = vec!["U1".to_string(), "U2".to_string()];
         assert!(end_session(&mut f, "a", 1002, &now).is_empty(), "another session remains");
         assert_eq!(end_session(&mut f, "b", 1003, &now), vec!["U2".to_string()]);
-        assert!(f.sessions.is_empty() && f.baseline.is_empty());
+        assert!(f.sessions.is_empty() && f.baseline.is_none());
+        // Never registered, or no baseline was read: nothing is shut down.
+        assert!(end_session(&mut SessionFile::default(), "x", 1004, &now).is_empty());
+        let mut blind = SessionFile::default();
+        add_session(&mut blind, "a", 1000, || None);
+        assert!(end_session(&mut blind, "a", 1001, &now).is_empty());
         assert_eq!(to_shut_down(&["U1".into()], &["U1".into()]), Vec::<String>::new());
     }
 
@@ -470,10 +476,10 @@ mod tests {
     fn session_file_roundtrip_under_lock() {
         let dir = std::env::temp_dir().join(format!("tidegauge-hooks-test-{}-{}", std::process::id(), unix_now()));
         let path = dir.join("hook-sessions.json");
-        with_file(&path, |f| add_session(f, "s1", 5000, || vec!["U1".into()])).unwrap();
+        with_file(&path, |f| add_session(f, "s1", 5000, || Some(vec!["U1".into()]))).unwrap();
         let got = with_file(&path, |f| f.clone()).unwrap();
         assert_eq!(got.sessions.get("s1"), Some(&5000));
-        assert_eq!(got.baseline, vec!["U1".to_string()]);
+        assert_eq!(got.baseline, Some(vec!["U1".to_string()]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -25,7 +25,12 @@ fn bundle_id_of(app: &Path) -> Option<String> {
 
 /// Whether an id may be offered at all.
 pub fn offered(id: &str) -> bool {
-    !id.starts_with("com.apple.") && !id.contains("tidegauge")
+    // Only a plain reverse-DNS id: it is joined into Library paths, so "."
+    // or a "/" must never get through.
+    let plain = id.len() >= 3
+        && id.split('.').count() >= 2
+        && id.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    plain && !id.starts_with("com.apple.") && !id.contains("tidegauge")
 }
 
 /// Folders and files in `~/Library` named exactly for `id`.
@@ -168,6 +173,9 @@ mod tests {
         assert!(!offered("com.apple.Safari"));
         assert!(!offered("no.ogard.tidegauge"));
         assert!(offered("com.example.app"));
+        for bad in [".", "..", "a/b.c", "com..x", "Google/Chrome", "x"] {
+            assert!(!offered(bad), "{bad}");
+        }
         let c = candidate(&ok, "com.example.app", &home);
         assert_eq!(c.id, "uninstall:com.example.app");
         assert_eq!(c.paths[0], ok);

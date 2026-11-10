@@ -262,7 +262,6 @@ fn uninstall(this: &Entity<TideGaugeView>, c: Candidate, window: &mut Window, cx
     lines.push(l("All of it goes to the Trash, so you can put it back.", "Alt går til papirkurven, så du kan legge det tilbake.").into());
     let title = format!("{} {}?", l("Uninstall", "Avinstaller"), c.title);
     let answer = window.prompt(PromptLevel::Warning, &title, Some(&lines.join("\n")), &[l("Cancel", "Avbryt"), l("Uninstall", "Avinstaller")], cx);
-    this.update(cx, |v, _| v.tools.cleanup.apps = None);
     run_plan(this, vec![c], answer, cx);
 }
 
@@ -1135,6 +1134,15 @@ fn run_plan<E: 'static>(
         });
         let rescan = this.clone();
         cx.update(|cx| start_scan(&rescan, cx));
+        // The uninstall list measures again after anything was removed.
+        let reload = this.update(cx, |v, _| {
+            let st = &mut v.tools.cleanup;
+            st.apps = None;
+            st.apps_view
+        });
+        if reload {
+            cx.update(|cx| load_apps(&this, cx));
+        }
     })
     .detach();
 }

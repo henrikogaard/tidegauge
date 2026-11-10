@@ -102,7 +102,7 @@ pub fn lock(candidate: &Candidate, procs: &Procs) -> Option<String> {
 /// The programs that use one package cache, by its id (path or tool tag).
 /// Only these make it wait: a running cargo says nothing about pip's cache.
 pub fn cache_tools(id: &str) -> &'static [&'static str] {
-    const MAP: [(&str, &[&str]); 12] = [
+    const MAP: [(&str, &[&str]); 14] = [
         ("/.npm", &["npm"]),
         ("pnpm", &["pnpm"]),
         ("Yarn", &["yarn"]),
@@ -115,6 +115,8 @@ pub fn cache_tools(id: &str) -> &'static [&'static str] {
         ("/uv", &["uv"]),
         ("swiftpm", &["swift-build", "swift-package", "xcodebuild"]),
         ("/go/pkg/mod", &["go"]),
+        ("/.m2/", &["mvn", "mvnd"]),
+        ("pub-cache", &["dart", "flutter"]),
     ];
     MAP.iter().find(|(k, _)| id.contains(k)).map_or(&[], |(_, t)| t)
 }
