@@ -162,6 +162,8 @@ pub struct TideGaugeView {
     pub process_filter: Entity<gpui_kit::base::input::InputState>,
     pub process_query: String,
     pub startup_filter: Entity<gpui_kit::base::input::InputState>,
+    /// The name typed to confirm moving a worktree to the Trash (FR-34).
+    pub cleanup_confirm: Entity<gpui_kit::base::input::InputState>,
     pub startup_query: String,
     pub process_pending: bool,
     /// The process being sampled right now; one sample runs at a time.
@@ -240,6 +242,14 @@ impl TideGaugeView {
             }
         })
         .detach();
+        let cleanup_confirm = cx.new(|cx| gpui_kit::base::input::InputState::new(window, cx));
+        cx.subscribe(&cleanup_confirm, |view: &mut TideGaugeView, input, event: &gpui_kit::base::input::InputEvent, cx| {
+            if matches!(event, gpui_kit::base::input::InputEvent::Change) {
+                view.tools.cleanup.confirm_text = input.read(cx).value().trim().to_string();
+                cx.notify();
+            }
+        })
+        .detach();
         let settings_scroll = ScrollHandle::new();
         let v = TideGaugeView {
             tab: Tab::Overview,
@@ -282,6 +292,7 @@ impl TideGaugeView {
             process_filter,
             process_query: String::new(),
             startup_filter,
+            cleanup_confirm,
             startup_query: String::new(),
             process_pending: false,
             process_sampling: None,

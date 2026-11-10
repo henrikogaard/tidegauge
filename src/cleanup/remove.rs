@@ -41,7 +41,7 @@ pub fn run(plan: Vec<Candidate>, cancel: &AtomicBool, done: &AtomicUsize) -> Rep
         let procs = Procs::read();
         match gate::recheck(&c, &home, &procs).and_then(|()| apply(&c)) {
             Ok(()) => {
-                if matches!(c.method, Method::Trash) {
+                if matches!(c.method, Method::Trash | Method::TrashWorktree { .. }) {
                     report.trashed_bytes += c.bytes.unwrap_or(0);
                 }
                 let mut title = c.title.clone();
@@ -80,6 +80,13 @@ fn apply(c: &Candidate) -> Result<(), String> {
             } else {
                 Err(l("git refused to remove it; it may have changed.", "git nektet å fjerne den; den kan ha endret seg.").into())
             }
+        }
+        Method::TrashWorktree { main } => {
+            crate::move_to_applications::trash(&c.paths[0])?;
+            // The record now points at nothing; prune drops it. The branch
+            // and its commits stay.
+            super::git::write(main, &["worktree", "prune"]);
+            Ok(())
         }
         Method::Prune { main } => {
             if super::git::write(main, &["worktree", "prune"]) {
@@ -210,6 +217,38 @@ mod tests {
         std::fs::rename(&w, &moved).unwrap();
         std::fs::create_dir(&w).unwrap();
         assert!(gate::recheck(&c, &home, &Procs { list: vec![], ok: true }).is_err(), "swapped folder");
+    }
+
+    #[test]
+    fn dirty_worktree_can_be_trashed_by_hand_only_when_safe() {
+        let home = temp("manual");
+        let r = repo(&home, "r");
+        let w = worktree(&r, "wip");
+        std::fs::write(w.join("draft.txt"), "x").unwrap();
+        let cfg = ScanConfig { roots: vec![], active_days: 0, use_gh: false, include_downloads: false, build_idle_days: 30, only_worktrees: false };
+        let none = Procs { list: vec![], ok: true };
+        let c = audit_repo(&r, &cfg, &home, &none).unwrap().into_iter().find(|c| c.title.ends_with("wip")).unwrap();
+        assert_eq!(c.state, Some(WorktreeState::Review));
+        assert!(!c.selectable(), "never in a normal cleanup");
+        let t = crate::cleanup_panel::manual_target(&c).expect("a Review worktree can be trashed by hand");
+        assert!(matches!(t.method, Method::TrashWorktree { .. }));
+        assert_eq!(crate::cleanup_panel::confirm_name(&t), "wip");
+        gate::recheck(&t, &home, &none).unwrap();
+        let busy = Procs { list: vec![gate::Proc { pid: 9, name: "zsh".into(), cwd: w.clone(), args: vec![] }], ok: true };
+        assert!(gate::recheck(&t, &home, &busy).is_err(), "in use");
+        assert!(gate::recheck(&t, &home, &Procs::default()).is_err(), "blind fails closed");
+        // In use at scan time: not offered at all.
+        let used = audit_repo(&r, &cfg, &home, &busy).unwrap().into_iter().find(|c| c.title.ends_with("wip")).unwrap();
+        assert!(crate::cleanup_panel::manual_target(&used).is_none());
+        // Locked by git: not offered.
+        git(&r, &["worktree", "lock", w.to_str().unwrap()]);
+        let locked = audit_repo(&r, &cfg, &home, &none).unwrap().into_iter().find(|c| c.title.ends_with("wip")).unwrap();
+        assert!(crate::cleanup_panel::manual_target(&locked).is_none());
+        git(&r, &["worktree", "unlock", w.to_str().unwrap()]);
+        // Swapped folder: refused.
+        std::fs::rename(&w, home.join("moved")).unwrap();
+        std::fs::create_dir(&w).unwrap();
+        assert!(gate::recheck(&t, &home, &none).is_err(), "swapped folder");
     }
 
     #[test]

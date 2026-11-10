@@ -142,6 +142,9 @@ pub enum ToolAction {
 pub enum Method {
     /// `git worktree remove` from the main checkout; the branch stays.
     GitWorktree { main: PathBuf },
+    /// A worktree removed by hand, uncommitted work and all (FR-34, D-18):
+    /// the folder goes to the Trash, then `git worktree prune` in `main`.
+    TrashWorktree { main: PathBuf },
     /// `git worktree prune` for records whose folder is already gone.
     Prune { main: PathBuf },
     /// Every path moves to the Trash.

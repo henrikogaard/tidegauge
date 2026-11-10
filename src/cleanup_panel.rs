@@ -44,6 +44,11 @@ pub struct State {
     pub reviewing: bool,
     pub notes: HashMap<String, AgentNote>,
     pub message: Option<String>,
+    /// The worktree analyzer is open instead of the cleanup list (FR-33).
+    pub analyzer: bool,
+    /// The worktree waiting for its typed name, and what is typed (FR-34).
+    pub confirm: Option<String>,
+    pub confirm_text: String,
 }
 
 impl State {
@@ -78,6 +83,154 @@ fn ticked(state: &State, c: &Candidate, idle_days: u32, now: i64) -> bool {
 /// sizes are counted once and nothing is reported as skipped for being gone.
 fn plan<'a>(st: &State, cands: &'a [Candidate], idle_days: u32, now: i64) -> Vec<&'a Candidate> {
     cleanup::without_nested(cands.iter().filter(|c| ticked(st, c, idle_days, now)).collect())
+}
+
+/// A worktree that may be moved to the Trash by hand (FR-34): uncommitted,
+/// unpushed, unmerged or recent work, but never one in use, locked by git,
+/// orphaned or unreadable. The folder goes to the Trash (D-18).
+pub fn manual_target(c: &Candidate) -> Option<Candidate> {
+    use cleanup::WorktreeState as W;
+    if c.category != Category::AgentWorktrees || !matches!(c.state, Some(W::Review | W::Active | W::Removable)) {
+        return None;
+    }
+    let fact = |k: &str| c.facts.iter().find(|(key, _)| *key == k).map(|(_, v)| v.clone());
+    if fact("locked").is_some() || c.lock.is_some() {
+        return None;
+    }
+    let main = std::path::PathBuf::from(fact("main")?);
+    c.paths.first().filter(|p| p.is_dir())?;
+    let mut t = c.clone();
+    t.method = Method::TrashWorktree { main };
+    t.tier = Tier::Rebuild;
+    Some(t)
+}
+
+/// What must be typed to confirm: the worktree's folder name.
+pub fn confirm_name(c: &Candidate) -> String {
+    c.paths.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn open_terminal(path: &std::path::Path) {
+    if path.is_absolute() && path.is_dir() {
+        if let Ok(mut child) = std::process::Command::new("/usr/bin/open").args(["-a", "Terminal"]).arg(path).spawn() {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+}
+
+/// Every worktree, largest first, with what it holds (FR-33), and the typed
+/// confirmation for moving one to the Trash (FR-34).
+fn analyzer(view: &TideGaugeView, scan: &ScanState, now: i64, busy: bool, dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let st = &view.tools.cleanup;
+    let mut wts: Vec<&Candidate> = scan.candidates.iter().filter(|c| c.category == Category::AgentWorktrees && !c.paths.is_empty()).collect();
+    wts.sort_by_key(|c| std::cmp::Reverse(c.bytes.unwrap_or(0)));
+    let total = cleanup::category_bytes(wts.iter().copied());
+    let mut list = card(dark).p_0().py_2().gap_0();
+    list = list.child(
+        div()
+            .px(t::SPACE_4)
+            .pb(t::SPACE_1)
+            .flex()
+            .flex_col()
+            .gap(t::SPACE_1)
+            .child(caption(l("All worktrees", "Alle arbeidstrær"), dark))
+            .child(
+                sub(format!(
+                    "{} · {} · {}",
+                    crate::locale::count(wts.len() as u64, "worktree", "worktrees", "arbeidstre", "arbeidstrær"),
+                    size(total),
+                    l("largest first", "største først")
+                ))
+                .text_color(t::ink_dim(dark)),
+            ),
+    );
+    if wts.is_empty() && scan.phase == Phase::Done {
+        list = list.child(div().px(t::SPACE_4).py(t::SPACE_2).child(sub(l("No worktrees found.", "Fant ingen arbeidstrær.")).text_color(t::ink_dim(dark))));
+    }
+    let fact = |c: &Candidate, k: &str| c.facts.iter().find(|(key, _)| *key == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    for c in wts.iter().take(300) {
+        let state = c.state.map(|s| s.label().to_string()).unwrap_or_default();
+        let mut meta = format!("{state} · {}", c.detail);
+        if let Some(t) = c.last_used {
+            meta = format!("{meta} · {}", ago(t, now));
+        }
+        let mut trailing = vec![size_cell(c.bytes, dark)];
+        let path = c.paths[0].clone();
+        let p = path.clone();
+        trailing.push(button(format!("cleanup-wt-show-{}", c.id), l("Show", "Vis"), false, dark, move |_, _| crate::storage::reveal(&p)).into_any_element());
+        let p = path.clone();
+        trailing.push(button(format!("cleanup-wt-term-{}", c.id), l("Open in Terminal", "Åpne i Terminal"), false, dark, move |_, _| open_terminal(&p)).into_any_element());
+        let target = manual_target(c);
+        if target.is_some() && !busy && st.confirm.as_deref() != Some(c.id.as_str()) {
+            let id = c.id.clone();
+            let this2 = this.clone();
+            trailing.push(
+                crate::controls::button_destructive(format!("cleanup-wt-trash-{}", c.id), l("Move to Trash…", "Flytt til papirkurven…"), dark, move |window, cx| {
+                    let input = this2.read(cx).cleanup_confirm.clone();
+                    input.update(cx, |i, cx| i.set_value("", window, cx));
+                    this2.update(cx, |v, cx| {
+                        v.tools.cleanup.confirm = Some(id.clone());
+                        v.tools.cleanup.confirm_text.clear();
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
+            );
+        }
+        list = list.child(crate::ui::list_row(format!("cleanup-wt-{}", c.id), glyph_tile(Category::AgentWorktrees.icon(), dark).into_any_element(), c.title.clone(), Some(meta), trailing, false, dark, None));
+        if let (Some(target), true) = (target, st.confirm.as_deref() == Some(c.id.as_str())) {
+            let name = confirm_name(c);
+            let ok = !busy && st.confirm_text == name;
+            let branch = fact(c, "branch");
+            let cancel = this.clone();
+            let go = this.clone();
+            list = list.child(
+                div()
+                    .px(t::SPACE_4)
+                    .py(t::SPACE_2)
+                    .flex()
+                    .flex_col()
+                    .gap(t::SPACE_2)
+                    .child(sub(format!(
+                        "{} {name} {} {branch}.",
+                        l("Type", "Skriv"),
+                        l(
+                            "to move this worktree to the Trash. Uncommitted changes and local files go with it, so you can drag them back. Commits stay on the branch",
+                            "for å flytte dette arbeidstreet til papirkurven. Endringer som ikke er committet og lokale filer følger med, så du kan dra dem tilbake. Commits blir værende på grenen"
+                        ),
+                    )))
+                    .child(gpui_kit::base::input::Input::new(&view.cleanup_confirm))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(t::SPACE_2)
+                            .child(button("cleanup-wt-cancel", l("Cancel", "Avbryt"), false, dark, move |_, cx| {
+                                cancel.update(cx, |v, cx| {
+                                    v.tools.cleanup.confirm = None;
+                                    cx.notify();
+                                })
+                            }))
+                            .child(
+                                div().when(!ok, |d| d.opacity(0.4)).child(crate::controls::button_destructive("cleanup-wt-confirm", l("Move to Trash", "Flytt til papirkurven"), dark, move |_, cx| {
+                                    let v = go.read(cx);
+                                    let st = &v.tools.cleanup;
+                                    if st.cleaning.is_some() || st.confirm_text != confirm_name(&target) {
+                                        return;
+                                    }
+                                    go.update(cx, |v, cx| {
+                                        v.tools.cleanup.confirm = None;
+                                        cx.notify();
+                                    });
+                                    run_plan(&go, vec![target.clone()], std::future::ready(Ok::<usize, ()>(1)), cx);
+                                })),
+                            ),
+                    ),
+            );
+        }
+    }
+    list
 }
 
 /// Start a scan unless one is running, and redraw while it runs.
@@ -258,6 +411,20 @@ fn title_actions(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) 
         let target = this.clone();
         out.push(button("cleanup-rescan", l("Rescan", "Skann på nytt"), false, dark, move |_, cx| start_scan(&target, cx)).into_any_element());
     }
+    {
+        let target = this.clone();
+        let label = if st.analyzer { l("Back to cleanup", "Tilbake til opprydding") } else { l("Worktrees", "Arbeidstrær") };
+        out.push(
+            button("cleanup-analyzer", label, st.analyzer, dark, move |_, cx| {
+                target.update(cx, |v, cx| {
+                    v.tools.cleanup.analyzer = !v.tools.cleanup.analyzer;
+                    v.tools.cleanup.confirm = None;
+                    cx.notify();
+                })
+            })
+            .into_any_element(),
+        );
+    }
     if let Some(kind) = settings().cleanup_agent.as_deref().and_then(AgentKind::from_key) {
         if kind.find().is_some() && st.cleaning.is_none() && st.scan.is_some() && !st.scanning() {
             let target = this.clone();
@@ -376,49 +543,53 @@ pub fn panel(view: &TideGaugeView, dark: bool, this: Entity<TideGaugeView>) -> D
         }
     }
 
-    // Ready to free, by category.
-    let mut cats: Vec<(Category, Vec<&Candidate>)> = Category::ALL
-        .iter()
-        .map(|cat| (*cat, scan.candidates.iter().filter(|c| c.category == *cat && c.tier != Tier::Keep).collect::<Vec<_>>()))
-        .filter(|(_, v)| !v.is_empty())
-        .collect();
-    let cat_bytes = |v: &Vec<&Candidate>| cleanup::category_bytes(v.iter().copied());
-    match st.sort {
-        Sort::Size => cats.sort_by_key(|(_, v)| std::cmp::Reverse(cat_bytes(v))),
-        Sort::LastUsed => cats.sort_by_key(|(_, v)| std::cmp::Reverse(v.iter().filter_map(|c| c.last_used).max())),
-        Sort::Name => cats.sort_by_key(|(c, _)| c.label()),
-    }
-    let mut list = card(dark).p_0().py_2().gap_0();
-    list = list.child(
-        div()
-            .px(t::SPACE_4)
-            .pb(t::SPACE_1)
-            .flex()
-            .justify_between()
-            .items_center()
-            .child(caption(l("Ready to free", "Klar til å frigjøres"), dark))
-            .child(sort_row(st.sort, dark, this.clone())),
-    );
-    if cats.is_empty() && scan.phase == Phase::Done {
-        list = list.child(div().px(t::SPACE_4).py(t::SPACE_2).child(sub(l("Nothing to free right now.", "Ingenting å frigjøre akkurat nå.")).text_color(t::ink_dim(dark))));
-    }
-    let busy = st.cleaning.is_some();
-    for (cat, items) in &cats {
-        list = list.child(category_row(st, *cat, items, idle, now, busy, dark, this.clone()));
-        if st.open.contains(cat) {
-            let mut items = items.clone();
-            items.sort_by_key(|c| std::cmp::Reverse(c.bytes.unwrap_or(0)));
-            for c in items.iter().take(200) {
-                list = list.child(item_row(st, c, idle, now, busy, dark, this.clone()));
+    if st.analyzer {
+        body = body.child(analyzer(view, &scan, now, st.cleaning.is_some(), dark, this.clone()));
+    } else {
+        // Ready to free, by category.
+        let mut cats: Vec<(Category, Vec<&Candidate>)> = Category::ALL
+            .iter()
+            .map(|cat| (*cat, scan.candidates.iter().filter(|c| c.category == *cat && c.tier != Tier::Keep).collect::<Vec<_>>()))
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+        let cat_bytes = |v: &Vec<&Candidate>| cleanup::category_bytes(v.iter().copied());
+        match st.sort {
+            Sort::Size => cats.sort_by_key(|(_, v)| std::cmp::Reverse(cat_bytes(v))),
+            Sort::LastUsed => cats.sort_by_key(|(_, v)| std::cmp::Reverse(v.iter().filter_map(|c| c.last_used).max())),
+            Sort::Name => cats.sort_by_key(|(c, _)| c.label()),
+        }
+        let mut list = card(dark).p_0().py_2().gap_0();
+        list = list.child(
+            div()
+                .px(t::SPACE_4)
+                .pb(t::SPACE_1)
+                .flex()
+                .justify_between()
+                .items_center()
+                .child(caption(l("Ready to free", "Klar til å frigjøres"), dark))
+                .child(sort_row(st.sort, dark, this.clone())),
+        );
+        if cats.is_empty() && scan.phase == Phase::Done {
+            list = list.child(div().px(t::SPACE_4).py(t::SPACE_2).child(sub(l("Nothing to free right now.", "Ingenting å frigjøre akkurat nå.")).text_color(t::ink_dim(dark))));
+        }
+        let busy = st.cleaning.is_some();
+        for (cat, items) in &cats {
+            list = list.child(category_row(st, *cat, items, idle, now, busy, dark, this.clone()));
+            if st.open.contains(cat) {
+                let mut items = items.clone();
+                items.sort_by_key(|c| std::cmp::Reverse(c.bytes.unwrap_or(0)));
+                for c in items.iter().take(200) {
+                    list = list.child(item_row(st, c, idle, now, busy, dark, this.clone()));
+                }
             }
         }
-    }
-    body = body.child(list);
+        body = body.child(list);
 
-    // Kept: shown, never ticked.
-    let kept: Vec<&Candidate> = scan.candidates.iter().filter(|c| c.tier == Tier::Keep).collect();
-    if !kept.is_empty() {
-        body = body.child(kept_card(st, &kept, now, busy, dark, this.clone()));
+        // Kept: shown, never ticked.
+        let kept: Vec<&Candidate> = scan.candidates.iter().filter(|c| c.tier == Tier::Keep).collect();
+        if !kept.is_empty() {
+            body = body.child(kept_card(st, &kept, now, busy, dark, this.clone()));
+        }
     }
 
     // Footer: when it was checked, what was skipped, and the one button.

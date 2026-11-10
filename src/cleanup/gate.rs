@@ -247,6 +247,17 @@ pub fn recheck(candidate: &Candidate, home: &Path, procs: &Procs) -> Result<(), 
                 None => Err(l("git did not answer.", "git svarte ikke.").into()),
             }
         }
+        Method::TrashWorktree { main } => {
+            let path = &candidate.paths[0];
+            validate(path, home)?;
+            if identity(path) != candidate.fingerprint.identity {
+                return Err(l("Changed since the scan: the folder was replaced.", "Endret siden skanningen: mappen ble byttet ut.").into());
+            }
+            match super::git::link_target(path) {
+                Some((m, true)) if std::fs::canonicalize(&m).ok() == std::fs::canonicalize(main).ok() => Ok(()),
+                _ => Err(l("It is no longer a worktree of that repo.", "Den er ikke lenger et arbeidstre i det repoet.").into()),
+            }
+        }
         Method::Prune { .. } | Method::KnownCache(_) | Method::Tool(_) => Ok(()),
         Method::Trash => {
             if candidate.category == Category::BuildOutput {

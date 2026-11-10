@@ -261,7 +261,13 @@ pub fn audit_repo(repo: &Path, cfg: &ScanConfig, home: &Path, procs: &Procs) -> 
             ("branch", branch),
             ("state", state.label().to_string()),
             ("base", base.clone().unwrap_or_default()),
+            ("main", repo.display().to_string()),
+            ("changes", facts.changed.to_string()),
+            ("unpushed", facts.unpushed.map_or_else(|| "?".into(), |n| n.to_string())),
         ]);
+        if w.locked {
+            c.facts.push(("locked", "yes".into()));
+        }
         out.push(c);
     }
     if prunable > 0 {
