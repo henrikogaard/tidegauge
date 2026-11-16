@@ -327,6 +327,10 @@ impl TideGaugeView {
         // the loop so it leaves its slow pace.
         cx.observe_window_activation(window, |v: &mut TideGaugeView, window, cx| {
             if window.is_window_active() {
+                // However it came forward (the menu-bar item, or Finder or
+                // Spotlight reopening the app, which macOS may handle without
+                // asking Tidegauge), an active dashboard has a Dock icon.
+                crate::app::set_in_dock(true);
                 v.snap = latest();
                 crate::app::REFRESH.notify();
                 cx.notify();

@@ -1,7 +1,7 @@
 //! Agents: what is left of your AI plans (read from OpenQuota) and the
 //! coding agents running now, with what each one started.
 
-use crate::agents::{Activity, Pace, Plan, Plans, Role, Session, Window};
+use crate::agents::{Activity, Pace, Plan, Plans, Role, Session, Spent, Window};
 use crate::app_cpu::AppCpu;
 use crate::controls::button;
 use crate::engine::fmt_bytes;
@@ -55,6 +55,8 @@ fn provider_name(id: &str) -> String {
         "cursor" => "Cursor".into(),
         "gemini" => "Gemini".into(),
         "devin" => "Devin".into(),
+        "openai" => "OpenAI".into(),
+        "opencode-console" => "OpenCode".into(),
         "grok" => "Grok".into(),
         "opencode" => "OpenCode".into(),
         "openrouter" => "OpenRouter".into(),
@@ -66,6 +68,16 @@ fn provider_name(id: &str) -> String {
                 .map(|first| first.to_uppercase().chain(chars).collect())
                 .unwrap_or_default()
         }
+    }
+}
+
+/// The provider, plus the account's own name when there are two of it:
+/// "Claude · Desktop".
+pub(crate) fn plan_name(plan: &Plan) -> String {
+    let provider = provider_name(&plan.provider);
+    match plan.account.as_deref() {
+        Some(account) if !account.eq_ignore_ascii_case(&provider) => format!("{provider} · {account}"),
+        _ => provider,
     }
 }
 
@@ -94,16 +106,101 @@ fn percent(fraction: f64) -> String {
     crate::locale::percent((fraction * 100.).round(), 0)
 }
 
-/// What is left of a plan's credits. Money gets cents; nothing left reads 0.
-fn credits_left(amount: f64, unit: &str) -> String {
-    let amount = amount.max(0.);
-    let is_money = unit.len() == 3 && unit.chars().all(|c| c.is_ascii_uppercase());
-    let value = if is_money {
-        crate::locale::number(amount, 2)
+/// A currency code, or no unit at all (OpenQuota's money windows).
+fn is_money(unit: &str) -> bool {
+    unit.is_empty() || (unit.len() == 3 && unit.chars().all(|c| c.is_ascii_uppercase()))
+}
+
+/// The amount as it will be shown, so its sign and colour agree with the text.
+fn rounded(amount: f64, unit: &str) -> f64 {
+    let scale = if is_money(unit) { 100. } else { 1. };
+    (amount * scale).round() / scale
+}
+
+/// An amount as people write it: money gets cents, other credits whole
+/// numbers, a real debt a minus sign, and a rounding never reads "-0".
+fn amount_text(amount: f64, unit: &str) -> String {
+    let rounded = rounded(amount, unit);
+    let digits = if is_money(unit) {
+        crate::locale::number(rounded.abs(), 2)
     } else {
-        crate::locale::whole(amount)
+        crate::locale::whole(rounded.abs())
     };
-    format!("{value} {unit} {}", l("left", "igjen"))
+    if rounded < 0. {
+        format!("\u{2212}{digits}")
+    } else {
+        digits
+    }
+}
+
+/// An amount small enough for the inside of a ring: no cents from 100 up.
+fn short_amount(amount: f64, unit: &str) -> String {
+    if amount.abs() >= 100. {
+        amount_text(amount.trunc(), "credits")
+    } else {
+        amount_text(amount, unit)
+    }
+}
+
+/// What is left of a plan's credits: "9.17 USD left", or "−0.07 USD" when
+/// the balance is overdrawn.
+fn credits_left(amount: f64, unit: &str) -> String {
+    let value = amount_text(amount, unit);
+    if value.starts_with('\u{2212}') {
+        format!("{value} {unit}")
+    } else {
+        format!("{value} {unit} {}", l("left", "igjen"))
+    }
+}
+
+/// OpenQuota's period name ("Spend 30d") in words: "last 30 days".
+fn spent_period(spent: &Spent) -> String {
+    let label = spent.label.to_lowercase();
+    if label.contains("30d") || label.contains("30 d") {
+        l("last 30 days", "siste 30 dager").into()
+    } else if label.contains("7d") || label.contains("7 d") || label.contains("week") {
+        l("last 7 days", "siste 7 dager").into()
+    } else {
+        spent.label.clone()
+    }
+}
+
+/// "60.24 USD"
+fn spent_amount(spent: &Spent) -> String {
+    format!("{} {}", amount_text(spent.amount, &spent.unit), spent.unit).trim_end().to_string()
+}
+
+/// The balance and spend for a tile's quiet last line: whatever its status
+/// line does not already say. A plan that is not updating shows "as of" in
+/// the status line, so its full amount, with unit and cents, moves here.
+fn money_extras(plan: &Plan, old: bool) -> Vec<String> {
+    let money = money(plan);
+    let said = |kind: fn(&Money) -> bool| !old && money.as_ref().is_some_and(kind);
+    let mut extras = Vec::new();
+    if !said(|m| matches!(m, Money::Balance(..))) {
+        extras.extend(plan.credits.as_ref().map(|(amount, unit)| credits_left(*amount, unit)));
+    }
+    if !said(|m| matches!(m, Money::Spent(_))) {
+        extras.extend(plan.spent.as_ref().map(|spent| format!("{} {}", spent_period(spent), spent_amount(spent))));
+    }
+    extras
+}
+
+/// What a plan without a usage window shows instead of a percentage.
+enum Money<'a> {
+    Balance(f64, &'a str),
+    Spent(&'a Spent),
+}
+
+fn money(plan: &Plan) -> Option<Money<'_>> {
+    if plan.tightest().is_some() {
+        return None;
+    }
+    match (&plan.credits, &plan.spent) {
+        (Some((amount, unit)), _) => Some(Money::Balance(rounded(*amount, unit), unit)),
+        (None, Some(spent)) => Some(Money::Spent(spent)),
+        (None, None) => None,
+    }
 }
 
 /// Stale, failed or too old to trust: show its age, never a pace.
@@ -147,6 +244,10 @@ fn as_of(at: f64, now: f64) -> String {
 pub(crate) struct PlanGlance {
     pub name: String,
     pub left: Option<f64>,
+    /// The chip's reading: "54% left", "9.17 USD left" or "60.24 USD".
+    pub headline: String,
+    /// The same, short, for the menu-bar panel's right-hand column.
+    pub value: String,
     pub color: Hsla,
     pub ring: Vec<(f64, Hsla)>,
     pub note: String,
@@ -161,27 +262,50 @@ pub(crate) fn plan_glance(plan: &Plan, now: f64, dark: bool) -> PlanGlance {
     let left = tight.map(|w| 1. - w.used);
     let old = plan_not_updating(plan, now);
     let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
+    let money = money(plan);
     let color = if old {
         t::ink_dim(dark)
     } else {
-        match (&pace, left) {
-            (Pace::UsedUp, _) => t::warn(dark),
-            (Pace::RunsOut { .. }, _) => t::caution(dark),
-            (_, Some(left)) if left < 0.15 => t::caution(dark),
+        match (&money, &pace, left) {
+            (Some(Money::Balance(amount, _)), _, _) if *amount <= 0. => t::warn(dark),
+            (Some(Money::Balance(..)), _, _) => t::ok(dark),
+            (Some(Money::Spent(_)), _, _) => t::ink(dark),
+            (None, Pace::UsedUp, _) => t::warn(dark),
+            (None, Pace::RunsOut { .. }, _) => t::caution(dark),
+            (None, _, Some(left)) if left < 0.15 => t::caution(dark),
             _ => t::ok(dark),
         }
     };
-    let ring = left.map(|left| vec![(left, color), (1. - left, t::card_hi(dark))]).unwrap_or_default();
-    let note = match (old, &pace) {
-        (true, _) => plan.fetched_at.map(|at| as_of(at, now)).unwrap_or_default(),
-        (false, Pace::RunsOut { in_secs }) => format!("{} {}", l("out in", "tom om"), duration(*in_secs)),
-        (false, Pace::UsedUp) => l("used up", "brukt opp").to_string(),
-        (false, Pace::OnPace { .. }) => l("on pace", "i rute").to_string(),
-        (false, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
+    let ring = match (&money, left) {
+        // A balance or a spend has no share to draw: a full ring in its colour.
+        (Some(Money::Balance(..)), _) => vec![(1., color)],
+        (Some(Money::Spent(_)), _) => vec![(1., t::ink_dim(dark))],
+        (None, Some(left)) => vec![(left, color), (1. - left, t::card_hi(dark))],
+        (None, None) => Vec::new(),
+    };
+    let note = match (old, &money, &pace) {
+        (true, _, _) => plan.fetched_at.map(|at| as_of(at, now)).unwrap_or_default(),
+        (false, Some(Money::Balance(amount, _)), _) if *amount < 0. => l("overdrawn", "overtrukket").to_string(),
+        (false, Some(Money::Balance(..)), _) => l("balance", "saldo").to_string(),
+        (false, Some(Money::Spent(spent)), _) => format!("{} · {}", l("spent", "brukt"), spent_period(spent)),
+        (false, None, Pace::RunsOut { in_secs }) => format!("{} {}", l("out in", "tom om"), duration(*in_secs)),
+        (false, None, Pace::UsedUp) => l("used up", "brukt opp").to_string(),
+        (false, None, Pace::OnPace { .. }) => l("on pace", "i rute").to_string(),
+        (false, None, Pace::Unknown) => tight.map(|w| window_title(&w.label)).unwrap_or_default(),
+    };
+    let (headline, value) = match (&money, left) {
+        (Some(Money::Balance(amount, unit)), _) => {
+            (credits_left(*amount, unit), format!("{} {unit}", amount_text(*amount, unit)).trim_end().to_string())
+        }
+        (Some(Money::Spent(spent)), _) => (spent_amount(spent), spent_amount(spent)),
+        (None, left) => (
+            format!("{} {}", left.map(percent).unwrap_or_else(|| "–".into()), l("left", "igjen")),
+            left_text(left),
+        ),
     };
     let note_color = if matches!(pace, Pace::RunsOut { .. }) && !old { color } else { t::ink_dim(dark) };
     let name_color = if old { t::ink_dim(dark) } else { t::ink(dark) };
-    PlanGlance { name: provider_name(&plan.provider), left, color, ring, note, name_color, note_color }
+    PlanGlance { name: plan_name(plan), left, headline, value, color, ring, note, name_color, note_color }
 }
 
 pub(crate) fn left_text(left: Option<f64>) -> String {
@@ -190,12 +314,8 @@ pub(crate) fn left_text(left: Option<f64>) -> String {
 
 /// What a screen reader says for a plan: a plan that is not updating also
 /// says "as of …", so its percentage is not heard as current.
-fn plan_label(provider: &str, left: Option<f64>, note: &str, old: bool) -> String {
-    let base = format!(
-        "{} {}",
-        provider_name(provider),
-        left.map(percent).unwrap_or_default()
-    );
+fn plan_label(name: &str, headline: &str, note: &str, old: bool) -> String {
+    let base = format!("{name} {headline}");
     if old && !note.is_empty() {
         format!("{base}, {note}")
     } else {
@@ -211,17 +331,18 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
         return None;
     }
     let mut strip = div().flex().flex_wrap().gap_2();
-    for plan in plans {
-        let PlanGlance { left, color, ring, note, name_color, note_color, .. } = plan_glance(plan, now, dark);
+    for (index, plan) in plans.into_iter().enumerate() {
+        let PlanGlance { name, headline, color, ring, note, name_color, note_color, .. } = plan_glance(plan, now, dark);
         let old = plan_not_updating(plan, now);
         let target = this.clone();
         let keyboard = this.clone();
         let provider = plan.provider.clone();
         strip = strip.child(
             div()
-                .id(SharedString::from(format!("plan-chip-{provider}")))
+                // Two accounts of one provider each need their own id.
+                .id(SharedString::from(format!("plan-chip-{provider}-{index}")))
                 .role(gpui_kit::Role::Button)
-                .aria_label(SharedString::from(plan_label(&provider, left, &note, old)))
+                .aria_label(SharedString::from(plan_label(&name, &headline, &note, old)))
                 .tab_index(0)
                 .flex()
                 .items_center()
@@ -246,12 +367,8 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
                                 .flex()
                                 .gap_1()
                                 .text_size(t::TEXT_BODY)
-                                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(name_color).child(provider_name(&plan.provider)))
-                                .child(div().text_color(color).child(format!(
-                                    "{} {}",
-                                    left.map(percent).unwrap_or_else(|| "–".into()),
-                                    l("left", "igjen")
-                                ))),
+                                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(name_color).child(name))
+                                .child(div().text_color(color).child(headline)),
                         )
                         .child(div().text_size(t::TEXT_SMALL).text_color(note_color).child(note)),
                 )
@@ -270,24 +387,22 @@ pub fn plan_strip(plans: &Plans, dark: bool, this: Entity<TideGaugeView>) -> Opt
 
 fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
     let tight = plan.tightest();
-    let left = tight.map(|w| 1. - w.used);
     let pace = tight.map(|w| crate::agents::pace(w, now)).unwrap_or(Pace::Unknown);
     let old = plan_not_updating(plan, now);
-    let color = if old {
-        t::ink_dim(dark)
-    } else {
-        match (&pace, left) {
-            (Pace::UsedUp, _) => t::warn(dark),
-            (Pace::RunsOut { .. }, _) => t::caution(dark),
-            (_, Some(left)) if left < 0.15 => t::caution(dark),
-            _ => t::ok(dark),
-        }
-    };
-    let ring: Vec<(f64, Hsla)> = match left {
-        Some(left) => vec![(left, color), (1. - left, t::card_hi(dark))],
-        None => Vec::new(),
+    let money = money(plan);
+    let PlanGlance { left, color, ring, .. } = plan_glance(plan, now, dark);
+    // Inside the ring: the share left, or the amount without its unit.
+    let centre = match &money {
+        Some(Money::Balance(amount, unit)) => short_amount(*amount, unit),
+        Some(Money::Spent(spent)) => short_amount(spent.amount, &spent.unit),
+        None => left.map(percent).unwrap_or_else(|| "–".into()),
     };
     let status: Option<(String, Hsla)> = match (old, &pace, tight) {
+        (false, _, None) => match &money {
+            Some(Money::Balance(amount, unit)) => Some((credits_left(*amount, unit), color)),
+            Some(Money::Spent(spent)) => Some((spent_amount(spent), t::ink(dark))),
+            None => None,
+        },
         (true, _, _) => Some((
             match plan.fetched_at {
                 Some(at) => format!(
@@ -345,7 +460,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                         .text_size(t::TEXT_ROW)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(color)
-                        .child(left.map(percent).unwrap_or_else(|| "–".into())),
+                        .child(centre),
                 ),
         )
         .child(
@@ -360,21 +475,23 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                         .flex()
                         .items_baseline()
                         .gap_2()
-                        .child(div().text_size(t::TEXT_ROW).font_weight(FontWeight::SEMIBOLD).child(provider_name(&plan.provider)))
+                        .child(div().text_size(t::TEXT_ROW).font_weight(FontWeight::SEMIBOLD).child(plan_name(plan)))
                         .when_some(plan.plan.clone(), |d, name| {
                             d.child(div().text_xs().text_color(t::ink_dim(dark)).child(name))
                         }),
                 )
                 // Three lines at most, none wrapping: which window, how it is
                 // going, and everything else in one quiet line.
-                .child(sub(match tight {
-                    Some(w) => window_title(&w.label),
-                    None => l("No usage window reported", "Ingen bruksperiode rapportert").into(),
+                .child(sub(match (tight, &money) {
+                    (Some(w), _) => window_title(&w.label),
+                    (None, Some(Money::Balance(..))) => l("Balance", "Saldo").into(),
+                    (None, Some(Money::Spent(spent))) => format!("{}, {}", l("Spent", "Brukt"), spent_period(spent)),
+                    (None, None) => l("No usage window reported", "Ingen bruksperiode rapportert").into(),
                 }).truncate().text_color(t::ink_dim(dark)))
                 .when_some(status, |d, (text, color)| d.child(sub(text).truncate().text_color(color)))
                 .map(|d| {
                     let mut rest = others.clone();
-                    rest.extend(plan.credits.clone().map(|(amount, unit)| credits_left(amount, &unit)));
+                    rest.extend(money_extras(plan, old));
                     d.when(!rest.is_empty(), |d| d.child(sub(rest.join(" · ")).truncate().text_color(t::ink_dim(dark))))
                 })
                 .when(plan.failed, |d| {
@@ -733,7 +850,8 @@ mod tests {
     fn credits_read_as_people_write_them() {
         let left = l("left", "igjen");
         assert_eq!(credits_left(57602., "credits"), format!("{} credits {left}", whole(57602.)));
-        assert_eq!(credits_left(-0.3, "USD"), format!("{} USD {left}", number(0., 2)), "never -0");
+        assert_eq!(credits_left(-0.3, "USD"), format!("\u{2212}{} USD", number(0.3, 2)), "a debt keeps its sign, without 'left'");
+        assert_eq!(credits_left(-0.001, "USD"), format!("{} USD {left}", number(0., 2)), "never -0");
         assert_eq!(credits_left(12.5, "USD"), format!("{} USD {left}", number(12.5, 2)));
         assert_eq!(credits_left(123.45, "USD"), format!("{} USD {left}", number(123.45, 2)), "cents at any size");
     }
@@ -745,6 +863,8 @@ mod tests {
             plan: None,
             windows: Vec::new(),
             credits: None,
+            spent: None,
+            account: None,
             fetched_at,
             stale,
             failed,
@@ -764,6 +884,8 @@ mod tests {
             plan: None,
             windows: Vec::new(),
             credits: None,
+            spent: None,
+            account: None,
             fetched_at,
             stale,
             failed,
@@ -788,6 +910,63 @@ mod tests {
     }
 
     #[test]
+    fn money_accounts_show_their_balance_or_spend_instead_of_a_dash() {
+        use crate::agents::Spent;
+        let now = 10_000.;
+        let plan = |provider: &str, credits: Option<(f64, &str)>, spent: Option<Spent>| Plan {
+            provider: provider.into(),
+            plan: None,
+            windows: Vec::new(),
+            credits: credits.map(|(a, u)| (a, u.to_string())),
+            spent,
+            account: None,
+            fetched_at: Some(now - 60.),
+            stale: false,
+            failed: false,
+        };
+        let left = l("left", "igjen");
+        let openrouter = super::plan_glance(&plan("openrouter", Some((9.17, "USD")), None), now, true);
+        assert_eq!(openrouter.headline, format!("{} USD {left}", number(9.17, 2)));
+        assert_eq!(openrouter.value, format!("{} USD", number(9.17, 2)));
+        assert_eq!(openrouter.ring.len(), 1, "a full ring, not an empty one");
+        let spend = Spent { amount: 60.24, unit: "USD".into(), label: "Spend 30d".into() };
+        let openai = super::plan_glance(&plan("openai", None, Some(spend)), now, true);
+        assert_eq!(openai.name, "OpenAI");
+        assert_eq!(openai.headline, format!("{} USD", number(60.24, 2)));
+        assert!(openai.note.contains(l("last 30 days", "siste 30 dager")), "{}", openai.note);
+        let devin = super::plan_glance(&plan("devin", Some((-0.07, "USD")), None), now, true);
+        assert_eq!(devin.note, l("overdrawn", "overtrukket"));
+        assert!(!devin.headline.contains(left));
+        let crumb = super::plan_glance(&plan("devin", Some((-0.001, "USD")), None), now, true);
+        assert_eq!(crumb.note, l("balance", "saldo"), "rounds to zero: not overdrawn");
+        let unitless = Spent { amount: 60.24, unit: String::new(), label: "Spend 30d".into() };
+        assert_eq!(super::spent_amount(&unitless), number(60.24, 2), "cents kept, no trailing space");
+        let balance = plan("openrouter", Some((123.45, "USD")), None);
+        assert!(super::money_extras(&balance, false).is_empty(), "the status line already says it");
+        assert_eq!(super::money_extras(&balance, true), [format!("{} USD {left}", number(123.45, 2))], "kept when 'as of' takes the status line");
+        let nothing = super::plan_glance(&plan("grok", None, None), now, true);
+        assert_eq!(nothing.headline, format!("– {left}"));
+    }
+
+    #[test]
+    fn a_second_account_is_named_after_its_label() {
+        let named = |provider: &str, account: Option<&str>| Plan {
+            provider: provider.into(),
+            plan: None,
+            windows: Vec::new(),
+            credits: None,
+            spent: None,
+            account: account.map(Into::into),
+            fetched_at: None,
+            stale: false,
+            failed: false,
+        };
+        assert_eq!(super::plan_name(&named("claude", Some("Desktop"))), "Claude · Desktop");
+        assert_eq!(super::plan_name(&named("claude", Some("Claude"))), "Claude", "no 'Claude · Claude'");
+        assert_eq!(super::plan_name(&named("opencode-console", None)), "OpenCode");
+    }
+
+    #[test]
     fn weekday_names_follow_the_ui_language() {
         let names: Vec<&str> = (0..7).map(crate::locale::weekday).collect();
         if crate::locale::is_norwegian() {
@@ -801,9 +980,9 @@ mod tests {
 
     #[test]
     fn a_plan_not_updating_says_so_to_a_screen_reader() {
-        let fresh = super::plan_label("claude", Some(0.5), "on pace", false);
+        let fresh = super::plan_label("Claude", "50% left", "on pace", false);
         assert!(!fresh.contains("on pace"));
-        let old = super::plan_label("claude", Some(0.5), "as of 12:01", true);
+        let old = super::plan_label("Claude", "50% left", "as of 12:01", true);
         assert!(old.ends_with(", as of 12:01"), "{old}");
     }
 
