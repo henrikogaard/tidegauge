@@ -62,7 +62,7 @@ fn likely_server(comm: &str, exe: &str) -> bool {
     })
 }
 
-fn development_project(process: &ProcInfo, cwd: &str, current_uid: u32) -> Option<String> {
+pub(crate) fn development_project(process: &ProcInfo, cwd: &str, current_uid: u32) -> Option<String> {
     // macOS framework Python runs its CLI through an interpreter bundle.
     let framework_python = process
         .exe_path
@@ -93,25 +93,57 @@ fn development_project(process: &ProcInfo, cwd: &str, current_uid: u32) -> Optio
 /// the current user's processes can be inspected, which is what `lsof` showed
 /// a non-root user too.
 pub fn listening_ports() -> HashMap<i32, Vec<u16>> {
-    let mut out: HashMap<i32, Vec<u16>> = HashMap::new();
+    ports_only(listening_sockets())
+}
+
+/// pid -> (port, bound address) for every listening TCP socket.
+pub type Sockets = HashMap<i32, Vec<(u16, std::net::IpAddr)>>;
+
+pub fn listening_sockets() -> Sockets {
+    let mut out = Sockets::new();
     for pid in list_pids() {
-        let ports = listening_ports_of(pid);
-        if !ports.is_empty() {
-            out.insert(pid, ports);
+        let sockets = listening_sockets_of(pid);
+        if !sockets.is_empty() {
+            out.insert(pid, sockets);
         }
     }
     out
 }
 
+fn ports_only(sockets: Sockets) -> HashMap<i32, Vec<u16>> {
+    sockets
+        .into_iter()
+        .map(|(pid, list)| {
+            let mut ports: Vec<u16> = list.into_iter().map(|(port, _)| port).collect();
+            ports.sort_unstable();
+            ports.dedup();
+            (pid, ports)
+        })
+        .collect()
+}
+
+/// The listening sockets, reusing the last scan while it is younger than `max_age`.
+pub fn cached_sockets(max_age: Duration) -> Sockets {
+    cached_within(&mut LISTENERS.lock().unwrap(), max_age, listening_sockets)
+}
+
 /// The listening TCP ports of one process, ascending and without repeats.
 pub fn listening_ports_of(pid: i32) -> Vec<u16> {
+    let mut ports: Vec<u16> = listening_sockets_of(pid).into_iter().map(|(port, _)| port).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// The listening TCP sockets of one process with their bound addresses.
+pub fn listening_sockets_of(pid: i32) -> Vec<(u16, std::net::IpAddr)> {
     use crate::ffi::*;
     use std::ffi::c_void;
-    let mut ports = Vec::new();
+    let mut out = Vec::new();
     unsafe {
         let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0);
         if size <= 0 {
-            return ports;
+            return out;
         }
         // Room for descriptors opened between the two calls.
         let count = size as usize / size_of::<proc_fdinfo>() + 16;
@@ -124,7 +156,7 @@ pub fn listening_ports_of(pid: i32) -> Vec<u16> {
             (count * size_of::<proc_fdinfo>()) as i32,
         );
         if got <= 0 {
-            return ports;
+            return out;
         }
         fds.truncate(got as usize / size_of::<proc_fdinfo>());
         let mut info = socket_fdinfo::zeroed();
@@ -137,15 +169,15 @@ pub fn listening_ports_of(pid: i32) -> Vec<u16> {
                 SOCKET_FDINFO_SIZE as i32,
             );
             if read as usize == SOCKET_FDINFO_SIZE {
-                if let Some(port) = info.listening_tcp_port() {
-                    ports.push(port);
+                if let Some(socket) = info.listening_tcp() {
+                    out.push(socket);
                 }
             }
         }
     }
-    ports.sort_unstable();
-    ports.dedup();
-    ports
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 fn runtime_of(comm: &str, exe: &str) -> String {
@@ -204,8 +236,7 @@ pub fn select_server_state(cpu_pct: f64, idle_secs: u64, up_for: f64) -> ServerS
 }
 
 /// The last listening-port scan, reused while it is younger than a caller's limit.
-type Listeners = HashMap<i32, Vec<u16>>;
-static LISTENERS: Mutex<Option<(Instant, Listeners)>> = Mutex::new(None);
+static LISTENERS: Mutex<Option<(Instant, Sockets)>> = Mutex::new(None);
 
 /// `fetch`'s result, or the one kept in `cache` if it is younger than `max_age`.
 fn cached_within<T: Clone>(
@@ -225,7 +256,7 @@ fn cached_within<T: Clone>(
 
 /// Dev servers among `procs`. Listening ports may be up to `max_age` old.
 pub fn detect_projects(procs: &[ProcInfo], max_age: Duration) -> Vec<ProjectGroup> {
-    let listeners = cached_within(&mut LISTENERS.lock().unwrap(), max_age, listening_ports);
+    let listeners = ports_only(cached_sockets(max_age));
     let idle_map = IDLE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut seen_servers: HashSet<i32> = HashSet::new();
     let mut dirs: HashMap<String, Vec<DevServer>> = HashMap::new();
@@ -310,7 +341,7 @@ pub fn detect_projects(procs: &[ProcInfo], max_age: Duration) -> Vec<ProjectGrou
 }
 
 /// Require a project marker near the cwd; arbitrary listeners are not projects.
-fn project_root(dir: &str) -> Option<String> {
+pub(crate) fn project_root(dir: &str) -> Option<String> {
     let mut d = std::path::PathBuf::from(dir);
     if !d.is_absolute() {
         return None;

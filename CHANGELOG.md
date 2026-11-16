@@ -16,6 +16,8 @@ hardware acceptance checks. A merge and a published release are separate events.
   Okabe–Ito colours. Good, caution and warning become blue, orange and
   vermillion, so they never depend on telling red from green; the menu
   bar's warning tints, charts and desktop widgets follow it.
+- `tidegauge ports` prints every port your programs listen on, with the process, its project folder, what started it (an agent, Terminal, an editor, Docker or a launchd job) and the address it listens on. A dev server open to your network is marked, with what that means and how to keep it on this Mac. `--json` gives the same as JSON.
+- `tidegauge mcp` gains `whats_on_port` and `stop_port`. An agent can stop a dev server only in its own project folder, and only after you turn on "Let agents stop dev servers" in Settings > General > Cleanup.
 
 ### Fixed
 

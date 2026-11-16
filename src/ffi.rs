@@ -466,6 +466,10 @@ const SOI_FAMILY: usize = 24 + 160;
 const SOI_KIND: usize = 24 + 232;
 const TCP_LOCAL_PORT: usize = 24 + 240 + 4;
 const TCP_STATE: usize = 24 + 240 + 80;
+/// `insi_vflag` (INI_IPV4 1, INI_IPV6 2) and `insi_laddr` (16 bytes; an IPv4
+/// address sits in its last 4) inside the TCP socket's `in_sockinfo`.
+const IN_VFLAG: usize = 24 + 240 + 24;
+const IN_LADDR: usize = 24 + 240 + 48;
 
 impl socket_fdinfo {
     pub fn zeroed() -> Self {
@@ -481,6 +485,12 @@ impl socket_fdinfo {
     /// The local port when this is a TCP socket in the LISTEN state over IPv4
     /// or IPv6. The kernel stores the port in network byte order.
     pub fn listening_tcp_port(&self) -> Option<u16> {
+        self.listening_tcp().map(|(port, _)| port)
+    }
+
+    /// The local port and the address it is bound to, for a listening TCP
+    /// socket. `0.0.0.0` or `::` means every address.
+    pub fn listening_tcp(&self) -> Option<(u16, std::net::IpAddr)> {
         if self.int(SOI_KIND) != SOCKINFO_TCP
             || self.int(TCP_STATE) != TSI_S_LISTEN
             || !matches!(self.int(SOI_FAMILY), 2 | 30)
@@ -488,7 +498,20 @@ impl socket_fdinfo {
             return None;
         }
         let port = u16::from_be(self.int(TCP_LOCAL_PORT) as u16);
-        (port != 0).then_some(port)
+        if port == 0 {
+            return None;
+        }
+        let raw: [u8; 16] = self.bytes[IN_LADDR..IN_LADDR + 16].try_into().unwrap();
+        let addr = if self.bytes[IN_VFLAG] & 2 != 0 {
+            let v6 = std::net::Ipv6Addr::from(raw);
+            match v6.to_ipv4_mapped() {
+                Some(v4) => std::net::IpAddr::V4(v4),
+                None => std::net::IpAddr::V6(v6),
+            }
+        } else {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(raw[12], raw[13], raw[14], raw[15]))
+        };
+        Some((port, addr))
     }
 }
 
@@ -505,6 +528,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<proc_fdinfo>(), 8);
         assert_eq!((SOI_FAMILY, SOI_KIND), (184, 256));
         assert_eq!((TCP_LOCAL_PORT, TCP_STATE), (268, 344));
+        // offsetof(in_sockinfo, insi_vflag) 24 and insi_laddr 48.
+        assert_eq!((IN_VFLAG, IN_LADDR), (288, 312));
     }
 
     fn socket(kind: i32, state: i32, family: i32, port_net: u16) -> socket_fdinfo {
@@ -523,6 +548,26 @@ mod tests {
         assert_eq!(s.listening_tcp_port(), Some(3000));
         let s = socket(SOCKINFO_TCP, TSI_S_LISTEN, 30, 80u16.to_be());
         assert_eq!(s.listening_tcp_port(), Some(80));
+    }
+
+    #[test]
+    fn bind_address_is_read_for_ipv4_ipv6_and_mapped() {
+        use std::net::IpAddr;
+        let net = 5173u16.to_be();
+        let mut s = socket(SOCKINFO_TCP, TSI_S_LISTEN, 2, net);
+        s.bytes[IN_VFLAG] = 1;
+        s.bytes[IN_LADDR + 12..IN_LADDR + 16].copy_from_slice(&[127, 0, 0, 1]);
+        assert_eq!(s.listening_tcp(), Some((5173, "127.0.0.1".parse::<IpAddr>().unwrap())));
+        s.bytes[IN_LADDR + 12..IN_LADDR + 16].copy_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(s.listening_tcp(), Some((5173, "0.0.0.0".parse::<IpAddr>().unwrap())));
+        let mut s = socket(SOCKINFO_TCP, TSI_S_LISTEN, 30, net);
+        s.bytes[IN_VFLAG] = 3;
+        assert_eq!(s.listening_tcp(), Some((5173, "::".parse::<IpAddr>().unwrap())));
+        s.bytes[IN_LADDR + 15] = 1;
+        assert_eq!(s.listening_tcp(), Some((5173, "::1".parse::<IpAddr>().unwrap())));
+        let mapped: std::net::Ipv6Addr = "::ffff:192.168.1.20".parse().unwrap();
+        s.bytes[IN_LADDR..IN_LADDR + 16].copy_from_slice(&mapped.octets());
+        assert_eq!(s.listening_tcp(), Some((5173, "192.168.1.20".parse::<IpAddr>().unwrap())));
     }
 
     #[test]
