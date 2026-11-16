@@ -6,8 +6,26 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings → Menu bar → Menu-bar colors has a third choice, **By load**:
+  readings stay in the menu bar's own colour while all is well and turn
+  orange or red only when CPU, memory pressure, battery or free disk space
+  reach a warning level.
+- Settings → Look → Colors has a **Color-blind safe** palette, from the
+  Okabe–Ito colours. Good, caution and warning become blue, orange and
+  vermillion, so they never depend on telling red from green; the menu
+  bar's warning tints, charts and desktop widgets follow it.
+
 ### Fixed
 
+- AI plans that report money now show it. An account with a balance, such
+  as OpenRouter, reads "9.17 USD left" instead of "– left"; an API account
+  billed by use, such as OpenAI, reads "60.24 USD · spent, last 30 days"; an
+  overdrawn balance shows its minus sign and says so. Two accounts of one
+  provider are told apart by the name you gave them in OpenQuota ("Claude ·
+  Desktop"), never by an email address, and OpenAI and OpenCode are spelled
+  right.
 - The dashboard no longer gets lost behind other apps. While its window is
   open, Tidegauge has a Dock icon and a place in ⌘-Tab, and a click on the
   Dock icon brings the window back. Closing the window removes the Dock
