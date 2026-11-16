@@ -99,7 +99,7 @@ pub fn whats_on_port(rows: &[Listener], port: u16) -> Value {
         json!({"port": port, "listeners": [], "note": "Nothing of yours is listening on this port. Ports owned by macOS or other users are not visible to Tidegauge."})
     } else {
         let exposed = rows.iter().any(|x| x.port == port && x.warn_exposed());
-        json!({"port": port, "listeners": found, "warning": exposed.then(|| super::exposed_warning())})
+        json!({"port": port, "listeners": found, "warning": exposed.then(super::exposed_warning)})
     }
 }
 
