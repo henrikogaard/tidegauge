@@ -1,6 +1,6 @@
 # Leftovers and ports
 
-Status: Building (slice 3 of 5 done)
+Status: Building (slices 4–5 of 5 built; rendered check of slice 4 open)
 Size: Full — a new page, a new kind of remembered state (ended agent sessions), new CLI and MCP tools, and it stops processes.
 Owner: Henrik · Started: 2026-11-16 · Approved: 2026-11-16, Henrik ("Approve, build it", with the recommended D-1–D-4)
 Working assumptions: none.
@@ -237,8 +237,8 @@ Consequences: an agent in another folder can see but not stop.
 | 1 | Bind address in ffi; `ports::scan` + `launcher`; `tidegauge ports [--json]`. Thinnest end-to-end path through the riskiest contract (socket layout and launcher walk). | FR-1, FR-2, FR-8, FR-9, FR-13 | Done (this change) |
 | 2 | MCP `whats_on_port`, `stop_port` and the setting | FR-10, FR-11, FR-12 | Done (this change) |
 | 3 | Ports page (D-1) with Stop, Open, Reveal and the exposed warning | FR-1, FR-3, FR-8, FR-11 | Done (this change) |
-| 4 | `ports::ended` + "Left running" on the Agents page with Stop all; launcher "ended session" | FR-4, FR-5, FR-6 | Planned (after #127 merges) |
-| 5 | SessionEnd hook records the tree | FR-7 | Planned |
+| 4 | `ports::ended` + "Left running" on the Agents page with Stop all; launcher "ended session" | FR-4, FR-5, FR-6 | Done (this change) |
+| 5 | SessionEnd hook records the tree | FR-7 | Done (this change) |
 
 Each slice is its own PR with a CHANGELOG line under `## Unreleased`.
 Slices 1–2 can ship as one PR, 3 as one, 4–5 as one.
@@ -281,6 +281,14 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 - **Stop (D-3).** `ports_panel::stop_kind`: blocked → the block reason, no Stop; Docker → "Stop it in Docker"; launchd job → "launchd starts it again"; dev server → `ui::request_stop` (the existing confirmation and `stop_targets`); any other own process → `process_panel::request` with `Action::Processes` (the existing confirmation and `process_control::signal`, which re-verifies identity).
 - **Open** runs `open http://localhost:<port>`; **Show in Finder** uses `storage::reveal`.
 
+### Slices 4–5 (built 2026-11-16)
+
+- **File.** `ended-sessions.json` in the config dir: `{sessions: [{agent, folder, root_pid, root_start, ended_at, members: [{pid, uid, name, exe_path, start_unix}]}]}`. It holds live and ended sessions, so the hook and a restart both work (FR-6, FR-7). No arguments or environment (NFR-2). Read-modify-write under `flock`, shared by the app, the CLI and the hook. Caps: 256 members per session, 64 sessions, live ones kept first.
+- **Pass.** `ports::ended::pass` runs on every heavy pass (2 s watched, 8 s hidden). It keeps the file in memory and re-reads it only when its mtime moved. `observe` adds each live session's tree (shells left out), marks a session ended when its root (PID and start time) is gone, then keeps only members still alive with the same start time and not inside another live session. It drops sessions with nothing left, or ended more than 24 h ago. The file is written only when something changed, by re-applying the same pass under the lock, so a hook write in between is kept. `tidegauge ports` runs the same pass, so the CLI also names leftovers.
+- **Launcher.** `ports::listeners` fills `Context.ended` from the leftovers, so the Ports page and the CLI say "<agent> (ended)".
+- **Hook.** `tidegauge hook session-end` first records the session: from its own process it walks up to the **nearest** agent (the one ending; an agent started inside another ends on its own), takes that agent's tree, and leaves out its own chain (the hook and its shells). It never fails the hook.
+- **UI.** The Agents page shows "Left running" above "Dev servers" when any session left something: a card per session ("<agent> · app", "Ended 3 min ago · 2 processes still running"), each process with its ports and PID, and **Stop all…** (the existing Quit confirmation and `process_control::signal`, which re-verifies identity and skips blocked processes) and **Dismiss**. It is drawn from `ui.rs`, not `agents_panel.rs`, to stay clear of #127.
+
 ## 10. Verification
 
 | Acceptance criterion | Test | Result | Change |
@@ -301,6 +309,11 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 | FR-1 grouping by project, then the rest (slice 3) | `ports_panel::tests::groups_by_project_name_then_the_rest` | Pass | slice 3 PR |
 | Ports in the sidebar after Agents (slice 3) | `ui::tests::hidden_pages_do_not_take_a_number` | Pass | slice 3 PR |
 | FR-1, FR-3, FR-8, FR-11 rendered (slice 3) | Release build, sandbox HOME, macOS 27.0.1, two `http.server`s: warning card, project card, binds, chip only on 0.0.0.0, "Started by", Open, Stop, Show in Finder, launchd rows without Stop; Stop → Cancel kept the process, Stop → Stop ended it and the row went away | Pass (2026-11-16, 5326676), except the sidebar entry, which was missing; fixed in 781381b | slice 3 PR |
+| FR-4 a child that outlives its session is left running; shells not listed; gone child drops off | `ended::tests::a_child_that_outlives_its_session_is_left_running` | Pass | slices 4–5 PR |
+| FR-4 a session that leaves nothing is not shown; reused PID is not a leftover | `a_session_that_leaves_nothing_is_not_shown`, `a_reused_pid_is_not_a_leftover` | Pass | slices 4–5 PR |
+| FR-6 expiry after 24 h, Dismiss; file round-trips exactly under its lock, no args/env | `ended_sessions_expire_after_a_day_and_can_be_dismissed`, `the_file_round_trips_under_its_lock_and_keeps_start_times_exact` | Pass | slices 4–5 PR |
+| FR-7 hook finds its own (nearest) agent and skips its chain | `the_hook_finds_its_own_agent_and_skips_its_own_chain` | Pass | slices 4–5 PR |
+| FR-7, FR-2 live: a compiled stand-in agent binary named `claude` starts `http.server`, runs `tidegauge hook session-end`, exits | The file held the session with `Python`; `tidegauge ports` then showed 18777 as started by the ended session; after the server exited the session was dropped. No args/env in the file. | Pass (2026-11-16, debug build, sandbox HOME) | slices 4–5 PR |
 | `stop_port` refuses launchd jobs and Docker (Codex review on #130) | `stop_port_needs_the_setting_and_the_callers_folder` | Pass | #130 (fcf9eab) |
 
 ## 11. Codebase deltas and change log
@@ -316,5 +329,6 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 
 ### Change log
 - 2026-11-16: first draft.
+- 2026-11-16: slices 4–5 built. The hook uses the nearest agent, not the outermost (found in the live test).
 - 2026-11-16: slice 3 built: the Projects tab becomes Ports.
 - 2026-11-16: approved by Henrik with D-1–D-4 as recommended; slices 1–2 built. An agent outside any project may stop nothing (found in the live check). Review fixes: launchd jobs above wrapper scripts, launchd cache keyed by start time, `~` shortening, and no stopping inside another checkout nested in the caller's.

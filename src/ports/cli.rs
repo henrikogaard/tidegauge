@@ -12,7 +12,9 @@ fn now_listeners() -> Vec<Listener> {
     let procs = super::basic_procs();
     let projects = crate::projects::detect_projects(&procs, Duration::ZERO);
     let sessions = crate::agents::sessions(&procs, &projects);
-    super::listeners(&procs, &sessions, Duration::ZERO)
+    // Same pass as the app's, so ended sessions are marked and named.
+    super::ended::pass(&sessions, &procs, &crate::projects::cached_sockets(Duration::from_secs(1)));
+    super::listeners(&procs, &sessions, Duration::from_secs(1))
 }
 
 fn home_short(path: &str) -> String {

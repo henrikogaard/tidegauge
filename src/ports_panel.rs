@@ -221,6 +221,65 @@ pub fn panel(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     c
 }
 
+/// "Left running" on the Agents page (FR-4, FR-5): each ended agent
+/// session with what it left, Stop all and Dismiss.
+pub fn left_running(ended: &[crate::ports::ended::Tracked], dark: bool, this: Entity<TideGaugeView>) -> Div {
+    let accent = Metric::Projects.accent(dark);
+    let now = crate::metrics::now_unix() as i64;
+    let mut c = div().flex().flex_col().gap(t::SPACE_2).child(section_header(
+        l("Left running", "Fortsatt i gang"),
+        &crate::locale::count(ended.len() as u64, "ended session", "ended sessions", "avsluttet økt", "avsluttede økter"),
+        dark,
+    ));
+    for t in ended {
+        let (pid, start) = t.root_key();
+        let folder = t.folder.as_deref().and_then(|f| std::path::Path::new(f).file_name()).map(|n| n.to_string_lossy().into_owned());
+        let title = match folder {
+            Some(f) => format!("{} · {f}", t.agent),
+            None => t.agent.clone(),
+        };
+        let when = t.ended_at.map(|at| crate::cleanup_panel::ago(at as i64, now)).unwrap_or_default();
+        let targets: Vec<_> = t.members.iter().map(|m| m.proc_info()).filter(|p| control::blocked(p).is_none()).collect();
+        let mut buttons = div().flex().items_center().gap_2().flex_shrink_0();
+        if !targets.is_empty() {
+            let action = Action::Processes { name: format!("{} ({})", title, l("left running", "fortsatt i gang")), targets, force: Force::Quit };
+            let view = this.clone();
+            buttons = buttons.child(button_accent(format!("left-stop-{pid}-{start}"), l("Stop all…", "Stopp alle…"), false, dark, accent, move |window, cx| {
+                crate::process_panel::request(action.clone(), view.clone(), window, cx)
+            }));
+        }
+        buttons = buttons.child(button(format!("left-dismiss-{pid}-{start}"), l("Dismiss", "Lukk"), false, dark, move |_, _| crate::ports::ended::forget((pid, start))));
+        let head = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(icon_img("icons/bot.svg", 16.0, accent))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(title))
+                    .child(
+                        div().text_xs().text_color(t::ink_dim(dark)).child(format!(
+                            "{} {when} · {}",
+                            l("Ended", "Avsluttet"),
+                            crate::locale::count(t.members.len() as u64, "process still running", "processes still running", "prosess kjører fortsatt", "prosesser kjører fortsatt")
+                        )),
+                    ),
+            )
+            .child(buttons);
+        let rows = t.members.iter().map(|m| {
+            let mut r = div().flex().items_center().gap_2().py(px(2.)).px_1().child(div().text_sm().whitespace_nowrap().child(m.name.clone()));
+            for port in &m.ports {
+                r = r.child(chip(format!(":{port}"), accent, dark));
+            }
+            r.child(div().text_xs().text_color(t::ink_dim(dark)).child(format!("PID {}", m.pid)))
+        });
+        c = c.child(card(dark).child(head).children(rows));
+    }
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::{grouped, stop_kind, StopKind};

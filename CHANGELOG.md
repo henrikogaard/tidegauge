@@ -9,6 +9,7 @@ hardware acceptance checks. A merge and a published release are separate events.
 ### Added
 
 - The dashboard's Projects page is now **Ports**: every port your programs listen on, grouped by project, with what started each one, Open in browser, Show in Finder and Stop. A dev server open to your network gets a warning that explains what that means. Docker and launchd services say where to stop them instead.
+- **Left running:** when an agent session (such as Codex) ends, the Agents page lists the servers and processes it left behind, with one Stop all. The list survives a restart for a day, and the Ports page names their launcher as the ended session. With the SessionEnd hook installed, `tidegauge hook session-end` records the session as it ends, so leftovers are known even if the app was not running.
 - `tidegauge ports` prints every port your programs listen on, with the process, its project folder, what started it (an agent, Terminal, an editor, Docker or a launchd job) and the address it listens on. A dev server open to your network is marked, with what that means and how to keep it on this Mac. `--json` gives the same as JSON.
 - `tidegauge mcp` gains `whats_on_port` and `stop_port`. An agent can stop a dev server only in its own project folder, and only after you turn on "Let agents stop dev servers" in Settings > General > Cleanup.
 

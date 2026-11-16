@@ -2032,6 +2032,7 @@ impl TideGaugeView {
                 .flex_col()
                 .gap(t::SECTION_GAP)
                 .child(crate::agents_panel::panel(self, dark, this.clone()))
+                .when(!self.snap.left_running.is_empty(), |d| d.child(crate::ports_panel::left_running(&self.snap.left_running, dark, this.clone())))
                 .when(servers, |d| {
                     d.child(section_header(l("Dev servers", "Utviklingsservere"), "", dark))
                         .when_some(self.project_error.as_ref(), |d, error| {

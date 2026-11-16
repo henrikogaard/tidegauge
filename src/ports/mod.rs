@@ -3,6 +3,7 @@
 //! launcher and whether other devices can reach it.
 
 pub mod cli;
+pub mod ended;
 pub mod launcher;
 
 use crate::agents::Session;
@@ -165,6 +166,7 @@ pub fn basic_procs() -> Vec<ProcInfo> {
 pub fn listeners(procs: &[ProcInfo], sessions: &[Session], max_age: Duration) -> Vec<Listener> {
     let sockets = crate::projects::cached_sockets(max_age);
     let mut cx = launcher::Context::from_sessions(sessions);
+    cx.ended = ended::known_leftovers();
     // launchctl is only worth running for a listener outside every agent
     // session; its job may be any ancestor (a wrapper script, say).
     if sockets.keys().any(|pid| !cx.in_session.contains_key(pid)) {
