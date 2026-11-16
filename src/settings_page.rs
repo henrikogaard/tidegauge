@@ -1375,10 +1375,17 @@ fn cleanup(settings: &Settings, dark: bool, this: Entity<TideGaugeView>) -> Div 
         false,
         dark,
     ));
+    rows.push(row(
+        l("Let agents stop dev servers", "La agenter stoppe utviklingsservere"),
+        Some(l("Lets the MCP server's stop_port stop a dev server in the agent's own project folder. Off: agents can only ask what is on a port.", "Lar stop_port i MCP-serveren stoppe en utviklingsserver i agentens egen prosjektmappe. Av: agenter kan bare spørre hva som kjører på en port.").into()),
+        preference_switch("agents-stop-servers".into(), l("Let agents stop dev servers", "La agenter stoppe utviklingsservere").into(), settings.agents_stop_servers, dark, this.clone(), |s, on| s.agents_stop_servers = on),
+        false,
+        dark,
+    ));
     let (hooks, mcp) = crate::cleanup::cli::snippets();
     rows.push(row(
         l("Let your agents ask Tidegauge", "La agentene spørre Tidegauge"),
-        Some(l("Copy a SessionStart hook that warns when space is low, or an MCP server with disk_status, list_worktrees and remove_merged_worktrees. Paste it into your agent's settings yourself.", "Kopier en SessionStart-hook som varsler når plassen er lav, eller en MCP-server med disk_status, list_worktrees og remove_merged_worktrees. Lim den inn i agentens innstillinger selv.").into()),
+        Some(l("Copy a SessionStart hook that warns when space is low, or an MCP server with disk_status, list_worktrees, remove_merged_worktrees, whats_on_port and stop_port. Paste it into your agent's settings yourself.", "Kopier en SessionStart-hook som varsler når plassen er lav, eller en MCP-server med disk_status, list_worktrees, remove_merged_worktrees, whats_on_port og stop_port. Lim den inn i agentens innstillinger selv.").into()),
         div()
             .flex()
             .gap(t::SPACE_2)

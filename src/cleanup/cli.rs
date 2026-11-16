@@ -9,7 +9,9 @@
 //!   and emulators, and shut down the simulators a session left behind
 //!   (see `hooks`).
 //! - `tidegauge mcp`: an MCP server on stdio with `disk_status`,
-//!   `list_worktrees` and `remove_merged_worktrees` (needs `apply: true`).
+//!   `list_worktrees` and `remove_merged_worktrees` (needs `apply: true`),
+//!   plus `whats_on_port` and `stop_port` from `ports::cli`.
+//! - `tidegauge ports [--json]`: every listening port (`ports::cli`).
 //!
 //! Tidegauge never edits an agent's config; Settings shows the snippets.
 
@@ -43,12 +45,13 @@ pub fn run(args: &[String]) -> Option<i32> {
             Some(0)
         }
         ["hook", "pre-tool", rest @ ..] => Some(super::hooks::run_pre_tool(rest)),
+        ["ports", rest @ ..] => Some(crate::ports::cli::run(rest)),
         ["mcp", ..] => {
             serve(std::io::stdin().lock(), std::io::stdout().lock());
             Some(0)
         }
         ["cleanup", ..] | ["hook", ..] => {
-            eprintln!("usage: tidegauge cleanup status | cleanup worktrees [--merged] [--apply] | hook session-start | hook pre-tool [--simulators N] [--emulators N] | hook session-end | mcp");
+            eprintln!("usage: tidegauge cleanup status | cleanup worktrees [--merged] [--apply] | hook session-start | hook pre-tool [--simulators N] [--emulators N] | hook session-end | ports [--json] | mcp");
             Some(2)
         }
         _ => None,
@@ -139,11 +142,15 @@ pub fn session_warning() -> Option<String> {
 }
 
 fn tools() -> Value {
-    json!([
+    let mut all = json!([
         {"name": "disk_status", "description": "Free disk space and what a balanced cleanup would free, by category.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "list_worktrees", "description": "Agent worktrees with their state (Removable, Review, Active, InUse, Orphan) and size.", "inputSchema": {"type": "object", "properties": {"merged_only": {"type": "boolean"}}}},
         {"name": "remove_merged_worktrees", "description": "Remove worktrees that are merged, clean, pushed and unused, with git; branches stay. Without apply=true it only lists them.", "inputSchema": {"type": "object", "properties": {"apply": {"type": "boolean"}}}}
-    ])
+    ]);
+    if let Some(list) = all.as_array_mut() {
+        list.extend(crate::ports::cli::mcp_tools());
+    }
+    all
 }
 
 /// One JSON-RPC message in, at most one out.
@@ -164,6 +171,10 @@ pub fn handle(msg: &Value) -> Option<Value> {
                 Some("disk_status") => status(),
                 Some("list_worktrees") => worktrees(args["merged_only"].as_bool().unwrap_or(false), false),
                 Some("remove_merged_worktrees") => worktrees(true, args["apply"].as_bool() == Some(true)),
+                Some(name) if crate::ports::cli::is_tool(name) => match crate::ports::cli::mcp_call(name, args) {
+                    Ok(v) => v,
+                    Err(why) => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": why}})),
+                },
                 _ => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": "unknown tool"}})),
             };
             json!({"content": [{"type": "text", "text": out.to_string()}]})
@@ -217,7 +228,7 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
         let list = handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["disk_status", "list_worktrees", "remove_merged_worktrees"]);
+        assert_eq!(names, vec!["disk_status", "list_worktrees", "remove_merged_worktrees", "whats_on_port", "stop_port"]);
         let bad = handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "rm_rf"}})).unwrap();
         assert!(bad["error"].is_object());
         assert!(handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none(), "no reply to a notification");

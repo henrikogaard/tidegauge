@@ -1,9 +1,9 @@
 # Leftovers and ports
 
-Status: Draft
+Status: Building (slice 2 of 5 done)
 Size: Full — a new page, a new kind of remembered state (ended agent sessions), new CLI and MCP tools, and it stops processes.
-Owner: Henrik · Started: 2026-11-16 · Approved: not yet
-Working assumptions: none yet; the `Proposed` decisions in section 5 carry a recommendation each.
+Owner: Henrik · Started: 2026-11-16 · Approved: 2026-11-16, Henrik ("Approve, build it", with the recommended D-1–D-4)
+Working assumptions: none.
 
 Tidegauge 1.0's headline. **Cleanup** removes what agents leave on disk; this
 stops what they leave **running**. You see every listening port with who
@@ -195,27 +195,27 @@ Known gap: a child that starts and detaches inside one pass interval, with no ho
 
 ## 5. Decisions
 
-### D-1: The Projects tab becomes the Ports page (Proposed, 2026-11-16)
+### D-1: The Projects tab becomes the Ports page (Accepted, 2026-11-16)
 Context: the dashboard already has a Projects tab listing dev servers by project (`ui::projects_tab`).
 Options: (a) rename Projects to **Ports** and widen it to every listener, grouped by project with an "Other" group; (b) add a separate Ports page next to Projects.
-Choice (recommended): (a). One place to look; dev servers stay grouped by project at the top; no near-duplicate pages.
+Choice: (a). One place to look; dev servers stay grouped by project at the top; no near-duplicate pages.
 Consequences: the tab label, badge count and help text change; Settings that refer to "Projects" follow.
 
-### D-2: Session ends are detected by polling, with the SessionEnd hook as a second source (Proposed, 2026-11-16)
+### D-2: Session ends are detected by polling, with the SessionEnd hook as a second source (Accepted, 2026-11-16)
 Context: an ended agent's children reparent to launchd, so the tree is lost unless remembered.
 Options: (a) poll only; (b) hook only; (c) both, merged in one file.
-Choice (recommended): (c). Polling works with no setup (Codex has no hook here); the hook is exact when installed.
+Choice: (c). Polling works with no setup (Codex has no hook here); the hook is exact when installed.
 Consequences: one file with a lock shared by app and hook; FR-7 is a separate slice.
 
-### D-3: What Stop does per launcher (Proposed, 2026-11-16)
+### D-3: What Stop does per launcher (Accepted, 2026-11-16)
 Context: one SIGTERM is right for a dev server, wrong for Docker (kills all containers) and useless for a launchd KeepAlive job.
-Choice (recommended): dev servers in a project → existing `stop_targets`; other own processes → `process_control::signal` with the "part of macOS" warning; Docker → no Stop ("Stop it in Docker"); launchd → no Stop, show the label (L-3 later); blocked → no Stop.
+Choice: dev servers in a project → existing `stop_targets`; other own processes → `process_control::signal` with the "part of macOS" warning; Docker → no Stop ("Stop it in Docker"); launchd → no Stop, show the label (L-3 later); blocked → no Stop.
 Consequences: FR-13; Stop all for leftovers uses `process_control::signal`, because a leftover need not be a dev server.
 
-### D-4: `stop_port` is limited to the caller's project (Proposed, 2026-11-16)
+### D-4: `stop_port` is limited to the caller's project (Accepted, 2026-11-16)
 Context: an agent should clean up its own servers, not someone else's.
 Options: (a) any dev server once the setting is on; (b) only dev servers whose project equals the project of the MCP server's working directory (the agent's folder, git top-level, worktrees included).
-Choice (recommended): (b). Matches "your agent's servers"; refusal text says why.
+Choice: (b). Matches "your agent's servers"; refusal text says why.
 Consequences: an agent in another folder can see but not stop.
 
 ## 6. Coverage
@@ -234,8 +234,8 @@ Consequences: an agent in another folder can see but not stop.
 
 | Slice | What it delivers | Requirement IDs | Status |
 |---|---|---|---|
-| 1 | Bind address in ffi; `ports::scan` + `launcher`; `tidegauge ports [--json]`. Thinnest end-to-end path through the riskiest contract (socket layout and launcher walk). | FR-1, FR-2, FR-8, FR-9, FR-13 | Planned |
-| 2 | MCP `whats_on_port`, `stop_port` and the setting | FR-10, FR-11, FR-12 | Planned |
+| 1 | Bind address in ffi; `ports::scan` + `launcher`; `tidegauge ports [--json]`. Thinnest end-to-end path through the riskiest contract (socket layout and launcher walk). | FR-1, FR-2, FR-8, FR-9, FR-13 | Done (this change) |
+| 2 | MCP `whats_on_port`, `stop_port` and the setting | FR-10, FR-11, FR-12 | Done (this change) |
 | 3 | Ports page (D-1) with Stop, Open, Reveal and the exposed warning | FR-1, FR-3, FR-8, FR-11 | Planned |
 | 4 | `ports::ended` + "Left running" on the Agents page with Stop all; launcher "ended session" | FR-4, FR-5, FR-6 | Planned (after #127 merges) |
 | 5 | SessionEnd hook records the tree | FR-7 | Planned |
@@ -247,10 +247,46 @@ Slices 1–2 can ship as one PR, 3 as one, 4–5 as one.
 
 | ID | Question | Blocks | Asked of |
 |---|---|---|---|
-| Q-1 | D-1: turn Projects into Ports (recommended), or a new page? | Slice 3 | Henrik |
-| Q-2 | D-4: `stop_port` only for the caller's own project (recommended), or any dev server? | Slice 2 | Henrik |
 | Q-3 | L-2: an opt-in alert when a session leaves servers running — now or later? | Nothing (Later) | Henrik |
 | Q-4 | L-1: show a count of ports owned by macOS or other users that Tidegauge can't attribute? | Nothing (Later) | Henrik |
+
+## 9. Detailed design
+
+### Slices 1–2 (built 2026-11-16)
+
+- **Bind address.** `ffi::socket_fdinfo::listening_tcp() -> Option<(u16, IpAddr)>` reads `insi_vflag` (offset 288) and `insi_laddr` (312) from the same 792-byte struct; the offsets were checked with `offsetof` against the macOS 27 SDK. IPv4-mapped IPv6 addresses become IPv4. `listening_tcp_port` stays as a wrapper.
+- **One socket cache.** `projects::Sockets` (pid → `(port, addr)`) replaces the port-only cache; `detect_projects` derives ports from it, `ports::listeners` reads the same cache, so the app does no extra libproc pass.
+- **Listener.** One row per (pid, port); IPv4 and IPv6 binds merge. `project` = the dev-server project, else the nearest project marker above the working directory (not for apps). `warn_exposed` = exposed and (dev server or agent launcher).
+- **Launcher order:** Docker process → live session tree (from `agents::sessions`) → ended session (slice 4) → its own launchd job → nearest ancestor app bundle (Terminal, editor, Docker or other app) or ancestor launchd job → its own app bundle → Unknown. Bundles inside a `.framework` (Python.app) are not apps. `launchctl list` runs at most once a minute and only when a listener hangs off launchd; `application.*` labels are skipped.
+- **CLI.** `tidegauge ports` prints PORT, ADDRESS, PID, PROCESS, STARTED BY, FOLDER in the UI language; `!` marks an exposed dev server and the warning follows the table. `--json` gives `{ports: [{port, binds, exposed, pid, process, executable, started_unix, project, dev_server, launcher: {kind, name}}]}`; no arguments or environment.
+- **MCP.** `whats_on_port {port}` → `{port, listeners, warning?}`. `stop_port {port}` → `{port, stopped, refused}` or `{error}`. The caller's folder is the project root above the MCP server's working directory (the agent starts it there); with no project root the agent may stop nothing. A listener is stopped only if it is not `blocked()`, is a dev server, and its project is inside the caller's folder; then `projects::stop_targets` re-verifies identity, cwd, project and port before SIGTERM.
+- **Setting.** `agents_stop_servers` (off), a switch under Settings > General > Cleanup beside "Let agents remove merged worktrees".
+
+Example:
+
+```
+$ tidegauge ports
+PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
+18765!  *          44113  Python   Unknown     ~/…/proj
+18766   127.0.0.1  44115  Python   Unknown     ~/…/proj
+
+! Open to your network: other devices on this Wi-Fi or LAN can connect to it, …
+```
+
+## 10. Verification
+
+| Acceptance criterion | Test | Result | Change |
+|---|---|---|---|
+| FR-1 bind address read for IPv4, IPv6, mapped | `ffi::tests::bind_address_is_read_for_ipv4_ipv6_and_mapped`, `socket_fdinfo_offsets_match_macos_sdk` | Pass | this change |
+| FR-1 listener rows merge families; project found | `ports::tests::listeners_merge_families_and_flag_only_dev_servers` | Pass | this change |
+| FR-1, FR-8, FR-9 live: `http.server` on 0.0.0.0 and 127.0.0.1 in a git folder | `tidegauge ports` and `--json` with a sandbox HOME: 18765 `*` with `!` and the warning, 18766 `127.0.0.1` without | Pass (2026-11-16, debug build) | this change |
+| FR-2, FR-13 launcher per kind | `ports::launcher::tests` (Terminal, editor, app, agent, ended session, Docker, launchd, orphan, framework Python) | Pass | this change |
+| FR-8 only dev servers and agent launches are flagged | `listeners_merge_families_and_flag_only_dev_servers` (ControlCenter on `::` not flagged) | Pass | this change |
+| FR-9 table and JSON | `ports::cli::tests::table_lists_rows_and_explains_the_mark`, `json_has_no_arguments_or_environment` | Pass | this change |
+| FR-10 MCP tools listed; `whats_on_port` | `cleanup::cli::tests::mcp_lists_tools_and_rejects_unknown`, `whats_on_port_finds_or_explains`, `bad_port_arguments_are_errors` | Pass | this change |
+| FR-11, FR-12 gate, folder rule | `stop_port_needs_the_setting_and_the_callers_folder` | Pass | this change |
+| FR-12 live | `tidegauge mcp` `stop_port`: setting off → error; on, from another folder → refused; from the project → "Stopped … and it exited", process gone | Pass (2026-11-16) | this change |
+| NFR-3 | `cargo test --locked`, then with `TIDEGAUGE_TEST_LANG=nb` | Pass | this change |
 
 ## 11. Codebase deltas and change log
 
@@ -260,6 +296,8 @@ Slices 1–2 can ship as one PR, 3 as one, 4–5 as one.
 |---|---|
 | `socket_fdinfo::listening_tcp_port` drops the bind address | Code migrates: returns the bind too (slice 1) |
 | `detect_projects` keeps only project listeners | Code migrates: `ports::scan` reads the same cache for all listeners; `detect_projects` stays for the Agents page |
+| Design said `ports::scan` and `ports::stop` modules | Scan lives in `ports/mod.rs`; the MCP stop rules live in `ports/cli.rs`. `ports::stop` comes with the UI in slice 3 |
 
 ### Change log
 - 2026-11-16: first draft.
+- 2026-11-16: approved by Henrik with D-1–D-4 as recommended; slices 1–2 built. An agent outside any project may stop nothing (found in the live check).

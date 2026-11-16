@@ -162,6 +162,9 @@ pub struct Settings {
     /// Let `tidegauge cleanup worktrees --apply` and the MCP server remove
     /// merged worktrees. Off: they only list.
     pub cleanup_agent_remove: bool,
+    /// Let the MCP server's `stop_port` stop dev servers in the calling
+    /// agent's own project. Off: agents can only look.
+    pub agents_stop_servers: bool,
 }
 
 impl Default for Settings {
@@ -226,6 +229,7 @@ impl Default for Settings {
             cleanup_after_merge: false,
             cleanup_delete_branches: false,
             cleanup_agent_remove: false,
+            agents_stop_servers: false,
         }
     }
 }

@@ -6,6 +6,11 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- `tidegauge ports` prints every port your programs listen on, with the process, its project folder, what started it (an agent, Terminal, an editor, Docker or a launchd job) and the address it listens on. A dev server open to your network is marked, with what that means and how to keep it on this Mac. `--json` gives the same as JSON.
+- `tidegauge mcp` gains `whats_on_port` and `stop_port`. An agent can stop a dev server only in its own project folder, and only after you turn on "Let agents stop dev servers" in Settings > General > Cleanup.
+
 ## [0.9.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.9.0) — 2026-11-10
 
 ### Added
