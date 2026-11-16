@@ -275,8 +275,8 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 
 ### Slice 3 (built 2026-11-16)
 
-- **Page.** The dashboard's Projects tab is now **Ports** (`Tab::Projects` keeps its id, so saved sidebar settings stay valid; label "Ports" / "Porter"). `src/ports_panel.rs` draws it; the Agents page still uses `ui::projects_tab` for its "Dev servers" list.
-- **Data.** `Snapshot.ports` is filled on the heavy pass only while the Ports page is shown (`Demand::ports_wanted`), from the shared socket cache (fresh on that page). Elsewhere it is empty, so the closed app does no extra work (NFR-1).
+- **Page.** The dashboard's Projects tab is now **Ports** (`Tab::Projects` keeps its id, so saved sidebar settings stay valid; label "Ports" / "Porter", globe icon). It gets a sidebar entry under Work, after Agents; before, the Projects tab had none and its list showed only inside Agents. It has no sidebar count, because the list is read only while the page is shown. `src/ports_panel.rs` draws it; the Agents page still uses `ui::projects_tab` for its "Dev servers" list.
+- **Data.** `Snapshot.ports` is filled on the heavy pass only while the Ports page is shown (`Demand::ports_wanted`), reusing the socket scan `detect_projects` made in the same pass (1 s cache). Elsewhere it is empty and `ports_ready` is false, so the closed app does no extra work (NFR-1) and the first frame shows "Reading ports…" rather than "Nothing is listening".
 - **Layout.** A warning card when any dev server is open to the network (its names and ports, then the plain-words explanation); a summary card with the port count and "Stop all dev servers…"; then one card per project folder (name, path, Show in Finder) and one "Not in a project" card. Each row: name, `:port` chip, bind text, "Open to network" chip when flagged, "Started by <launcher> · PID · memory", Open and Stop.
 - **Stop (D-3).** `ports_panel::stop_kind`: blocked → the block reason, no Stop; Docker → "Stop it in Docker"; launchd job → "launchd starts it again"; dev server → `ui::request_stop` (the existing confirmation and `stop_targets`); any other own process → `process_panel::request` with `Action::Processes` (the existing confirmation and `process_control::signal`, which re-verifies identity).
 - **Open** runs `open http://localhost:<port>`; **Show in Finder** uses `storage::reveal`.
@@ -299,6 +299,9 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 | NFR-3 | `cargo test --locked`, then with `TIDEGAUGE_TEST_LANG=nb` | Pass | this change |
 | FR-3, FR-11, FR-13 Stop per launcher (slice 3) | `ports_panel::tests::stop_follows_the_launcher` | Pass | slice 3 PR |
 | FR-1 grouping by project, then the rest (slice 3) | `ports_panel::tests::groups_by_project_name_then_the_rest` | Pass | slice 3 PR |
+| Ports in the sidebar after Agents (slice 3) | `ui::tests::hidden_pages_do_not_take_a_number` | Pass | slice 3 PR |
+| FR-1, FR-3, FR-8, FR-11 rendered (slice 3) | Release build, sandbox HOME, macOS 27.0.1, two `http.server`s: warning card, project card, binds, chip only on 0.0.0.0, "Started by", Open, Stop, Show in Finder, launchd rows without Stop; Stop → Cancel kept the process, Stop → Stop ended it and the row went away | Pass (2026-11-16, 5326676), except the sidebar entry, which was missing; fixed in 781381b | slice 3 PR |
+| `stop_port` refuses launchd jobs and Docker (Codex review on #130) | `stop_port_needs_the_setting_and_the_callers_folder` | Pass | #130 (fcf9eab) |
 
 ## 11. Codebase deltas and change log
 
@@ -308,6 +311,7 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 |---|---|
 | `socket_fdinfo::listening_tcp_port` drops the bind address | Code migrates: returns the bind too (slice 1) |
 | `detect_projects` keeps only project listeners | Code migrates: `ports::scan` reads the same cache for all listeners; `detect_projects` stays for the Agents page |
+| The Projects tab had no sidebar entry (its list showed inside Agents) | Code migrates: Ports gets an entry under Work |
 | Design said `ports::scan` and `ports::stop` modules | Scan lives in `ports/mod.rs`; the MCP stop rules live in `ports/cli.rs`. `ports::stop` comes with the UI in slice 3 |
 
 ### Change log
