@@ -141,6 +141,13 @@ pub fn grouped(ports: &[Listener]) -> (Vec<(String, Vec<&Listener>)>, Vec<&Liste
     (groups, other)
 }
 
+/// What "Stop all dev servers…" stops: the rows whose own Stop is the
+/// dev-server Stop, so a launchd job or Docker is never in it (D-3).
+/// `stop_targets` merges a process listed once per port.
+pub fn bulk_targets(ports: &[Listener]) -> Vec<crate::projects::StopTarget> {
+    ports.iter().filter(|x| stop_kind(x) == StopKind::DevServer).map(crate::ports::cli::stop_target).collect()
+}
+
 pub fn panel(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let accent = Metric::Projects.accent(dark);
     let mut c = div().flex().flex_col().gap_4();
@@ -176,7 +183,7 @@ pub fn panel(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
             ),
         );
     }
-    let dev: Vec<_> = s.projects.iter().flat_map(crate::ui::project_targets).collect();
+    let dev = bulk_targets(&s.ports);
     c = c.child(
         card(dark).child(
             div()
@@ -241,6 +248,18 @@ mod tests {
         let mut other_user = listener(900, 22, None, false, Launcher::Unknown);
         other_user.process.uid = other_user.process.uid.wrapping_add(1);
         assert!(matches!(stop_kind(&other_user), StopKind::None(_)));
+    }
+
+    #[test]
+    fn stop_all_skips_rows_that_cannot_be_stopped() {
+        let ports = [
+            listener(901, 3000, Some("/x/app"), true, Launcher::Terminal("Terminal".into())),
+            listener(902, 3001, Some("/x/app"), true, Launcher::Launchd("com.example.web".into())),
+            listener(903, 3002, Some("/x/app"), true, Launcher::Docker),
+            listener(904, 7000, None, false, Launcher::App("ControlCenter".into())),
+        ];
+        let pids: Vec<i32> = super::bulk_targets(&ports).iter().map(|t| t.server.pid).collect();
+        assert_eq!(pids, vec![901]);
     }
 
     #[test]
