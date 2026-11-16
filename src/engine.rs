@@ -204,6 +204,8 @@ pub struct Snapshot {
     pub agents: Vec<crate::agents::Session>,
     /// Every listening port, filled only while the Ports page is shown.
     pub ports: Vec<crate::ports::Listener>,
+    /// Agent sessions that ended and left processes running (FR-4).
+    pub left_running: Vec<crate::ports::ended::Tracked>,
     /// Whether `ports` was read on the last pass (false: not yet known).
     pub ports_ready: bool,
     pub plans: crate::agents::Plans,
@@ -273,6 +275,7 @@ impl Default for Snapshot {
             agents: Vec::new(),
             ports: Vec::new(),
             ports_ready: false,
+            left_running: Vec::new(),
             plans: crate::agents::Plans::Missing,
             process_groups: Vec::new(),
             resource_activity: Vec::new(),
@@ -664,6 +667,7 @@ impl Engine {
             s.projects = crate::projects::detect_projects(&s.procs, demand.listeners_period());
             s.agents = crate::agents::sessions(&s.procs, &s.projects);
             // `detect_projects` just read the sockets; reuse that scan.
+            s.left_running = crate::ports::ended::pass(&s.agents, &s.procs, &crate::projects::cached_sockets(demand.listeners_period().max(Duration::from_secs(1))));
             s.ports_ready = demand.ports_wanted();
             s.ports = if s.ports_ready {
                 crate::ports::listeners(&s.procs, &s.agents, Duration::from_secs(1))

@@ -41,6 +41,7 @@ pub fn run(args: &[String]) -> Option<i32> {
             Some(0)
         }
         ["hook", "session-end", rest @ ..] => {
+            crate::ports::ended::record_from_hook();
             super::hooks::session_end(rest);
             Some(0)
         }

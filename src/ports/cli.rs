@@ -12,7 +12,9 @@ fn now_listeners() -> Vec<Listener> {
     let procs = super::basic_procs();
     let projects = crate::projects::detect_projects(&procs, Duration::ZERO);
     let sessions = crate::agents::sessions(&procs, &projects);
-    super::listeners(&procs, &sessions, Duration::ZERO)
+    // Same pass as the app's, so ended sessions are marked and named.
+    super::ended::pass(&sessions, &procs, &crate::projects::cached_sockets(Duration::from_secs(1)));
+    super::listeners(&procs, &sessions, Duration::from_secs(1))
 }
 
 fn home_short(path: &str) -> String {
@@ -249,11 +251,12 @@ mod tests {
     use crate::ports::Launcher;
     use crate::processes::ProcInfo;
 
+    // The test PID is above macOS's highest PID (99998): never a real process.
     fn listener(port: u16, bind: &str, project: Option<&str>, dev: bool) -> Listener {
         Listener {
             port,
             binds: vec![Bind::of(bind.parse().unwrap())],
-            process: ProcInfo { pid: 4242, ppid: 1, uid: unsafe { libc::getuid() }, comm: "node".into(), exe_path: "/opt/homebrew/bin/node".into(), start_unix: 1_700_000_000., ..Default::default() },
+            process: ProcInfo { pid: 4_000_042, ppid: 1, uid: unsafe { libc::getuid() }, comm: "node".into(), exe_path: "/opt/homebrew/bin/node".into(), start_unix: 1_700_000_000., ..Default::default() },
             name: "node".into(),
             project: project.map(str::to_string),
             dev_server: dev,
@@ -286,7 +289,7 @@ mod tests {
     #[test]
     fn whats_on_port_finds_or_explains() {
         let rows = [listener(3000, "::", Some("/tmp/app"), true)];
-        assert_eq!(whats_on_port(&rows, 3000)["listeners"][0]["pid"], 4242);
+        assert_eq!(whats_on_port(&rows, 3000)["listeners"][0]["pid"], 4_000_042);
         assert!(whats_on_port(&rows, 3000)["warning"].is_string());
         assert_eq!(whats_on_port(&rows, 4000)["listeners"].as_array().unwrap().len(), 0);
     }
