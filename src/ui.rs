@@ -95,7 +95,7 @@ impl Tab {
             Tab::Battery => "icons/battery-charging.svg",
             Tab::Sound => "icons/volume-2.svg",
             Tab::Bluetooth => "icons/bluetooth.svg",
-            Tab::Projects => "icons/folder-code.svg",
+            Tab::Projects => "icons/globe.svg",
             Tab::History => "icons/clock.svg",
         }
     }
@@ -1192,8 +1192,8 @@ fn sidebar_reading(tab: Tab, s: &Snapshot) -> Option<String> {
             _ => None,
         },
         Tab::Bluetooth => s.bt.enabled.then(|| s.bt.devices.len().to_string()),
-        Tab::Projects => Some(s.projects.len().to_string()),
-        Tab::Overview | Tab::History => None,
+        // The Ports list is read only while its page is shown, so no count.
+        Tab::Overview | Tab::History | Tab::Projects => None,
     }
 }
 
@@ -1332,7 +1332,14 @@ fn sidebar_groups(visible: &[Tab], battery: bool) -> Vec<SidebarGroup> {
     vec![
         SidebarGroup { label: None, pages: vec![Destination::Tab(Tab::Overview)] },
         SidebarGroup { label: Some(l("Live", "Nå")), pages: live },
-        SidebarGroup { label: Some(l("Work", "Arbeid")), pages: vec![Destination::Apps, Destination::Agents] },
+        SidebarGroup {
+            label: Some(l("Work", "Arbeid")),
+            // Ports sits with your own work: what your projects and agents run.
+            pages: [Destination::Apps, Destination::Agents]
+                .into_iter()
+                .chain(visible.contains(&Tab::Projects).then_some(Destination::Tab(Tab::Projects)))
+                .collect(),
+        },
         SidebarGroup { label: Some(l("Over time", "Over tid")), pages: over_time },
         SidebarGroup {
             label: Some(l("Maintenance", "Vedlikehold")),
@@ -4936,6 +4943,9 @@ mod tests {
             Destination::Tool(Page::Packages),
         ];
         assert!(few == expected, "History is hidden, so Baselines follows Agents");
+        let with_ports = order(&[Tab::Overview, Tab::Projects], true);
+        let agents = with_ports.iter().position(|d| *d == Destination::Agents).unwrap();
+        assert!(with_ports[agents + 1] == Destination::Tab(Tab::Projects), "Ports follows Agents under Work");
         assert!(shortcut_destination(&few, 3) == Some(Destination::Tab(Tab::Sound)));
         assert!(shortcut_destination(&few, 9) == Some(Destination::Tool(Page::Storage)));
         let mut with_history = visible.to_vec();

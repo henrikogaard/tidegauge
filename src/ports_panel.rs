@@ -144,6 +144,10 @@ pub fn grouped(ports: &[Listener]) -> (Vec<(String, Vec<&Listener>)>, Vec<&Liste
 pub fn panel(s: &Snapshot, dark: bool, this: Entity<TideGaugeView>) -> Div {
     let accent = Metric::Projects.accent(dark);
     let mut c = div().flex().flex_col().gap_4();
+    if !s.ports_ready {
+        // The first frame after opening the page, before the next pass.
+        return c.child(card(dark).child(sub(l("Reading ports…", "Leser porter…")).text_color(t::ink_dim(dark))));
+    }
     if s.ports.is_empty() {
         return c.child(empty_state(
             "icons/globe.svg",

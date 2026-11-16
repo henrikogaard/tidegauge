@@ -192,13 +192,13 @@ impl Demand {
         }
     }
 
-    /// How old the list of listening ports may get: fresh where dev
-    /// servers are listed, otherwise only counts and badges use it.
     /// The Ports page lists every listener, not only dev servers.
     pub fn ports_wanted(&self) -> bool {
         self.page(Page::Projects)
     }
 
+    /// How old the list of listening ports may get: fresh where dev
+    /// servers are listed, otherwise only counts and badges use it.
     pub fn listeners_period(&self) -> Duration {
         if self.page(Page::Projects) || self.page(Page::Agents) {
             Duration::ZERO
