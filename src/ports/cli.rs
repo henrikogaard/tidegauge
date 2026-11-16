@@ -140,6 +140,13 @@ pub fn stop_refusal(x: &Listener, caller: Option<&Path>) -> Option<String> {
     if let Some(block) = crate::process_control::blocked(&x.process) {
         return Some(block.reason().to_string());
     }
+    // launchd would start a job again at once, and stopping Docker's port
+    // forwarder would stop every container (D-3, FR-13).
+    match &x.launcher {
+        super::Launcher::Launchd(label) => return Some(format!("{} is the launchd job {label}; launchd would start it again. Stop the job with launchctl instead.", x.name)),
+        super::Launcher::Docker => return Some(format!("{} belongs to Docker; stop the container in Docker instead.", x.name)),
+        _ => {}
+    }
     if !x.dev_server {
         return Some(format!("{} is not a dev server in a project folder ({}).", x.name, x.launcher.label()));
     }
@@ -305,6 +312,12 @@ mod tests {
         // A caller outside any project (no marker) owns nothing.
         assert_eq!(caller_root(&dir), None);
         assert!(stop_refusal(&rows[0], None).is_some());
+        // A launchd job or Docker in the caller's project: refused.
+        let mut job = rows[0].clone();
+        job.launcher = Launcher::Launchd("com.example.web".into());
+        assert!(stop_refusal(&job, caller_root(&app).as_deref()).unwrap().contains("launchd"));
+        job.launcher = Launcher::Docker;
+        assert!(stop_refusal(&job, caller_root(&app).as_deref()).unwrap().contains("Docker"));
         // Not a dev server: refused.
         let plain = listener(3000, "127.0.0.1", Some(&app.to_string_lossy()), false);
         assert!(stop_refusal(&plain, caller_root(&app).as_deref()).is_some());
