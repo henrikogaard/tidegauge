@@ -286,6 +286,8 @@ mod tests {
     use crate::ports::{Bind, Launcher, Listener};
     use crate::processes::ProcInfo;
 
+    // Test PIDs are above macOS's highest PID (99998), so even a bug that
+    // signalled one could never reach a real process.
     fn listener(pid: i32, port: u16, project: Option<&str>, dev: bool, launcher: Launcher) -> Listener {
         Listener {
             port,
@@ -300,11 +302,11 @@ mod tests {
 
     #[test]
     fn stop_follows_the_launcher() {
-        assert_eq!(stop_kind(&listener(900, 3000, Some("/a"), true, Launcher::Terminal("Terminal".into()))), StopKind::DevServer);
-        assert_eq!(stop_kind(&listener(900, 3000, None, false, Launcher::App("Spotify".into()))), StopKind::Process);
-        assert!(matches!(stop_kind(&listener(900, 5432, None, false, Launcher::Docker)), StopKind::None(_)));
-        assert!(matches!(stop_kind(&listener(900, 6379, None, false, Launcher::Launchd("homebrew.mxcl.redis".into()))), StopKind::None(_)));
-        let mut other_user = listener(900, 22, None, false, Launcher::Unknown);
+        assert_eq!(stop_kind(&listener(4_000_900, 3000, Some("/a"), true, Launcher::Terminal("Terminal".into()))), StopKind::DevServer);
+        assert_eq!(stop_kind(&listener(4_000_900, 3000, None, false, Launcher::App("Spotify".into()))), StopKind::Process);
+        assert!(matches!(stop_kind(&listener(4_000_900, 5432, None, false, Launcher::Docker)), StopKind::None(_)));
+        assert!(matches!(stop_kind(&listener(4_000_900, 6379, None, false, Launcher::Launchd("homebrew.mxcl.redis".into()))), StopKind::None(_)));
+        let mut other_user = listener(4_000_900, 22, None, false, Launcher::Unknown);
         other_user.process.uid = other_user.process.uid.wrapping_add(1);
         assert!(matches!(stop_kind(&other_user), StopKind::None(_)));
     }
@@ -312,22 +314,22 @@ mod tests {
     #[test]
     fn stop_all_skips_rows_that_cannot_be_stopped() {
         let ports = [
-            listener(901, 3000, Some("/x/app"), true, Launcher::Terminal("Terminal".into())),
-            listener(902, 3001, Some("/x/app"), true, Launcher::Launchd("com.example.web".into())),
-            listener(903, 3002, Some("/x/app"), true, Launcher::Docker),
-            listener(904, 7000, None, false, Launcher::App("ControlCenter".into())),
+            listener(4_000_901, 3000, Some("/x/app"), true, Launcher::Terminal("Terminal".into())),
+            listener(4_000_902, 3001, Some("/x/app"), true, Launcher::Launchd("com.example.web".into())),
+            listener(4_000_903, 3002, Some("/x/app"), true, Launcher::Docker),
+            listener(4_000_904, 7000, None, false, Launcher::App("ControlCenter".into())),
         ];
         let pids: Vec<i32> = super::bulk_targets(&ports).iter().map(|t| t.server.pid).collect();
-        assert_eq!(pids, vec![901]);
+        assert_eq!(pids, vec![4_000_901]);
     }
 
     #[test]
     fn groups_by_project_name_then_the_rest() {
         let ports = [
-            listener(1, 3000, Some("/x/zeta"), true, Launcher::Unknown),
-            listener(2, 3001, Some("/x/Alpha"), true, Launcher::Unknown),
-            listener(3, 3002, Some("/x/zeta"), true, Launcher::Unknown),
-            listener(4, 7000, None, false, Launcher::App("ControlCenter".into())),
+            listener(4_000_001, 3000, Some("/x/zeta"), true, Launcher::Unknown),
+            listener(4_000_002, 3001, Some("/x/Alpha"), true, Launcher::Unknown),
+            listener(4_000_003, 3002, Some("/x/zeta"), true, Launcher::Unknown),
+            listener(4_000_004, 7000, None, false, Launcher::App("ControlCenter".into())),
         ];
         let (groups, other) = grouped(&ports);
         assert_eq!(groups.iter().map(|(d, r)| (d.as_str(), r.len())).collect::<Vec<_>>(), vec![("/x/Alpha", 1), ("/x/zeta", 2)]);

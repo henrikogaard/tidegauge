@@ -291,6 +291,8 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 
 ## 10. Verification
 
+**Testing rule (Henrik, 2026-11-16):** while testing (unit tests, sandboxed app runs, UI clicks, CLI or MCP calls), never stop or signal any of Henrik's real processes: not the Claude app, not agent sessions, not their servers, nothing the test did not start. Stop, Stop all, `stop_port` and the CLI are tested only against throwaway processes the test spawns itself (for example `python3 -m http.server` on a free port), with the PID checked as the test's own before any stop. Never press Stop or Stop all in a sandboxed Tidegauge while it lists real processes. Unit tests use made-up PIDs above macOS's highest PID (99998).
+
 | Acceptance criterion | Test | Result | Change |
 |---|---|---|---|
 | FR-1 bind address read for IPv4, IPv6, mapped | `ffi::tests::bind_address_is_read_for_ipv4_ipv6_and_mapped`, `socket_fdinfo_offsets_match_macos_sdk` | Pass | this change |
