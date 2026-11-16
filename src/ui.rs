@@ -79,7 +79,7 @@ impl Tab {
             Tab::Battery => crate::engine::latest().battery.page_name(),
             Tab::Sound => l("Sound", "Lyd"),
             Tab::Bluetooth => "Bluetooth",
-            Tab::Projects => l("Projects", "Prosjekter"),
+            Tab::Projects => l("Ports", "Porter"),
             Tab::History => l("History", "Historikk"),
         }
     }
@@ -520,7 +520,7 @@ pub(crate) fn sub(text: impl Into<String>) -> Div {
     div().text_xs().child(text.into())
 }
 
-fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
+pub(crate) fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
     svg().path(path).size(px(size)).text_color(color)
 }
 
@@ -2060,7 +2060,7 @@ impl TideGaugeView {
                 .when_some(self.project_error.as_ref(), |d, error| {
                     d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed {t::warn(dark)} else {t::ink_dim(dark)})))
                 })
-                .child(projects_tab(s, dark, this))
+                .child(crate::ports_panel::panel(s, dark, this))
                 .into_any_element(),
             Tab::History => crate::controls::history_panel(self, dark, this, cx).into_any_element(),
         }
@@ -4592,7 +4592,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
 
 // ---------- projects ----------
 
-fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
+pub(crate) fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
     let mut targets = std::collections::BTreeMap::new();
     for server in &project.servers {
         let target = targets
@@ -4609,7 +4609,7 @@ fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
     targets.into_values().collect()
 }
 
-fn request_stop(
+pub(crate) fn request_stop(
     targets: Vec<crate::projects::StopTarget>,
     this: Entity<TideGaugeView>,
     window: &mut Window,

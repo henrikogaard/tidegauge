@@ -49,6 +49,7 @@ mod notifications;
 mod packages;
 mod palette;
 mod ports;
+mod ports_panel;
 mod processes;
 mod process_activity;
 mod process_control;

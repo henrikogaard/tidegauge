@@ -202,6 +202,8 @@ pub struct Snapshot {
     /// Every sampled process, for per-process rows and quit actions.
     pub procs: Vec<crate::processes::ProcInfo>,
     pub agents: Vec<crate::agents::Session>,
+    /// Every listening port, filled only while the Ports page is shown.
+    pub ports: Vec<crate::ports::Listener>,
     pub plans: crate::agents::Plans,
     pub process_groups: Vec<crate::process_activity::ProcessGroup>,
     pub resource_activity: Vec<crate::resource_activity::Activity>,
@@ -267,6 +269,7 @@ impl Default for Snapshot {
             gpu_other_apps: Vec::new(),
             procs: Vec::new(),
             agents: Vec::new(),
+            ports: Vec::new(),
             plans: crate::agents::Plans::Missing,
             process_groups: Vec::new(),
             resource_activity: Vec::new(),
@@ -657,6 +660,11 @@ impl Engine {
         if heavy {
             s.projects = crate::projects::detect_projects(&s.procs, demand.listeners_period());
             s.agents = crate::agents::sessions(&s.procs, &s.projects);
+            s.ports = if demand.ports_wanted() {
+                crate::ports::listeners(&s.procs, &s.agents, demand.listeners_period())
+            } else {
+                Vec::new()
+            };
             s.plans = crate::agents::plans();
         }
         s.uptime = self.started.elapsed();

@@ -1,6 +1,6 @@
 # Leftovers and ports
 
-Status: Building (slice 2 of 5 done)
+Status: Building (slice 3 of 5 done)
 Size: Full — a new page, a new kind of remembered state (ended agent sessions), new CLI and MCP tools, and it stops processes.
 Owner: Henrik · Started: 2026-11-16 · Approved: 2026-11-16, Henrik ("Approve, build it", with the recommended D-1–D-4)
 Working assumptions: none.
@@ -236,7 +236,7 @@ Consequences: an agent in another folder can see but not stop.
 |---|---|---|---|
 | 1 | Bind address in ffi; `ports::scan` + `launcher`; `tidegauge ports [--json]`. Thinnest end-to-end path through the riskiest contract (socket layout and launcher walk). | FR-1, FR-2, FR-8, FR-9, FR-13 | Done (this change) |
 | 2 | MCP `whats_on_port`, `stop_port` and the setting | FR-10, FR-11, FR-12 | Done (this change) |
-| 3 | Ports page (D-1) with Stop, Open, Reveal and the exposed warning | FR-1, FR-3, FR-8, FR-11 | Planned |
+| 3 | Ports page (D-1) with Stop, Open, Reveal and the exposed warning | FR-1, FR-3, FR-8, FR-11 | Done (this change) |
 | 4 | `ports::ended` + "Left running" on the Agents page with Stop all; launcher "ended session" | FR-4, FR-5, FR-6 | Planned (after #127 merges) |
 | 5 | SessionEnd hook records the tree | FR-7 | Planned |
 
@@ -273,6 +273,14 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 ! Open to your network: other devices on this Wi-Fi or LAN can connect to it, …
 ```
 
+### Slice 3 (built 2026-11-16)
+
+- **Page.** The dashboard's Projects tab is now **Ports** (`Tab::Projects` keeps its id, so saved sidebar settings stay valid; label "Ports" / "Porter"). `src/ports_panel.rs` draws it; the Agents page still uses `ui::projects_tab` for its "Dev servers" list.
+- **Data.** `Snapshot.ports` is filled on the heavy pass only while the Ports page is shown (`Demand::ports_wanted`), from the shared socket cache (fresh on that page). Elsewhere it is empty, so the closed app does no extra work (NFR-1).
+- **Layout.** A warning card when any dev server is open to the network (its names and ports, then the plain-words explanation); a summary card with the port count and "Stop all dev servers…"; then one card per project folder (name, path, Show in Finder) and one "Not in a project" card. Each row: name, `:port` chip, bind text, "Open to network" chip when flagged, "Started by <launcher> · PID · memory", Open and Stop.
+- **Stop (D-3).** `ports_panel::stop_kind`: blocked → the block reason, no Stop; Docker → "Stop it in Docker"; launchd job → "launchd starts it again"; dev server → `ui::request_stop` (the existing confirmation and `stop_targets`); any other own process → `process_panel::request` with `Action::Processes` (the existing confirmation and `process_control::signal`, which re-verifies identity).
+- **Open** runs `open http://localhost:<port>`; **Show in Finder** uses `storage::reveal`.
+
 ## 10. Verification
 
 | Acceptance criterion | Test | Result | Change |
@@ -289,6 +297,8 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 | Verifier run (sonnet): tests in both languages, clippy, live CLI and MCP with a sandbox HOME | all four criteria | Pass (2026-11-16) | this change |
 | FR-12 live | `tidegauge mcp` `stop_port`: setting off → error; on, from another folder → refused; from the project → "Stopped … and it exited", process gone | Pass (2026-11-16) | this change |
 | NFR-3 | `cargo test --locked`, then with `TIDEGAUGE_TEST_LANG=nb` | Pass | this change |
+| FR-3, FR-11, FR-13 Stop per launcher (slice 3) | `ports_panel::tests::stop_follows_the_launcher` | Pass | slice 3 PR |
+| FR-1 grouping by project, then the rest (slice 3) | `ports_panel::tests::groups_by_project_name_then_the_rest` | Pass | slice 3 PR |
 
 ## 11. Codebase deltas and change log
 
@@ -302,4 +312,5 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 
 ### Change log
 - 2026-11-16: first draft.
+- 2026-11-16: slice 3 built: the Projects tab becomes Ports.
 - 2026-11-16: approved by Henrik with D-1–D-4 as recommended; slices 1–2 built. An agent outside any project may stop nothing (found in the live check). Review fixes: launchd jobs above wrapper scripts, launchd cache keyed by start time, `~` shortening, and no stopping inside another checkout nested in the caller's.
