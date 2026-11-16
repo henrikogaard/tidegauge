@@ -2,7 +2,7 @@
 //! `stop_port` (FR-10, FR-12, D-4). Output never holds command-line
 //! arguments or environment (NFR-2).
 
-use super::Listener;
+use super::{Bind, Listener};
 use crate::locale::text as l;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -95,6 +95,12 @@ pub fn table(rows: &[Listener]) -> String {
     if rows.is_empty() {
         out.push_str(l("Nothing is listening.", "Ingenting lytter."));
         out.push('\n');
+    }
+    if rows.iter().any(|x| x.binds.iter().any(|b| matches!(b, Bind::Any(_)))) {
+        out.push_str(&format!(
+            "\n* = {}\n",
+            l("every address of this Mac: other devices on the network can connect", "alle adressene til denne Macen: andre enheter på nettverket kan koble til")
+        ));
     }
     if rows.iter().any(Listener::warn_exposed) {
         out.push_str(&format!("\n! {}\n", super::exposed_warning()));
@@ -242,7 +248,7 @@ pub fn mcp_call(name: &str, args: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::{Bind, Launcher};
+    use crate::ports::Launcher;
     use crate::processes::ProcInfo;
 
     // The test PID is above macOS's highest PID (99998): never a real process.
@@ -265,6 +271,9 @@ mod tests {
         assert!(out.lines().any(|line| line.starts_with("8080 ") && line.contains("127.0.0.1")));
         assert!(out.contains("--host 127.0.0.1"), "the warning names the fix");
         assert!(!table(&[listener(8080, "127.0.0.1", None, true)]).contains('!'));
+        // Any program on every address gets the legend, dev server or not.
+        let plain = table(&[listener(9000, "0.0.0.0", None, false)]);
+        assert!(plain.contains("\n* = ") && !plain.contains('!'));
     }
 
     #[test]
