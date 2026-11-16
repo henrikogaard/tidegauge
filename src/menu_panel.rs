@@ -404,13 +404,14 @@ impl Render for MenuPanel {
                             .child(div().text_size(t::TEXT_SMALL).text_color(plan.note_color).child(plan.note))
                             .child(
                                 div()
-                                    .w(px(44.))
+                                    .min_w(px(44.))
+                                    .flex_shrink_0()
                                     .flex()
                                     .justify_end()
                                     .text_size(t::TEXT_BODY)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(plan.color)
-                                    .child(crate::agents_panel::left_text(plan.left)),
+                                    .child(plan.value),
                             )
                     })),
                 )
@@ -532,6 +533,8 @@ mod tests {
             plan: None,
             windows: Vec::new(),
             credits: None,
+            spent: None,
+            account: None,
             fetched_at: Some(NOW - age),
             stale: false,
             failed: false,
