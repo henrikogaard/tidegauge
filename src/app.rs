@@ -228,6 +228,9 @@ thread_local! {
 /// appears on screen; an existing one is left as it is.
 pub fn dashboard(cx: &mut gpui_kit::App, show: bool) -> gpui_kit::Entity<crate::ui::TideGaugeView> {
     use gpui_kit::*;
+    if show {
+        set_in_dock(true);
+    }
     if let Some(view) = DASHBOARD.with(|d| d.borrow().clone()) {
         return view;
     }
@@ -251,7 +254,7 @@ pub fn dashboard(cx: &mut gpui_kit::App, show: bool) -> gpui_kit::Entity<crate::
         |window, cx| {
             // Closing the dashboard hides it; the menu-bar item reopens it.
             window.on_window_should_close(cx, |_, cx| {
-                cx.hide();
+                hide_dashboard(cx);
                 false
             });
             cx.new(|cx| {
@@ -339,8 +342,37 @@ pub fn set_panel_handle(h: gpui_kit::AnyWindowHandle) {
     *PANEL.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(h);
 }
 
+/// Whether Tidegauge has a Dock icon and a place in ⌘-Tab. It has them only
+/// while the dashboard is on screen, so a window behind other apps can always
+/// be brought back; with the dashboard closed it is a menu-bar item alone.
+pub fn set_in_dock(shown: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+        let Some(mtm) = objc2_foundation::MainThreadMarker::new() else { return };
+        let policy = if shown {
+            NSApplicationActivationPolicy::Regular
+        } else {
+            NSApplicationActivationPolicy::Accessory
+        };
+        let application = NSApplication::sharedApplication(mtm);
+        if application.activationPolicy() != policy {
+            application.setActivationPolicy(policy);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = shown;
+}
+
+/// Close the dashboard: it hides (collection goes on) and the Dock icon goes.
+pub fn hide_dashboard(cx: &mut gpui_kit::App) {
+    cx.hide();
+    set_in_dock(false);
+}
+
 pub fn toggle_panel(cx: &mut gpui_kit::App) {
     REFRESH.notify();
+    set_in_dock(true);
     cx.activate(true);
     let g = PANEL.get_or_init(|| Mutex::new(None)).lock().unwrap();
     if let Some(h) = g.as_ref() {

@@ -26,6 +26,10 @@ hardware acceptance checks. A merge and a published release are separate events.
   provider are told apart by the name you gave them in OpenQuota ("Claude ·
   Desktop"), never by an email address, and OpenAI and OpenCode are spelled
   right.
+- The dashboard no longer gets lost behind other apps. While its window is
+  open, Tidegauge has a Dock icon and a place in ⌘-Tab, and a click on the
+  Dock icon brings the window back. Closing the window removes the Dock
+  icon again; the menu-bar panel alone never shows one.
 
 ## [0.9.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.9.0) — 2026-11-10
 

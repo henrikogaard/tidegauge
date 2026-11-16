@@ -103,6 +103,12 @@ fn main() {
 
     let app = gpui_kit::application().with_assets(icons::TideGaugeAssets::new());
 
+    // A click on the Dock icon, shown while the dashboard is open, brings
+    // the dashboard to the front.
+    app.on_reopen(|cx| {
+        crate::app::dashboard(cx, true);
+        crate::app::toggle_panel(cx);
+    });
     app.run(|cx| {
         gpui_kit::init(cx);
         // Asked first: the Apple event it reads is only current while the
@@ -118,7 +124,7 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         // Like the red button: the dashboard hides, the menu-bar item reopens it.
         cx.bind_keys([KeyBinding::new("cmd-w", CloseWindow, None)]);
-        cx.on_action(|_: &CloseWindow, cx| cx.hide());
+        cx.on_action(|_: &CloseWindow, cx| app::hide_dashboard(cx));
         #[cfg(target_os = "macos")]
         {
             // Hide Dock icon & menu bar — we're a status item app.
