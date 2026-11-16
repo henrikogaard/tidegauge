@@ -232,6 +232,25 @@ fn mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// `procs` plus every tracked root or member it lacks that `start_of` still
+/// finds alive with the same start time.
+fn with_rechecked(procs: &[ProcInfo], file: &File, start_of: &dyn Fn(i32) -> Option<f64>) -> Vec<ProcInfo> {
+    let listed: HashSet<(i32, u64)> = procs.iter().map(|p| (p.pid, start_key(p.start_unix))).collect();
+    let mut out = procs.to_vec();
+    let tracked = file.sessions.iter().flat_map(|t| std::iter::once((t.root_pid, t.root_start)).chain(t.members.iter().map(|m| (m.pid, m.start_unix))));
+    let mut added = HashSet::new();
+    for (pid, start) in tracked {
+        let key = (pid, start_key(start));
+        if listed.contains(&key) || !added.insert(key) {
+            continue;
+        }
+        if start_of(pid).is_some_and(|now| start_key(now) == key.1) {
+            out.push(ProcInfo { pid, start_unix: start, ..Default::default() });
+        }
+    }
+    out
+}
+
 /// One engine pass: update memory and the file; the sessions that left
 /// something running, with live ports filled in.
 pub fn pass(sessions: &[Session], procs: &[ProcInfo], sockets: &crate::projects::Sockets) -> Vec<Tracked> {
@@ -243,18 +262,12 @@ pub fn pass(sessions: &[Session], procs: &[ProcInfo], sockets: &crate::projects:
         Some(state) if on_disk.is_some() && state.mtime == on_disk => (state.file.clone(), on_disk),
         _ => locked(&path, |f| (false, f.clone())).unwrap_or_default(),
     };
-    // A root missing from this pass's list (a failed read) is checked once
-    // more before its session counts as ended.
-    let listed: HashSet<(i32, u64)> = procs.iter().map(|p| (p.pid, start_key(p.start_unix))).collect();
-    let mut procs = procs.to_vec();
-    for t in file.sessions.iter().filter(|t| t.ended_at.is_none() && !listed.contains(&t.root_key())) {
-        if let Some(b) = crate::processes::proc_bsd(t.root_pid) {
-            let start = b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6;
-            if start_key(start) == start_key(t.root_start) {
-                procs.push(ProcInfo { pid: t.root_pid, start_unix: start, ..Default::default() });
-            }
-        }
-    }
+    // A tracked process missing from this pass's list (the engine skips one
+    // whose read failed) is checked once more with libproc before its
+    // session counts as ended or the process is forgotten.
+    let procs = with_rechecked(procs, &file, &|pid| {
+        crate::processes::proc_bsd(pid).map(|b| b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6)
+    });
     let mut probe = file.clone();
     if observe(&mut probe, sessions, &procs, now) {
         // Apply the same pass to the locked file, so a session the hook
@@ -285,10 +298,11 @@ pub fn pass(sessions: &[Session], procs: &[ProcInfo], sockets: &crate::projects:
 pub fn forget(root: (i32, u64)) {
     let path = path();
     let mut guard = STATE.lock().unwrap();
-    let at = locked(&path, |f| (dismiss(f, root), ())).and_then(|(_, at)| at);
-    if let Some(state) = guard.as_mut() {
-        dismiss(&mut state.file, root);
-        state.mtime = at;
+    // Cache the file as written, so a session the hook added since the
+    // last pass is not hidden behind an old copy.
+    match locked(&path, |f| (dismiss(f, root), f.clone())) {
+        Some((file, mtime)) => *guard = Some(State { file, mtime }),
+        None => *guard = None,
     }
 }
 
@@ -500,6 +514,23 @@ mod tests {
         assert_eq!(left_running(&f).len(), 1);
         observe(&mut f, &[session(vec![root.clone(), server.clone()])], &[root.clone(), server.clone()], 2020.);
         assert!(left_running(&f).is_empty() && f.sessions[0].ended_at.is_none());
+    }
+
+    #[test]
+    fn a_member_missing_from_one_pass_is_rechecked_before_it_is_forgotten() {
+        let root = proc(900, 1, "/Users/me/.local/bin/claude", 100.);
+        let vite = proc(950, 900, "/opt/homebrew/bin/node", 102.);
+        let mut f = File::default();
+        observe(&mut f, &[session(vec![root.clone(), vite.clone()])], &[root, vite.clone()], 1000.);
+        observe(&mut f, &[], &[vite.clone()], 1010.);
+        // The engine missed vite this pass, but libproc still finds it.
+        let procs = with_rechecked(&[], &f, &|pid| (pid == 950).then_some(102.));
+        observe(&mut f, &[], &procs, 1020.);
+        assert_eq!(left_running(&f)[0].members[0].pid, 950);
+        // A reused PID (another start time) is not taken for it.
+        let procs = with_rechecked(&[], &f, &|pid| (pid == 950).then_some(999.));
+        observe(&mut f, &[], &procs, 1030.);
+        assert!(left_running(&f).is_empty());
     }
 
     #[test]
