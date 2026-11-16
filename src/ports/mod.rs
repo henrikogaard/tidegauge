@@ -165,9 +165,9 @@ pub fn basic_procs() -> Vec<ProcInfo> {
 pub fn listeners(procs: &[ProcInfo], sessions: &[Session], max_age: Duration) -> Vec<Listener> {
     let sockets = crate::projects::cached_sockets(max_age);
     let mut cx = launcher::Context::from_sessions(sessions);
-    // launchctl is only worth running when something hangs off launchd.
-    let orphan = sockets.keys().any(|pid| procs.iter().any(|p| p.pid == *pid && p.ppid == 1));
-    if orphan {
+    // launchctl is only worth running for a listener outside every agent
+    // session; its job may be any ancestor (a wrapper script, say).
+    if sockets.keys().any(|pid| !cx.in_session.contains_key(pid)) {
         cx.launchd = launcher::launchd_jobs();
     }
     build(&sockets, procs, &cx, &proc_cwd)

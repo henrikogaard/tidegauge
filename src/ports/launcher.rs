@@ -101,8 +101,9 @@ pub struct Context {
     pub in_session: HashMap<i32, Agent>,
     /// pid + start time -> agent, for leftovers of ended sessions.
     pub ended: HashMap<(i32, u64), Agent>,
-    /// pid -> launchd job label (apps left out).
-    pub launchd: HashMap<i32, String>,
+    /// pid -> (start key, launchd job label), apps left out. The start time
+    /// guards against a PID reused since `launchctl list` ran.
+    pub launchd: Jobs,
 }
 
 impl Context {
@@ -122,6 +123,13 @@ pub fn start_key(start_unix: f64) -> u64 {
     (start_unix * 1000.).round().max(0.) as u64
 }
 
+fn job(cx: &Context, p: &ProcInfo) -> Option<String> {
+    cx.launchd
+        .get(&p.pid)
+        .filter(|(start, _)| *start == start_key(p.start_unix))
+        .map(|(_, label)| label.clone())
+}
+
 pub fn launcher(p: &ProcInfo, by_pid: &HashMap<i32, &ProcInfo>, cx: &Context) -> Launcher {
     if is_docker(p) {
         return Launcher::Docker;
@@ -132,8 +140,8 @@ pub fn launcher(p: &ProcInfo, by_pid: &HashMap<i32, &ProcInfo>, cx: &Context) ->
     if let Some(agent) = cx.ended.get(&(p.pid, start_key(p.start_unix))) {
         return Launcher::EndedSession(*agent);
     }
-    if let Some(label) = cx.launchd.get(&p.pid) {
-        return Launcher::Launchd(label.clone());
+    if let Some(label) = job(cx, p) {
+        return Launcher::Launchd(label);
     }
     // Nearest ancestor inside an app bundle, or a launchd job on the way up.
     let mut current = p.ppid;
@@ -145,8 +153,8 @@ pub fn launcher(p: &ProcInfo, by_pid: &HashMap<i32, &ProcInfo>, cx: &Context) ->
         if let Some(name) = bundle_name(&parent.exe_path) {
             return from_bundle(name);
         }
-        if let Some(label) = cx.launchd.get(&parent.pid) {
-            return Launcher::Launchd(label.clone());
+        if let Some(label) = job(cx, parent) {
+            return Launcher::Launchd(label);
         }
         if parent.ppid == current {
             break;
@@ -173,10 +181,14 @@ pub fn parse_launchctl(text: &str) -> HashMap<i32, String> {
         .collect()
 }
 
-static LAUNCHD: Mutex<Option<(Instant, HashMap<i32, String>)>> = Mutex::new(None);
+/// pid -> (start key, label).
+pub type Jobs = HashMap<i32, (u64, String)>;
 
-/// The user's launchd jobs, read at most once a minute.
-pub fn launchd_jobs() -> HashMap<i32, String> {
+static LAUNCHD: Mutex<Option<(Instant, Jobs)>> = Mutex::new(None);
+
+/// The user's launchd jobs, read at most once a minute, each with its
+/// process's start time.
+pub fn launchd_jobs() -> Jobs {
     let mut cache = LAUNCHD.lock().unwrap();
     if let Some((at, jobs)) = cache.as_ref() {
         if at.elapsed() < Duration::from_secs(60) {
@@ -190,7 +202,13 @@ pub fn launchd_jobs() -> HashMap<i32, String> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| parse_launchctl(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(pid, label)| {
+            let b = crate::processes::proc_bsd(pid)?;
+            Some((pid, (start_key(b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6), label)))
+        })
+        .collect::<HashMap<_, _>>();
     *cache = Some((Instant::now(), jobs.clone()));
     jobs
 }
@@ -254,12 +272,19 @@ mod tests {
             proc(40, 1, "/Applications/Docker.app/Contents/MacOS/com.docker.backend"),
             proc(50, 1, "/opt/homebrew/opt/postgresql@16/bin/postgres"),
             proc(60, 1, "/opt/homebrew/bin/node"),
+            proc(80, 1, "/bin/sh"),
+            proc(81, 80, "/opt/homebrew/bin/node"),
             proc(70, 1, "/opt/homebrew/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python"),
         ];
         let mut cx = Context::default();
-        cx.launchd.insert(50, "homebrew.mxcl.postgresql@16".into());
+        cx.launchd.insert(50, (start_key(1_700_000_000.), "homebrew.mxcl.postgresql@16".into()));
+        // A job's wrapper script: the listener under it is the job's too.
+        cx.launchd.insert(80, (start_key(1_700_000_000.), "com.example.web".into()));
+        // A PID reused since launchctl ran is not that job.
+        cx.launchd.insert(60, (start_key(1_600_000_000.), "com.example.gone".into()));
         assert_eq!(walk(&procs, 40, &cx), Launcher::Docker);
         assert_eq!(walk(&procs, 50, &cx), Launcher::Launchd("homebrew.mxcl.postgresql@16".into()));
+        assert_eq!(walk(&procs, 81, &cx), Launcher::Launchd("com.example.web".into()));
         assert_eq!(walk(&procs, 60, &cx), Launcher::Unknown);
         assert_eq!(walk(&procs, 70, &cx), Launcher::Unknown, "framework Python is not an app");
     }

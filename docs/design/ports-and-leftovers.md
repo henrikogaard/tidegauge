@@ -257,9 +257,9 @@ Slices 1–2 can ship as one PR, 3 as one, 4–5 as one.
 - **Bind address.** `ffi::socket_fdinfo::listening_tcp() -> Option<(u16, IpAddr)>` reads `insi_vflag` (offset 288) and `insi_laddr` (312) from the same 792-byte struct; the offsets were checked with `offsetof` against the macOS 27 SDK. IPv4-mapped IPv6 addresses become IPv4. `listening_tcp_port` stays as a wrapper.
 - **One socket cache.** `projects::Sockets` (pid → `(port, addr)`) replaces the port-only cache; `detect_projects` derives ports from it, `ports::listeners` reads the same cache, so the app does no extra libproc pass.
 - **Listener.** One row per (pid, port); IPv4 and IPv6 binds merge. `project` = the dev-server project, else the nearest project marker above the working directory (not for apps). `warn_exposed` = exposed and (dev server or agent launcher).
-- **Launcher order:** Docker process → live session tree (from `agents::sessions`) → ended session (slice 4) → its own launchd job → nearest ancestor app bundle (Terminal, editor, Docker or other app) or ancestor launchd job → its own app bundle → Unknown. Bundles inside a `.framework` (Python.app) are not apps. `launchctl list` runs at most once a minute and only when a listener hangs off launchd; `application.*` labels are skipped.
+- **Launcher order:** Docker process → live session tree (from `agents::sessions`) → ended session (slice 4) → its own launchd job → nearest ancestor app bundle (Terminal, editor, Docker or other app) or ancestor launchd job → its own app bundle → Unknown. Bundles inside a `.framework` (Python.app) are not apps. `launchctl list` runs at most once a minute and only when a listener is outside every agent session; each job is kept with its process's start time so a reused PID is not taken for the job; `application.*` labels are skipped.
 - **CLI.** `tidegauge ports` prints PORT, ADDRESS, PID, PROCESS, STARTED BY, FOLDER in the UI language; `!` marks an exposed dev server and the warning follows the table. `--json` gives `{ports: [{port, binds, exposed, pid, process, executable, started_unix, project, dev_server, launcher: {kind, name}}]}`; no arguments or environment.
-- **MCP.** `whats_on_port {port}` → `{port, listeners, warning?}`. `stop_port {port}` → `{port, stopped, refused}` or `{error}`. The caller's folder is the project root above the MCP server's working directory (the agent starts it there); with no project root the agent may stop nothing. A listener is stopped only if it is not `blocked()`, is a dev server, and its project is inside the caller's folder; then `projects::stop_targets` re-verifies identity, cwd, project and port before SIGTERM.
+- **MCP.** `whats_on_port {port}` → `{port, listeners, warning?}`. `stop_port {port}` → `{port, stopped, refused}` or `{error}`. The caller's folder is the project root above the MCP server's working directory (the agent starts it there); with no project root the agent may stop nothing. A listener is stopped only if it is not `blocked()`, is a dev server, and its project is inside the caller's folder without crossing another checkout (a folder with its own `.git`, such as another agent's worktree under `.claude/worktrees/`); then `projects::stop_targets` re-verifies identity, cwd, project and port before SIGTERM.
 - **Setting.** `agents_stop_servers` (off), a switch under Settings > General > Cleanup beside "Let agents remove merged worktrees".
 
 Example:
@@ -284,7 +284,9 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 | FR-8 only dev servers and agent launches are flagged | `listeners_merge_families_and_flag_only_dev_servers` (ControlCenter on `::` not flagged) | Pass | this change |
 | FR-9 table and JSON | `ports::cli::tests::table_lists_rows_and_explains_the_mark`, `json_has_no_arguments_or_environment` | Pass | this change |
 | FR-10 MCP tools listed; `whats_on_port` | `cleanup::cli::tests::mcp_lists_tools_and_rejects_unknown`, `whats_on_port_finds_or_explains`, `bad_port_arguments_are_errors` | Pass | this change |
-| FR-11, FR-12 gate, folder rule | `stop_port_needs_the_setting_and_the_callers_folder` | Pass | this change |
+| FR-11, FR-12 gate, folder rule, other agents' worktrees | `stop_port_needs_the_setting_and_the_callers_folder` | Pass | this change |
+| Review: launchd job above a wrapper script; reused PID; `~` only at a folder boundary | `launcher::tests::docker_launchd_and_orphans`, `cli::tests::home_is_shortened_only_at_a_folder_boundary` | Pass | this change |
+| Verifier run (sonnet): tests in both languages, clippy, live CLI and MCP with a sandbox HOME | all four criteria | Pass (2026-11-16) | this change |
 | FR-12 live | `tidegauge mcp` `stop_port`: setting off → error; on, from another folder → refused; from the project → "Stopped … and it exited", process gone | Pass (2026-11-16) | this change |
 | NFR-3 | `cargo test --locked`, then with `TIDEGAUGE_TEST_LANG=nb` | Pass | this change |
 
@@ -300,4 +302,4 @@ PORT    ADDRESS    PID    PROCESS  STARTED BY  FOLDER
 
 ### Change log
 - 2026-11-16: first draft.
-- 2026-11-16: approved by Henrik with D-1–D-4 as recommended; slices 1–2 built. An agent outside any project may stop nothing (found in the live check).
+- 2026-11-16: approved by Henrik with D-1–D-4 as recommended; slices 1–2 built. An agent outside any project may stop nothing (found in the live check). Review fixes: launchd jobs above wrapper scripts, launchd cache keyed by start time, `~` shortening, and no stopping inside another checkout nested in the caller's.

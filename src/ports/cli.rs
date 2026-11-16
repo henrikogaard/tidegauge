@@ -16,10 +16,29 @@ fn now_listeners() -> Vec<Listener> {
 }
 
 fn home_short(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
+    let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else { return path.to_string() };
+    match Path::new(path).strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.to_string(),
     }
+}
+
+/// A folder between `caller` (exclusive) and `project` (inclusive) with its
+/// own `.git`: another repository or worktree, such as another agent's
+/// worktree under `.claude/worktrees/`.
+fn other_checkout(project: &Path, caller: &Path) -> bool {
+    let mut dir = project;
+    while dir != caller {
+        if dir.join(".git").exists() {
+            return true;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return true,
+        }
+    }
+    false
 }
 
 pub fn listener_json(x: &Listener) -> Value {
@@ -83,6 +102,10 @@ pub fn table(rows: &[Listener]) -> String {
 
 /// `tidegauge ports …`; the exit code.
 pub fn run(args: &[&str]) -> i32 {
+    if args.iter().any(|a| *a != "--json") {
+        eprintln!("usage: tidegauge ports [--json]");
+        return 2;
+    }
     let rows = now_listeners();
     if args.contains(&"--json") {
         let v = json!({ "ports": rows.iter().map(listener_json).collect::<Vec<_>>() });
@@ -122,7 +145,7 @@ pub fn stop_refusal(x: &Listener, caller: Option<&Path>) -> Option<String> {
     }
     let project = x.project.as_deref().and_then(|p| std::fs::canonicalize(p).ok());
     match (project, caller) {
-        (Some(project), Some(caller)) if project.starts_with(caller) => None,
+        (Some(project), Some(caller)) if project.starts_with(caller) && !other_checkout(&project, caller) => None,
         _ => Some(format!(
             "{} runs in {}, outside this agent's folder; stop it yourself in Tidegauge.",
             x.name,
@@ -272,6 +295,13 @@ mod tests {
         let r = stop_port(&rows, 3000, true, &other);
         assert_eq!(r["stopped"].as_array().unwrap().len(), 0);
         assert!(r["refused"][0]["why"].as_str().unwrap().contains("outside"));
+        // Another agent's worktree inside the caller's checkout is not the caller's.
+        let wt = app.join(".claude/worktrees/feature");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: elsewhere").unwrap();
+        std::fs::write(wt.join("package.json"), "{}").unwrap();
+        let theirs = listener(3000, "127.0.0.1", Some(&wt.to_string_lossy()), true);
+        assert!(stop_refusal(&theirs, caller_root(&app).as_deref()).is_some());
         // A caller outside any project (no marker) owns nothing.
         assert_eq!(caller_root(&dir), None);
         assert!(stop_refusal(&rows[0], None).is_some());
@@ -279,6 +309,13 @@ mod tests {
         let plain = listener(3000, "127.0.0.1", Some(&app.to_string_lossy()), false);
         assert!(stop_refusal(&plain, caller_root(&app).as_deref()).is_some());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn home_is_shortened_only_at_a_folder_boundary() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(home_short(&format!("{home}/app")), "~/app");
+        assert_eq!(home_short(&format!("{home}2/app")), format!("{home}2/app"));
     }
 
     #[test]
