@@ -280,7 +280,8 @@ impl Metric {
 /// The appearance choices that change how metrics are drawn: the one place
 /// where the base palette and the settings meet. `Metric::accent` asks it for
 /// every metric colour; the warning, caution and success colours below never
-/// do, so they read the same in every mode.
+/// do, so they read the same in every mode but the colour-blind safe one,
+/// where they come from the same palette.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Look {
     pub colors: ColorMode,
@@ -303,6 +304,7 @@ impl Look {
     pub fn metric(&self, metric: Metric, dark: bool) -> u32 {
         match self.colors {
             ColorMode::Tidegauge => metric.base(dark),
+            ColorMode::Colorblind => legible(okabe_ito(metric), dark),
             ColorMode::Macos => legible(self.system_accent, dark),
             ColorMode::Calm => calm(dark),
         }
@@ -338,6 +340,26 @@ pub fn sync(settings: &Settings) {
     look.charts = settings.charts;
     if let Some(system) = system {
         look.system_accent = system;
+    }
+}
+
+/// Whether the colour-blind safe palette is in use: status colours and the
+/// menu bar's warning tints follow it too.
+pub fn colorblind() -> bool {
+    look().colors == ColorMode::Colorblind
+}
+
+/// The Okabe–Ito palette (Okabe & Ito, 2008), whose colours stay apart
+/// with every common colour-vision deficiency. Its orange and vermillion
+/// mean caution and warning here, and its yellow darkens toward that
+/// orange on light cards, so metrics share the other hues and a gray.
+fn okabe_ito(metric: Metric) -> u32 {
+    match metric {
+        Metric::Cpu => 0x0072b2,                                        // blue
+        Metric::Memory | Metric::Sound => 0xcc79a7,                     // reddish purple
+        Metric::Gpu | Metric::Bluetooth => 0x56b4e9,                    // sky blue
+        Metric::Network | Metric::Battery | Metric::Power => 0x009e73, // bluish green
+        Metric::Disk | Metric::Projects => 0x8c8c8c,                    // gray
     }
 }
 
@@ -420,15 +442,44 @@ pub fn tabular() -> FontFeatures {
     FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
+/// Good, caution and warning as 0xRRGGBB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Ok,
+    Caution,
+    Warn,
+}
+
+fn status_rgb(status: Status, colorblind: bool, dark: bool) -> u32 {
+    match (status, colorblind, dark) {
+        // Okabe–Ito blue, orange and vermillion, tuned per appearance so
+        // caution is clearly brighter than warning as well as another hue.
+        (Status::Ok, true, true) => 0x56b4e9,
+        (Status::Ok, true, false) => 0x0072b2,
+        (Status::Caution, true, true) => 0xe69f00,
+        (Status::Caution, true, false) => 0x9b6900,
+        (Status::Warn, true, true) => 0xf07030,
+        (Status::Warn, true, false) => 0xa63000,
+        (Status::Ok, false, true) => 0x30d158,
+        (Status::Ok, false, false) => 0x248a3d,
+        (Status::Caution, false, true) => 0xe8ad39,
+        (Status::Caution, false, false) => 0x9b6900,
+        (Status::Warn, false, true) => 0xff453a,
+        (Status::Warn, false, false) => 0xd70015,
+    }
+}
+
 pub fn warn(dark: bool) -> Hsla {
-    hex(if dark { 0xff453a } else { 0xd70015 })
+    hex(status_rgb(Status::Warn, colorblind(), dark))
 }
 /// Caution (amber): something is incomplete or worth a look, not broken.
 pub fn caution(dark: bool) -> Hsla {
-    hex(if dark { 0xe8ad39 } else { 0x9b6900 })
+    hex(status_rgb(Status::Caution, colorblind(), dark))
 }
+/// Good (green), or blue in the colour-blind palette, so good and bad never
+/// differ by red against green alone.
 pub fn ok(dark: bool) -> Hsla {
-    hex(if dark { 0x30d158 } else { 0x248a3d })
+    hex(status_rgb(Status::Ok, colorblind(), dark))
 }
 /// Track of a switch that is on: the system green of macOS switches.
 pub fn switch_on(dark: bool) -> Hsla {
@@ -648,7 +699,7 @@ mod design_tokens_tests {
 mod look_tests {
     // Explicit imports for the same reason as above: no glob, so `#[test]`
     // stays the standard attribute.
-    use super::{
+    use super::{status_rgb, Status,
         caution, hex, hsl_to_rgb, legible, lightness_band, ok, rgb_to_hsl, shade, shade_opacity,
         tabular, warn, ChartStyle, ColorMode, Look, Metric,
     };
@@ -758,6 +809,47 @@ mod look_tests {
                 assert_ne!(colour, warn(dark));
                 assert_ne!(colour, caution(dark));
             }
+        }
+    }
+
+    #[test]
+    fn the_colour_blind_palette_keeps_status_and_metrics_apart() {
+        for dark in [false, true] {
+            let [good, caution, bad] =
+                [Status::Ok, Status::Caution, Status::Warn].map(|status| status_rgb(status, true, dark));
+            // Good is blue, never green: hue well away from red's.
+            let (good_hue, _, _) = rgb_to_hsl(good);
+            assert!((180. ..=240.).contains(&good_hue), "good is blue: {good_hue}");
+            assert!(good != caution && caution != bad && good != bad);
+            // Caution and warning also differ in brightness as the eye sees
+            // it (relative luminance), not only in hue.
+            let luminance = |rgb: u32| {
+                let channel = |shift: u32| {
+                    let c = f64::from((rgb >> shift) & 0xff) / 255.;
+                    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+                };
+                0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+            };
+            assert!(luminance(caution) - luminance(bad) > 0.05, "{dark}: {caution:06x} vs {bad:06x}");
+            let palette = look(ColorMode::Colorblind, 0x007aff);
+            let (low, high) = lightness_band(dark);
+            for metric in [Metric::Cpu, Metric::Memory, Metric::Gpu, Metric::Disk, Metric::Network, Metric::Battery, Metric::Bluetooth] {
+                let (_, _, l) = rgb_to_hsl(palette.metric(metric, dark));
+                assert!(l >= low - 0.01 && l <= high + 0.01, "{dark}: readable lightness");
+            }
+            assert_ne!(palette.metric(Metric::Cpu, dark), palette.metric(Metric::Memory, dark));
+            // No metric is mistakable for caution or warning: a gray, or a
+            // hue at least 30° from both.
+            for metric in [Metric::Cpu, Metric::Memory, Metric::Gpu, Metric::Disk, Metric::Network, Metric::Battery, Metric::Sound, Metric::Bluetooth, Metric::Projects, Metric::Power] {
+                let (hue, saturation, _) = rgb_to_hsl(palette.metric(metric, dark));
+                for status in [caution, bad] {
+                    let (status_hue, _, _) = rgb_to_hsl(status);
+                    let apart = (hue - status_hue).abs().min(360. - (hue - status_hue).abs());
+                    assert!(saturation < 0.1 || apart >= 30., "{dark}: metric hue {hue} near status {status_hue}");
+                }
+            }
+            // Off the colour-blind palette, status colours are unchanged.
+            assert_eq!(status_rgb(Status::Ok, false, dark), if dark { 0x30d158 } else { 0x248a3d });
         }
     }
 

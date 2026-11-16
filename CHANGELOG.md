@@ -8,9 +8,31 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Added
 
-- The dashboard's Projects page is now **Ports**: every port your programs listen on, grouped by project, with what started each one, Open in browser, Show in Finder and Stop. A dev server open to your network gets a warning that explains what that means. Docker and launchd services say where to stop them instead.
+- Settings → Menu bar → Menu-bar colors has a third choice, **By load**:
+  readings stay in the menu bar's own colour while all is well and turn
+  orange or red only when CPU, memory pressure, battery or free disk space
+  reach a warning level.
+- Settings → Look → Colors has a **Color-blind safe** palette, from the
+  Okabe–Ito colours. Good, caution and warning become blue, orange and
+  vermillion, so they never depend on telling red from green; the menu
+  bar's warning tints, charts and desktop widgets follow it.
 - `tidegauge ports` prints every port your programs listen on, with the process, its project folder, what started it (an agent, Terminal, an editor, Docker or a launchd job) and the address it listens on. A dev server open to your network is marked, with what that means and how to keep it on this Mac. `--json` gives the same as JSON.
 - `tidegauge mcp` gains `whats_on_port` and `stop_port`. An agent can stop a dev server only in its own project folder, and only after you turn on "Let agents stop dev servers" in Settings > General > Cleanup.
+- The dashboard's Projects page is now **Ports**: every port your programs listen on, grouped by project, with what started each one, Open in browser, Show in Finder and Stop. A dev server open to your network gets a warning that explains what that means. Docker and launchd services say where to stop them instead.
+
+### Fixed
+
+- AI plans that report money now show it. An account with a balance, such
+  as OpenRouter, reads "9.17 USD left" instead of "– left"; an API account
+  billed by use, such as OpenAI, reads "60.24 USD · spent, last 30 days"; an
+  overdrawn balance shows its minus sign and says so. Two accounts of one
+  provider are told apart by the name you gave them in OpenQuota ("Claude ·
+  Desktop"), never by an email address, and OpenAI and OpenCode are spelled
+  right.
+- The dashboard no longer gets lost behind other apps. While its window is
+  open, Tidegauge has a Dock icon and a place in ⌘-Tab, and a click on the
+  Dock icon brings the window back. Closing the window removes the Dock
+  icon again; the menu-bar panel alone never shows one.
 
 ## [0.9.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.9.0) — 2026-11-10
 

@@ -23,12 +23,15 @@ struct RawWindow {
     remaining: Option<f64>,
     #[serde(rename = "resetsAt")]
     resets_at: Option<String>,
+    unit: Option<String>,
 }
 
-/// Only the plan name is read; account labels (often an email) are skipped.
+/// The plan name, and the account's label only to tell two accounts of one
+/// provider apart. A label that looks like an email is never kept.
 #[derive(Deserialize)]
 struct RawAccount {
     plan: Option<String>,
+    label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,11 +64,25 @@ pub struct Window {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Spent {
+    pub amount: f64,
+    pub unit: String,
+    /// OpenQuota's name for the period, such as "Spend 30d".
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     pub provider: String,
     pub plan: Option<String>,
     pub windows: Vec<Window>,
+    /// Balance left, in `creditsUnit`. Below zero when overdrawn.
     pub credits: Option<(f64, String)>,
+    /// Money spent in a period, for accounts billed by use (an API key).
+    pub spent: Option<Spent>,
+    /// The account's own name, set only when the same provider has more
+    /// than one account here, so the two can be told apart.
+    pub account: Option<String>,
     pub fetched_at: Option<f64>,
     pub stale: bool,
     pub failed: bool,
@@ -100,13 +117,34 @@ pub fn parse_plans(text: &str) -> Plans {
     let Ok(raw) = serde_json::from_str::<HashMap<String, RawSnapshot>>(text) else {
         return Plans::Unreadable;
     };
-    let mut plans: Vec<Plan> = raw
-        .into_values()
-        .map(|snap| Plan {
-            windows: snap
-                .windows
+    let mut labels: Vec<Option<String>> = Vec::new();
+    let mut plans: Vec<Plan> = Vec::new();
+    // Sorted by OpenQuota's own key first, so accounts that sort the same
+    // below keep one order from one read to the next.
+    let mut raw: Vec<(String, RawSnapshot)> = raw.into_iter().collect();
+    raw.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, snap) in raw {
+        let (consumption, credit): (Vec<RawWindow>, Vec<RawWindow>) = snap
+            .windows
+            .into_iter()
+            .partition(|w| w.kind.as_deref().is_none_or(|kind| kind == "consumption"));
+        // A credits window without a limit is money spent; one with a limit
+        // is an allowance OpenQuota also reports as a balance, so it is skipped.
+        let spent = credit
+            .into_iter()
+            .filter(|w| w.limit.is_none())
+            .find_map(|w| {
+                let amount = w.used.filter(|used| used.is_finite())?;
+                Some(Spent { amount, unit: money_unit(w.unit.as_deref().unwrap_or("")), label: w.label })
+            });
+        let (plan, label) = match snap.account {
+            Some(account) => (account.plan, account.label),
+            None => (None, None),
+        };
+        labels.push(label.filter(|label| is_safe_label(label)));
+        plans.push(Plan {
+            windows: consumption
                 .into_iter()
-                .filter(|w| w.kind.as_deref().is_none_or(|kind| kind == "consumption"))
                 .filter_map(|w| {
                     let limit = w.limit.filter(|limit| *limit > 0.)?;
                     let used = match (w.used, w.remaining) {
@@ -122,16 +160,44 @@ pub fn parse_plans(text: &str) -> Plans {
                     })
                 })
                 .collect(),
-            plan: snap.account.and_then(|account| account.plan),
-            credits: snap.credits_remaining.zip(snap.credits_unit),
+            plan,
+            credits: snap
+                .credits_remaining
+                .filter(|amount| amount.is_finite())
+                .zip(snap.credits_unit.map(|unit| money_unit(&unit))),
+            spent,
+            account: None,
             fetched_at: snap.fetched_at.as_deref().and_then(parse_iso),
             stale: snap.is_stale,
             failed: snap.error_message.is_some(),
             provider: snap.provider_id,
-        })
-        .collect();
-    plans.sort_by(|a, b| a.provider.cmp(&b.provider));
+        });
+    }
+    // Name an account only where its provider has more than one.
+    for i in 0..plans.len() {
+        let shared = plans.iter().filter(|p| p.provider == plans[i].provider).count() > 1;
+        if shared {
+            plans[i].account = labels[i].clone();
+        }
+    }
+    // Stable: ties keep the key order above.
+    plans.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.account.cmp(&b.account)));
     Plans::Loaded(plans)
+}
+
+/// "$" and "usd" read as "USD"; other units are kept as they are.
+fn money_unit(unit: &str) -> String {
+    match unit.trim() {
+        "$" | "usd" | "US$" => "USD".into(),
+        "€" | "eur" => "EUR".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A label kept for display: short and not an email address.
+fn is_safe_label(label: &str) -> bool {
+    let label = label.trim();
+    !label.is_empty() && label.chars().count() <= 32 && !label.contains('@')
 }
 
 fn read_plans(path: &Path) -> Plans {
@@ -768,7 +834,40 @@ mod tests {
         assert_eq!(codex.plan.as_deref(), Some("pro"));
         assert!(codex.windows.is_empty(), "credit windows are not rings");
         assert_eq!(codex.credits, Some((12.5, "credits".into())));
+        assert_eq!(codex.spent, None, "a credits window with a limit is not spend");
+        assert_eq!(claude.account, None, "one account per provider needs no name");
         assert_eq!(parse_plans("not json"), Plans::Unreadable);
+    }
+
+    #[test]
+    fn money_accounts_keep_their_balance_spend_and_account_names() {
+        let text = r#"{
+          "openai@1": {"providerID":"openai","account":{"id":"a","label":"OpenAI Platform"},
+            "windows":[{"id":"openai.spend 30d","label":"Spend 30d","kind":"credits","used":60.24,"unit":"$"}],
+            "fetchedAt":"2026-10-14T20:00:00Z","isStale":false},
+          "openrouter@2": {"providerID":"openrouter","account":{"id":"b"},
+            "windows":[{"id":"openrouter.key usage","label":"Key usage","kind":"credits","used":0,"unit":"$"}],
+            "creditsRemaining":9.17,"creditsUnit":"USD","fetchedAt":"2026-10-14T20:00:00Z","isStale":false},
+          "devin@3": {"providerID":"devin","account":{"id":"c","plan":"Pro"},"windows":[],
+            "creditsRemaining":-0.07,"creditsUnit":"USD","fetchedAt":"2026-10-14T20:00:00Z","isStale":false},
+          "claude@4": {"providerID":"claude","account":{"id":"d","label":"Desktop"},
+            "windows":[{"id":"claude.week","label":"Week","kind":"consumption","used":76,"limit":100}],"fetchedAt":"2026-10-14T20:00:00Z"},
+          "claude@5": {"providerID":"claude","account":{"id":"e","label":"Claude"},
+            "windows":[{"id":"claude.week","label":"Week","kind":"consumption","used":25,"limit":100}],"fetchedAt":"2026-10-14T20:00:00Z"},
+          "claude@6": {"providerID":"claude","account":{"id":"f","label":"me@example.com"},"windows":[],"fetchedAt":"2026-10-14T20:00:00Z"}
+        }"#;
+        let Plans::Loaded(plans) = parse_plans(text) else { panic!("not parsed") };
+        let find = |provider: &str| plans.iter().find(|p| p.provider == provider).unwrap();
+        let openai = find("openai");
+        assert_eq!(openai.spent, Some(Spent { amount: 60.24, unit: "USD".into(), label: "Spend 30d".into() }));
+        assert_eq!(openai.account, None);
+        let openrouter = find("openrouter");
+        assert_eq!(openrouter.credits, Some((9.17, "USD".into())));
+        assert_eq!(find("devin").credits, Some((-0.07, "USD".into())), "an overdrawn balance keeps its sign");
+        let claude: Vec<Option<&str>> =
+            plans.iter().filter(|p| p.provider == "claude").map(|p| p.account.as_deref()).collect();
+        assert_eq!(claude, [None, Some("Claude"), Some("Desktop")], "named, sorted, and never an email");
+        assert!(!format!("{plans:?}").contains("example.com"));
     }
 
     #[test]
