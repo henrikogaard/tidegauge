@@ -12,7 +12,7 @@ use crate::agents::{Agent, Session};
 use crate::processes::ProcInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Seek, Write};
+use std::io::Write;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -116,6 +116,11 @@ pub fn observe(file: &mut File, sessions: &[Session], procs: &[ProcInfo], now: f
             }
         };
         let t = &mut file.sessions[i];
+        // A process that exited can never be left running: forget it, so a
+        // long session never fills its cap with dead entries.
+        let before = t.members.len();
+        t.members.retain(|m| alive.contains(&m.key()));
+        changed |= t.members.len() != before;
         if t.folder.is_none() && s.folder.is_some() {
             t.folder = s.folder.clone();
             changed = true;
@@ -125,8 +130,13 @@ pub fn observe(file: &mut File, sessions: &[Session], procs: &[ProcInfo], now: f
         }
     }
     for t in &mut file.sessions {
-        if t.ended_at.is_none() && !alive.contains(&t.root_key()) {
+        let root_alive = alive.contains(&t.root_key());
+        if t.ended_at.is_none() && !root_alive {
             t.ended_at = Some(now);
+            changed = true;
+        } else if t.ended_at.is_some() && root_alive {
+            // The root only went missing from one pass's process list.
+            t.ended_at = None;
             changed = true;
         }
         if t.ended_at.is_some() {
@@ -179,28 +189,34 @@ pub fn path() -> PathBuf {
         .join("ended-sessions.json")
 }
 
-/// Read-modify-write `path` under an flock, shared by the app and the
-/// SessionEnd hook. The file is written only when `f` returns true.
-pub fn with_file<T>(path: &Path, f: impl FnOnce(&mut File) -> (bool, T)) -> Option<T> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).ok()?;
-    }
-    let mut handle = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).ok()?;
-    if unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX) } != 0 {
+/// Read-modify-write `path` under an flock on `<path>.lock`, shared by the
+/// app, the CLI and the SessionEnd hook. The file is replaced (written to a
+/// temporary file, then renamed) only when `f` returns true, so a crash never
+/// leaves it half written. Returns `f`'s value and the file's mtime, both
+/// read under the lock.
+fn locked<T>(path: &Path, f: impl FnOnce(&mut File) -> (bool, T)) -> Option<(T, Option<std::time::SystemTime>)> {
+    let dir = path.parent()?;
+    std::fs::create_dir_all(dir).ok()?;
+    let lock = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path.with_extension("json.lock")).ok()?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return None;
     }
-    let mut text = String::new();
-    let _ = handle.read_to_string(&mut text);
-    let mut file: File = serde_json::from_str(&text).unwrap_or_default();
+    let mut file: File = std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
     let (write, out) = f(&mut file);
     if write {
         let body = serde_json::to_string(&file).ok()?;
-        handle.set_len(0).ok()?;
-        handle.rewind().ok()?;
+        let tmp = path.with_extension("json.tmp");
+        let mut handle = std::fs::File::create(&tmp).ok()?;
         handle.write_all(body.as_bytes()).ok()?;
+        handle.sync_all().ok()?;
+        std::fs::rename(&tmp, path).ok()?;
     }
-    // The lock ends when `handle` closes.
-    Some(out)
+    // The lock ends when `lock` closes, after the mtime is read.
+    Some((out, mtime(path)))
+}
+
+pub fn with_file<T>(path: &Path, f: impl FnOnce(&mut File) -> (bool, T)) -> Option<T> {
+    locked(path, f).map(|(out, _)| out)
 }
 
 /// The app's copy, kept in memory between passes; the file is re-read only
@@ -223,21 +239,35 @@ pub fn pass(sessions: &[Session], procs: &[ProcInfo], sockets: &crate::projects:
     let now = crate::metrics::now_unix();
     let mut guard = STATE.lock().unwrap();
     let on_disk = mtime(&path);
-    let mut file = match guard.as_ref() {
-        Some(state) if on_disk.is_some() && state.mtime == on_disk => state.file.clone(),
-        _ => with_file(&path, |f| (false, f.clone())).unwrap_or_default(),
+    let (mut file, mut seen) = match guard.as_ref() {
+        Some(state) if on_disk.is_some() && state.mtime == on_disk => (state.file.clone(), on_disk),
+        _ => locked(&path, |f| (false, f.clone())).unwrap_or_default(),
     };
+    // A root missing from this pass's list (a failed read) is checked once
+    // more before its session counts as ended.
+    let listed: HashSet<(i32, u64)> = procs.iter().map(|p| (p.pid, start_key(p.start_unix))).collect();
+    let mut procs = procs.to_vec();
+    for t in file.sessions.iter().filter(|t| t.ended_at.is_none() && !listed.contains(&t.root_key())) {
+        if let Some(b) = crate::processes::proc_bsd(t.root_pid) {
+            let start = b.pbi_start_tvsec as f64 + b.pbi_start_tvusec as f64 / 1e6;
+            if start_key(start) == start_key(t.root_start) {
+                procs.push(ProcInfo { pid: t.root_pid, start_unix: start, ..Default::default() });
+            }
+        }
+    }
     let mut probe = file.clone();
-    if observe(&mut probe, sessions, procs, now) {
+    if observe(&mut probe, sessions, &procs, now) {
         // Apply the same pass to the locked file, so a session the hook
         // wrote since the read above is kept.
-        file = with_file(&path, |f| {
-            observe(f, sessions, procs, now);
+        match locked(&path, |f| {
+            observe(f, sessions, &procs, now);
             (true, f.clone())
-        })
-        .unwrap_or(probe);
+        }) {
+            Some((written, at)) => (file, seen) = (written, at),
+            None => file = probe,
+        }
     }
-    *guard = Some(State { file: file.clone(), mtime: mtime(&path) });
+    *guard = Some(State { file: file.clone(), mtime: seen });
     drop(guard);
     let mut out = left_running(&file);
     for t in &mut out {
@@ -254,11 +284,11 @@ pub fn pass(sessions: &[Session], procs: &[ProcInfo], sockets: &crate::projects:
 /// Forget one ended session (the Dismiss button).
 pub fn forget(root: (i32, u64)) {
     let path = path();
-    with_file(&path, |f| (dismiss(f, root), ()));
     let mut guard = STATE.lock().unwrap();
+    let at = locked(&path, |f| (dismiss(f, root), ())).and_then(|(_, at)| at);
     if let Some(state) = guard.as_mut() {
         dismiss(&mut state.file, root);
-        state.mtime = mtime(&path);
+        state.mtime = at;
     }
 }
 
@@ -451,6 +481,25 @@ mod tests {
         nested.push(proc(970, 950, "/Users/me/.local/bin/claude", 104.));
         nested.push(proc(971, 970, "/Applications/Tidegauge.app/Contents/MacOS/tidegauge", 105.));
         assert_eq!(session_of(971, &nested, &classify).unwrap().1[0].pid, 970);
+    }
+
+    #[test]
+    fn a_long_session_forgets_exited_helpers_and_a_missed_pass_is_undone() {
+        let root = proc(900, 1, "/Users/me/.local/bin/claude", 100.);
+        let mut f = File::default();
+        // 300 short-lived helpers, one per pass, then a server.
+        for i in 0..300 {
+            let helper = proc(2000 + i, 900, "/usr/bin/git", 200. + i as f64);
+            observe(&mut f, &[session(vec![root.clone(), helper.clone()])], &[root.clone(), helper], 1000. + i as f64);
+        }
+        let server = proc(950, 900, "/opt/homebrew/bin/node", 900.);
+        observe(&mut f, &[session(vec![root.clone(), server.clone()])], &[root.clone(), server.clone()], 2000.);
+        assert_eq!(f.sessions[0].members.iter().map(|m| m.pid).collect::<Vec<_>>(), vec![950], "dead helpers are dropped");
+        // One pass misses the root: it is ended, then the next pass undoes it.
+        observe(&mut f, &[], &[server.clone()], 2010.);
+        assert_eq!(left_running(&f).len(), 1);
+        observe(&mut f, &[session(vec![root.clone(), server.clone()])], &[root.clone(), server.clone()], 2020.);
+        assert!(left_running(&f).is_empty() && f.sessions[0].ended_at.is_none());
     }
 
     #[test]
