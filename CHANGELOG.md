@@ -6,6 +6,16 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Fixed
+
+- AI plans that report money now show it. An account with a balance, such
+  as OpenRouter, reads "9.17 USD left" instead of "– left"; an API account
+  billed by use, such as OpenAI, reads "60.24 USD · spent, last 30 days"; an
+  overdrawn balance shows its minus sign and says so. Two accounts of one
+  provider are told apart by the name you gave them in OpenQuota ("Claude ·
+  Desktop"), never by an email address, and OpenAI and OpenCode are spelled
+  right.
+
 ## [0.9.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.9.0) — 2026-11-10
 
 ### Added
