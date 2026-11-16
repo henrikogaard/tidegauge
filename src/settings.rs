@@ -31,6 +31,9 @@ pub enum ColorMode {
     /// One colour per metric.
     #[default]
     Tidegauge,
+    /// The Okabe–Ito colours, told apart with any colour vision; good,
+    /// warning and critical never rely on red against green.
+    Colorblind,
     /// Every metric in the macOS accent colour.
     Macos,
     /// Every metric in one muted blue-gray.
@@ -57,6 +60,10 @@ pub struct Settings {
     /// Menu-bar readings in each metric's accent colours, turning orange and
     /// red at warning levels. Off: the menu bar's own ink.
     pub menu_colored: bool,
+    /// "By load": menu-bar readings stay in the menu bar's own ink until one
+    /// reaches a warning level, then turn orange or red. Used only while
+    /// `menu_colored` is off.
+    pub menu_by_load: bool,
     pub menu_items: Vec<MenuItem>,
     pub alert_cpu_pct: f64,
     pub alert_mem_pct: f64,
@@ -172,6 +179,7 @@ impl Default for Settings {
             charts: ChartStyle::default(),
             show_app_icon: true,
             menu_colored: false,
+            menu_by_load: false,
             menu_items: Vec::new(),
             alert_cpu_pct: 90.0,
             alert_mem_pct: 92.0,
@@ -972,10 +980,13 @@ mod tests {
         let old: Settings =
             serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"graph"}]}"#).unwrap();
         assert!(!old.menu_colored, "monochrome stays the default");
+        assert!(!old.menu_by_load);
         assert_eq!(old.menu_items[0].style, "graph");
-        let new = Settings { menu_colored: true, ..Settings::default() };
+        let new = Settings { menu_colored: true, menu_by_load: true, colors: ColorMode::Colorblind, ..Settings::default() };
         let loaded: Settings = serde_json::from_slice(&serde_json::to_vec(&new).unwrap()).unwrap();
         assert!(loaded.menu_colored);
+        assert!(loaded.menu_by_load);
+        assert_eq!(loaded.colors, ColorMode::Colorblind);
         // A style a later version wrote still loads; the menu bar draws it as a value.
         let future: Settings =
             serde_json::from_str(r#"{"menu_items":[{"metric":"cpu","style":"hologram"}]}"#).unwrap();

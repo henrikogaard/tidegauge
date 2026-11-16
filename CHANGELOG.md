@@ -6,6 +6,17 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings → Menu bar → Menu-bar colors has a third choice, **By load**:
+  readings stay in the menu bar's own colour while all is well and turn
+  orange or red only when CPU, memory pressure, battery or free disk space
+  reach a warning level.
+- Settings → Look → Colors has a **Color-blind safe** palette, from the
+  Okabe–Ito colours. Good, caution and warning become blue, orange and
+  vermillion, so they never depend on telling red from green; the menu
+  bar's warning tints, charts and desktop widgets follow it.
+
 ### Fixed
 
 - AI plans that report money now show it. An account with a balance, such

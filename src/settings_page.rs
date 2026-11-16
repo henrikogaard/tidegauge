@@ -415,6 +415,7 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             (ColorMode::Tidegauge, "Tidegauge"),
             (ColorMode::Macos, l("macOS accent", "macOS-aksentfarge")),
             (ColorMode::Calm, l("Calm", "Rolig")),
+            (ColorMode::Colorblind, l("Color-blind safe", "Fargeblindvennlig")),
         ]
         .into_iter()
         .enumerate()
@@ -1056,21 +1057,34 @@ fn menu_bar(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<
         rows.push(row(name, None, group, false, dark));
     }
     let colors = segment_group("settings-menu-colors", l("Menu-bar colors", "Menylinjefarger"), dark).children(
-        [(false, l("Monochrome", "Ensfarget")), (true, l("Colored", "Farget"))].into_iter().map(|(colored, label)| {
+        [
+            ((false, false), l("Monochrome", "Ensfarget")),
+            ((false, true), l("By load", "Etter last")),
+            ((true, false), l("Colored", "Farget")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, ((colored, by_load), label))| {
             choice(
-                format!("menu-colors-{colored}"),
+                format!("menu-colors-{i}"),
                 label,
                 format!("{}: {label}", l("Menu-bar colors", "Menylinjefarger")),
-                settings.menu_colored == colored,
+                settings.menu_colored == colored && (colored || settings.menu_by_load == by_load),
                 dark,
                 this.clone(),
-                move |settings| settings.menu_colored = colored,
+                move |settings| {
+                    settings.menu_colored = colored;
+                    settings.menu_by_load = by_load;
+                },
             )
         }),
     );
     rows.push(row(
         l("Menu-bar colors", "Menylinjefarger"),
-        Some(l("Colored readings turn orange or red at warning levels.", "Farget visning blir oransje eller rød ved advarsler.").into()),
+        Some(l(
+            "By load stays plain until a reading reaches a warning level. Colored and By load readings turn orange or red at warning levels.",
+            "Etter last er ensfarget til en måling når et advarselsnivå. Farget og Etter last blir oransje eller røde ved advarsler.",
+        ).into()),
         colors,
         false,
         dark,
