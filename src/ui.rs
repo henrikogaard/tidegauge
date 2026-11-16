@@ -79,7 +79,7 @@ impl Tab {
             Tab::Battery => crate::engine::latest().battery.page_name(),
             Tab::Sound => l("Sound", "Lyd"),
             Tab::Bluetooth => "Bluetooth",
-            Tab::Projects => l("Projects", "Prosjekter"),
+            Tab::Projects => l("Ports", "Porter"),
             Tab::History => l("History", "Historikk"),
         }
     }
@@ -95,7 +95,7 @@ impl Tab {
             Tab::Battery => "icons/battery-charging.svg",
             Tab::Sound => "icons/volume-2.svg",
             Tab::Bluetooth => "icons/bluetooth.svg",
-            Tab::Projects => "icons/folder-code.svg",
+            Tab::Projects => "icons/globe.svg",
             Tab::History => "icons/clock.svg",
         }
     }
@@ -524,7 +524,7 @@ pub(crate) fn sub(text: impl Into<String>) -> Div {
     div().text_xs().child(text.into())
 }
 
-fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
+pub(crate) fn icon_img(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
     svg().path(path).size(px(size)).text_color(color)
 }
 
@@ -1196,8 +1196,8 @@ fn sidebar_reading(tab: Tab, s: &Snapshot) -> Option<String> {
             _ => None,
         },
         Tab::Bluetooth => s.bt.enabled.then(|| s.bt.devices.len().to_string()),
-        Tab::Projects => Some(s.projects.len().to_string()),
-        Tab::Overview | Tab::History => None,
+        // The Ports list is read only while its page is shown, so no count.
+        Tab::Overview | Tab::History | Tab::Projects => None,
     }
 }
 
@@ -1336,7 +1336,14 @@ fn sidebar_groups(visible: &[Tab], battery: bool) -> Vec<SidebarGroup> {
     vec![
         SidebarGroup { label: None, pages: vec![Destination::Tab(Tab::Overview)] },
         SidebarGroup { label: Some(l("Live", "Nå")), pages: live },
-        SidebarGroup { label: Some(l("Work", "Arbeid")), pages: vec![Destination::Apps, Destination::Agents] },
+        SidebarGroup {
+            label: Some(l("Work", "Arbeid")),
+            // Ports sits with your own work: what your projects and agents run.
+            pages: [Destination::Apps, Destination::Agents]
+                .into_iter()
+                .chain(visible.contains(&Tab::Projects).then_some(Destination::Tab(Tab::Projects)))
+                .collect(),
+        },
         SidebarGroup { label: Some(l("Over time", "Over tid")), pages: over_time },
         SidebarGroup {
             label: Some(l("Maintenance", "Vedlikehold")),
@@ -2064,7 +2071,7 @@ impl TideGaugeView {
                 .when_some(self.project_error.as_ref(), |d, error| {
                     d.child(card(dark).child(sub(error.clone()).text_color(if self.project_stop_failed {t::warn(dark)} else {t::ink_dim(dark)})))
                 })
-                .child(projects_tab(s, dark, this))
+                .child(crate::ports_panel::panel(s, dark, this))
                 .into_any_element(),
             Tab::History => crate::controls::history_panel(self, dark, this, cx).into_any_element(),
         }
@@ -4596,7 +4603,7 @@ fn bt_tab(s: &Snapshot, dark: bool) -> Div {
 
 // ---------- projects ----------
 
-fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
+pub(crate) fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
     let mut targets = std::collections::BTreeMap::new();
     for server in &project.servers {
         let target = targets
@@ -4613,7 +4620,7 @@ fn project_targets(project: &ProjectGroup) -> Vec<crate::projects::StopTarget> {
     targets.into_values().collect()
 }
 
-fn request_stop(
+pub(crate) fn request_stop(
     targets: Vec<crate::projects::StopTarget>,
     this: Entity<TideGaugeView>,
     window: &mut Window,
@@ -4940,6 +4947,9 @@ mod tests {
             Destination::Tool(Page::Packages),
         ];
         assert!(few == expected, "History is hidden, so Baselines follows Agents");
+        let with_ports = order(&[Tab::Overview, Tab::Projects], true);
+        let agents = with_ports.iter().position(|d| *d == Destination::Agents).unwrap();
+        assert!(with_ports[agents + 1] == Destination::Tab(Tab::Projects), "Ports follows Agents under Work");
         assert!(shortcut_destination(&few, 3) == Some(Destination::Tab(Tab::Sound)));
         assert!(shortcut_destination(&few, 9) == Some(Destination::Tool(Page::Storage)));
         let mut with_history = visible.to_vec();
