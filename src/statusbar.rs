@@ -304,6 +304,8 @@ struct Frame {
     colored: bool,
     /// The menu bar's appearance, while colours depend on it.
     dark: bool,
+    /// The palette: tints and metric colours are drawn from it.
+    palette: crate::settings::ColorMode,
     description: String,
 }
 
@@ -354,6 +356,9 @@ impl StatusBar {
     pub fn sync(&mut self, settings: &Settings, snap: &Snapshot) {
         // The menu is built when shown, so it always uses the current language.
         self.norwegian = crate::locale::is_norwegian();
+        // The menu bar draws before any window has rendered, and its colours
+        // come from the palette: adopt the settings here too.
+        crate::theme::sync(settings);
         let colored = settings.menu_colored;
         let readouts = menu_readouts(settings, snap, measure_label_width);
         let show_icon = settings.show_app_icon || readouts.is_empty();
@@ -388,7 +393,7 @@ impl StatusBar {
             )
         };
         let dark = colored && self.menu_bar_is_dark();
-        let frame = Frame { readouts, show_icon, colored, dark, description };
+        let frame = Frame { readouts, show_icon, colored, dark, palette: settings.colors, description };
         // Most samples change nothing the image shows.
         if self.shown.as_ref() == Some(&frame) {
             return;
@@ -435,6 +440,16 @@ struct Readout {
 
 impl Tint {
     fn color(self) -> Retained<NSColor> {
+        if crate::theme::colorblind() {
+            // Okabe–Ito orange and vermillion, readable on light and dark
+            // menu bars and apart by brightness as well as hue.
+            let rgb = match self {
+                Tint::Caution => 0xe69f00,
+                Tint::Critical => 0xd55e00,
+            };
+            let channel = |shift: u32| f64::from((rgb >> shift) & 0xff) / 255.;
+            return NSColor::colorWithSRGBRed_green_blue_alpha(channel(16), channel(8), channel(0), 1.);
+        }
         match self {
             Tint::Caution => NSColor::systemOrangeColor(),
             Tint::Critical => NSColor::systemRedColor(),
@@ -586,7 +601,7 @@ fn menu_readouts(settings: &Settings, s: &Snapshot, measure: impl Fn(&str) -> f6
             let charging = metric == "battery" && s.battery.is_charging;
             let tint = match metric {
                 "memory" => menu_style::memory_tint(s.mem.pressure),
-                _ if !settings.menu_colored => None,
+                _ if !settings.menu_colored && !settings.menu_by_load => None,
                 "cpu" => menu_style::cpu_tint(s.cpu_pct),
                 "battery" => s.battery.percent.and_then(|p| menu_style::remaining_tint(p, charging)),
                 "disk" => disk_free_pct.and_then(|free| menu_style::remaining_tint(free, false)),
@@ -1031,8 +1046,22 @@ mod tests {
             show_icon: true,
             colored: settings.menu_colored,
             dark: false,
+            palette: settings.colors,
             description: String::new(),
         }
+    }
+
+    #[test]
+    fn by_load_tints_every_reading_at_its_warning_level_and_nothing_else() {
+        let busy = Snapshot { cpu_pct: 97., ..Snapshot::default() };
+        let calm = Snapshot { cpu_pct: 30., ..Snapshot::default() };
+        let tint = |settings: &Settings, snapshot: &Snapshot| menu_readouts(settings, snapshot, |_| 22.)[0].tint;
+        let mono = items(&[("cpu", "value")], false);
+        let by_load = Settings { menu_by_load: true, ..mono.clone() };
+        assert_eq!(tint(&mono, &busy), None, "monochrome tints only memory pressure");
+        assert_eq!(tint(&by_load, &busy), Some(Tint::Critical));
+        assert_eq!(tint(&by_load, &calm), None, "quiet until it matters");
+        assert!(!frame(&by_load, &calm).colored, "calm readings keep the menu bar's own ink");
     }
 
     #[test]
@@ -1052,6 +1081,8 @@ mod tests {
         let mut colored = settings.clone();
         colored.menu_colored = true;
         assert!(before != frame(&colored, &snapshot), "the colour mode");
+        let palette = Settings { colors: crate::settings::ColorMode::Colorblind, ..settings.clone() };
+        assert!(before != frame(&palette, &snapshot), "the palette");
         snapshot.mem.pressure = Some(crate::metrics::Pressure::Warning);
         assert!(before != frame(&settings, &snapshot), "a tint");
     }
