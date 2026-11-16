@@ -61,11 +61,12 @@ const EDITORS: &[&str] = &[
     "PhpStorm", "RubyMine", "CLion", "Android Studio", "Fleet",
 ];
 
-/// The app an executable belongs to. An interpreter's helper bundle inside
-/// a framework (Python.framework/…/Python.app) is not an app.
+/// The app an executable belongs to. Python's interpreter bundle inside a
+/// framework is not an app, even when that framework ships inside one
+/// (Xcode.app/…/Python3.framework/…/Python.app: Xcode's `python3`).
 fn bundle_name(exe: &str) -> Option<String> {
     let bundle = bundle_root(exe)?;
-    if bundle.contains(".framework/") {
+    if bundle.contains(".framework/") || (exe.contains(".framework/") && exe.ends_with("/Python.app/Contents/MacOS/Python")) {
         return None;
     }
     Path::new(&bundle).file_stem().map(|s| s.to_string_lossy().into_owned())
@@ -274,6 +275,7 @@ mod tests {
             proc(60, 1, "/opt/homebrew/bin/node"),
             proc(80, 1, "/bin/sh"),
             proc(81, 80, "/opt/homebrew/bin/node"),
+            proc(71, 1, "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"),
             proc(70, 1, "/opt/homebrew/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python"),
         ];
         let mut cx = Context::default();
@@ -287,6 +289,7 @@ mod tests {
         assert_eq!(walk(&procs, 81, &cx), Launcher::Launchd("com.example.web".into()));
         assert_eq!(walk(&procs, 60, &cx), Launcher::Unknown);
         assert_eq!(walk(&procs, 70, &cx), Launcher::Unknown, "framework Python is not an app");
+        assert_eq!(walk(&procs, 71, &cx), Launcher::Unknown, "Xcode's python3 is not Xcode");
     }
 
     #[test]
