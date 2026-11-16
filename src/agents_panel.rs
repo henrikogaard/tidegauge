@@ -170,6 +170,22 @@ fn spent_amount(spent: &Spent) -> String {
     format!("{} {}", amount_text(spent.amount, &spent.unit), spent.unit).trim_end().to_string()
 }
 
+/// The balance and spend for a tile's quiet last line: whatever its status
+/// line does not already say. A plan that is not updating shows "as of" in
+/// the status line, so its full amount, with unit and cents, moves here.
+fn money_extras(plan: &Plan, old: bool) -> Vec<String> {
+    let money = money(plan);
+    let said = |kind: fn(&Money) -> bool| !old && money.as_ref().is_some_and(kind);
+    let mut extras = Vec::new();
+    if !said(|m| matches!(m, Money::Balance(..))) {
+        extras.extend(plan.credits.as_ref().map(|(amount, unit)| credits_left(*amount, unit)));
+    }
+    if !said(|m| matches!(m, Money::Spent(_))) {
+        extras.extend(plan.spent.as_ref().map(|spent| format!("{} {}", spent_period(spent), spent_amount(spent))));
+    }
+    extras
+}
+
 /// What a plan without a usage window shows instead of a percentage.
 enum Money<'a> {
     Balance(f64, &'a str),
@@ -475,13 +491,7 @@ fn plan_tile(plan: &Plan, now: f64, dark: bool) -> Div {
                 .when_some(status, |d, (text, color)| d.child(sub(text).truncate().text_color(color)))
                 .map(|d| {
                     let mut rest = others.clone();
-                    // Whatever the headline did not already say.
-                    if tight.is_some() {
-                        rest.extend(plan.credits.clone().map(|(amount, unit)| credits_left(amount, &unit)));
-                    }
-                    if !matches!(money, Some(Money::Spent(_))) {
-                        rest.extend(plan.spent.as_ref().map(|spent| format!("{} {}", spent_period(spent), spent_amount(spent))));
-                    }
+                    rest.extend(money_extras(plan, old));
                     d.when(!rest.is_empty(), |d| d.child(sub(rest.join(" · ")).truncate().text_color(t::ink_dim(dark))))
                 })
                 .when(plan.failed, |d| {
@@ -931,6 +941,9 @@ mod tests {
         assert_eq!(crumb.note, l("balance", "saldo"), "rounds to zero: not overdrawn");
         let unitless = Spent { amount: 60.24, unit: String::new(), label: "Spend 30d".into() };
         assert_eq!(super::spent_amount(&unitless), number(60.24, 2), "cents kept, no trailing space");
+        let balance = plan("openrouter", Some((123.45, "USD")), None);
+        assert!(super::money_extras(&balance, false).is_empty(), "the status line already says it");
+        assert_eq!(super::money_extras(&balance, true), [format!("{} USD {left}", number(123.45, 2))], "kept when 'as of' takes the status line");
         let nothing = super::plan_glance(&plan("grok", None, None), now, true);
         assert_eq!(nothing.headline, format!("– {left}"));
     }
