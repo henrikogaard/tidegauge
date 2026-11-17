@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.10.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.10.0) — 2026-11-17
+
 ### Added
 
 - Settings → Menu bar → Menu-bar colors has a third choice, **By load**:
