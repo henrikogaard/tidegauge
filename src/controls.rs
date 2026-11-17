@@ -166,6 +166,10 @@ pub(crate) fn tipped(label: &str, dark: bool, element: Div) -> AnyElement {
     }
 }
 
+/// Every control answers an accessibility press (VoiceOver, Voice Control,
+/// automation) by running its action directly. Left to itself, GPUI turns
+/// such a press into a mouse click at the control's last drawn centre, which
+/// misses a control scrolled out of view and can land on whatever is there.
 fn control_tipped(
     spec: ControlSpec,
     content: impl IntoElement,
@@ -175,6 +179,7 @@ fn control_tipped(
     let dark = spec.dark;
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
+    let pressed = action.clone();
     let toggled = matches!(spec.role, Role::RadioButton | Role::Switch);
     let mut base = div()
         .id(SharedString::from(spec.id))
@@ -229,6 +234,7 @@ fn control_tipped(
     }
     base.child(content)
         .on_click(move |_, window, cx| action(window, cx))
+        .on_a11y_action(AccessibleAction::Click, move |_, window, cx| pressed(window, cx))
         .capture_key_down(move |event, window, cx| {
             if is_activation_key(&event.keystroke) {
                 window.prevent_default();
@@ -249,6 +255,7 @@ pub(crate) fn switch(
 ) -> impl IntoElement {
     let action = std::rc::Rc::new(action);
     let keyboard = action.clone();
+    let pressed = action.clone();
     let accent = t::switch_on(dark);
     div()
         .id(SharedString::from(id.into()))
@@ -277,6 +284,7 @@ pub(crate) fn switch(
                 .shadow_sm(),
         )
         .on_click(move |_, window, cx| action(window, cx))
+        .on_a11y_action(AccessibleAction::Click, move |_, window, cx| pressed(window, cx))
         .capture_key_down(move |event, window, cx| {
             if is_activation_key(&event.keystroke) {
                 window.prevent_default();
