@@ -197,6 +197,8 @@ pub struct TideGaugeView {
     scroll_to_alerts: bool,
     /// Whether the window is showing its frosted background right now.
     blurred: bool,
+    /// The macOS glass behind the window, if any.
+    glass: Option<crate::appearance::Glass>,
 }
 
 impl TideGaugeView {
@@ -210,6 +212,17 @@ impl TideGaugeView {
         if self.blurred != alphas.is_see_through() {
             self.blurred = alphas.is_see_through();
             window.set_background_appearance(crate::appearance::background(self.blurred));
+        }
+        let glass = match mode {
+            crate::settings::Transparency::Off => None,
+            crate::settings::Transparency::Sidebar => Some(crate::appearance::Glass::Sidebar),
+            crate::settings::Transparency::Window | crate::settings::Transparency::Everything => {
+                Some(crate::appearance::Glass::Window)
+            }
+        };
+        if self.glass != glass {
+            self.glass = glass;
+            crate::appearance::set_glass(window, glass);
         }
     }
 
@@ -319,6 +332,7 @@ impl TideGaugeView {
             section_anchors: crate::settings_page::section_anchors(&settings_scroll),
             scroll_to_alerts: false,
             blurred: false,
+            glass: None,
         };
         // Brought forward after sitting hidden or behind other windows: macOS
         // stops drawing such a window, so what it last showed (nothing at all

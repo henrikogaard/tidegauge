@@ -6,6 +6,24 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Added
+
+- Settings → Look → Theme: five colour themes, each with a light and a dark
+  version: Graphite (the original look), Ocean, Sand, Forest and High
+  contrast. Every theme keeps text at 7:1 contrast and dim text at 4.5:1.
+- Transparency has a fourth choice, **Everything**: cards turn see-through
+  too, while text, charts and lines stay solid. On a see-through dark window,
+  grey secondary text brightens just enough to keep 4.5:1 over the glass, in
+  every mode and in the menu-bar panel.
+
+### Fixed
+
+- Transparency looks like a Mac app again. The see-through window and
+  menu-bar panel use macOS's own frosted glass, which follows Light and Dark,
+  and keep most of their own colour at any amount, so a dark window no
+  longer washes out to grey over a light desktop. The sidebar is a little
+  clearer than the rest, as in Finder, and cards stay all but solid.
+
 ### Fixed
 
 - Settings choices, switches and buttons now work with VoiceOver, Voice

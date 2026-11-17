@@ -34,6 +34,8 @@ const SAME_IN_BOTH: &[&str] = &[
     "English", "Norsk",
     // A network port number: "port 8765" in both languages.
     "port",
+    // The colour theme: sand is the same word in Norwegian.
+    "Sand",
 ];
 
 /// One English string may map to several Norwegian strings only here, each

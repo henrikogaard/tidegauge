@@ -307,15 +307,14 @@ pub fn toggle_popover(cx: &mut gpui_kit::App) {
             display_id: Some(DisplayId::from(anchor.display)),
             // Frosted when see-through; the panel has no frame of its own, so
             // its corners are clipped to match its rounded body.
-            window_background: if see_through {
-                WindowBackgroundAppearance::Blurred
-            } else {
-                WindowBackgroundAppearance::Transparent
-            },
+            window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
         |window, cx| {
+            // The panel follows Light and Dark from Settings, like the window.
+            crate::appearance::apply(window, Settings::load().dark);
             if see_through {
+                crate::appearance::set_glass(window, Some(crate::appearance::Glass::Popover));
                 crate::appearance::round_corners(window, f32::from(crate::theme::RADIUS_CARD) as f64);
             }
             cx.new(|cx| crate::menu_panel::MenuPanel::new(window, cx, main, layout))

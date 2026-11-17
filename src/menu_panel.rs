@@ -320,6 +320,8 @@ impl Render for MenuPanel {
         ));
         let settings = crate::settings::Settings::load();
         let alphas = t::panel_alphas(see_through(&settings), settings.transparency_amount);
+        // Secondary text in the panel stays readable over its own glass.
+        t::set_text_backing(alphas);
         let ground = t::faded(t::bg(dark), alphas.bg);
         let fill = t::faded(t::card(dark), alphas.card);
         let s = &self.snap;

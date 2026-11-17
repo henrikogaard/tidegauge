@@ -21,6 +21,26 @@ pub enum Transparency {
     Sidebar,
     /// The window's ground and sidebar; cards stay mostly opaque.
     Window,
+    /// Everything, cards included; only text, charts and lines stay solid.
+    Everything,
+}
+
+/// The colour theme of the dashboard and the menu-bar panel, each in a light
+/// and a dark version (Settings → Look → Theme).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Neutral greys, as Tidegauge has always looked.
+    #[default]
+    Graphite,
+    /// Cool blue-slate.
+    Ocean,
+    /// Warm paper and espresso.
+    Sand,
+    /// Soft green.
+    Forest,
+    /// Black and white with strong lines, for the most legible text.
+    Contrast,
 }
 
 /// Where metric colours come from (Settings → Colors). The transform lives in
@@ -55,6 +75,7 @@ pub enum ChartStyle {
 pub struct Settings {
     pub dark: Option<bool>, // None = follow system
     pub colors: ColorMode,
+    pub theme: Theme,
     pub charts: ChartStyle,
     pub show_app_icon: bool,
     /// Menu-bar readings in each metric's accent colours, turning orange and
@@ -179,6 +200,7 @@ impl Default for Settings {
         Settings {
             dark: None,
             colors: ColorMode::default(),
+            theme: Theme::default(),
             charts: ChartStyle::default(),
             show_app_icon: true,
             menu_colored: false,
@@ -990,6 +1012,10 @@ mod tests {
         let loaded: Settings = serde_json::from_slice(&serde_json::to_vec(&new).unwrap()).unwrap();
         assert!(loaded.menu_colored);
         assert!(loaded.menu_by_load);
+        assert_eq!(old.theme, Theme::Graphite, "old files keep the original look");
+        let themed = Settings { theme: Theme::Sand, transparency: Transparency::Everything, ..Settings::default() };
+        let back: Settings = serde_json::from_slice(&serde_json::to_vec(&themed).unwrap()).unwrap();
+        assert_eq!((back.theme, back.transparency), (Theme::Sand, Transparency::Everything));
         assert_eq!(loaded.colors, ColorMode::Colorblind);
         // A style a later version wrote still loads; the menu bar draws it as a value.
         let future: Settings =
