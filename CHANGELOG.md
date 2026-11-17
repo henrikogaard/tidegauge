@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.11.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.11.0) — 2026-11-17
+
 ### Added
 
 - Settings → Look → Theme: five colour themes, each with a light and a dark
