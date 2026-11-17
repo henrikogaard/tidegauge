@@ -8,6 +8,14 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ### Fixed
 
+- Transparency looks like a Mac app again. The see-through window and
+  menu-bar panel use macOS's own frosted glass, which follows Light and Dark,
+  and keep most of their own colour at any amount, so a dark window no
+  longer washes out to grey over a light desktop. The sidebar is a little
+  clearer than the rest, as in Finder, and cards stay all but solid.
+
+### Fixed
+
 - Settings choices, switches and buttons now work with VoiceOver, Voice
   Control and other accessibility tools. Pressing one that was scrolled out
   of view did nothing before; now it always runs, and never lands on

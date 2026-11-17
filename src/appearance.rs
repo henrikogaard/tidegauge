@@ -41,13 +41,81 @@ pub fn reduce_transparency() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
 }
 
-/// The window background that goes with `see_through`: frosted glass, or plain.
+/// The window background that goes with `see_through`. A see-through window
+/// is transparent to GPUI, and macOS's own frosted glass (`set_glass`) sits
+/// behind its content; GPUI's built-in blur strips the glass of its tint, so a
+/// dark window over a light desktop turned muddy grey.
 pub fn background(see_through: bool) -> WindowBackgroundAppearance {
     if see_through {
-        WindowBackgroundAppearance::Blurred
+        WindowBackgroundAppearance::Transparent
     } else {
         WindowBackgroundAppearance::Opaque
     }
+}
+
+/// Which macOS glass sits behind a see-through window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Glass {
+    /// The window's own ground, as behind a Finder window.
+    Window,
+    /// The sidebar material, for "Sidebar only".
+    Sidebar,
+    /// The menu-bar panel, like other menu-bar popovers.
+    Popover,
+}
+
+/// The identifier of the glass view Tidegauge adds, so it is found again.
+const GLASS_ID: &str = "no.ogard.tidegauge.glass";
+
+/// Put macOS's frosted glass behind the window's content, or take it away
+/// with `None`. The glass follows the window's appearance, so Light and Dark
+/// in Settings tint it too.
+pub fn set_glass(window: &Window, glass: Option<Glass>) {
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+        NSUserInterfaceItemIdentification, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
+    };
+    use objc2_foundation::NSString;
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return };
+    // The borrowed GPUI window owns this AppKit view for the duration of this call.
+    let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+    let Some(native_window) = view.window() else { return };
+    let Some(content) = native_window.contentView() else { return };
+    let id = NSString::from_str(GLASS_ID);
+    let existing = content
+        .subviews()
+        .iter()
+        .find(|sub| sub.identifier().is_some_and(|ident| *ident == *id));
+    let Some(glass) = glass else {
+        if let Some(existing) = existing {
+            existing.removeFromSuperview();
+        }
+        return;
+    };
+    let material = match glass {
+        Glass::Window => NSVisualEffectMaterial::UnderWindowBackground,
+        Glass::Sidebar => NSVisualEffectMaterial::Sidebar,
+        Glass::Popover => NSVisualEffectMaterial::Popover,
+    };
+    if let Some(existing) = existing {
+        if let Some(effect) = existing.downcast_ref::<NSVisualEffectView>() {
+            if effect.material() != material {
+                effect.setMaterial(material);
+            }
+        }
+        return;
+    }
+    let effect = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(content.mtm()), content.bounds());
+    effect.setMaterial(material);
+    effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+    effect.setState(NSVisualEffectState::Active);
+    effect.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    effect.setIdentifier(Some(&id));
+    content.addSubview_positioned_relativeTo(&effect, NSWindowOrderingMode::Below, None);
 }
 
 /// Clip the window's content, blur included, to rounded corners. The menu-bar

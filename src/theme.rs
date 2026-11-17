@@ -57,7 +57,10 @@ pub fn bg(dark: bool) -> Hsla {
 }
 /// Sidebar ground: one step off `bg` so the navigation reads as chrome.
 pub fn sidebar(dark: bool) -> Hsla {
-    hex(if dark { 0x1b1b1e } else { 0xececef })
+    hex(sidebar_rgb(dark))
+}
+fn sidebar_rgb(dark: bool) -> u32 {
+    if dark { 0x1b1b1e } else { 0xececef }
 }
 // ---------- Transparency ----------
 //
@@ -65,10 +68,16 @@ pub fn sidebar(dark: bool) -> Hsla {
 // background layers fade; text, charts and borders stay fully opaque. The
 // alpha math lives here, so the views only ask for a surface colour.
 
-/// Least alpha of the window ground and sidebar, at full amount.
-pub const MIN_GROUND_ALPHA: f32 = 0.15;
-/// Least alpha of a card, at full amount: cards carry the numbers.
-pub const MIN_CARD_ALPHA: f32 = 0.70;
+/// Least alpha of the window ground, at full amount. The ground keeps most of
+/// its own colour, so the glass shows as a hint: macOS's glass is light and
+/// clear, and a thinner ground let it wash a dark window out to grey.
+pub const MIN_GROUND_ALPHA: f32 = 0.78;
+/// Least alpha of the sidebar, at full amount: a little more see-through than
+/// the ground, as in Finder, and still dark enough for its labels.
+pub const MIN_SIDEBAR_ALPHA: f32 = 0.70;
+/// Least alpha of a card, at full amount: cards carry the numbers, so they
+/// stay all but solid.
+pub const MIN_CARD_ALPHA: f32 = 0.92;
 
 /// The alpha of each background surface, 1 for opaque.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,12 +120,12 @@ pub fn window_alphas(mode: crate::settings::Transparency, amount_percent: f64) -
     match mode {
         Transparency::Off => Alphas::OPAQUE,
         Transparency::Sidebar => Alphas {
-            sidebar: fade(amount, MIN_GROUND_ALPHA),
+            sidebar: fade(amount, MIN_SIDEBAR_ALPHA),
             ..Alphas::OPAQUE
         },
         Transparency::Window => Alphas {
             bg: fade(amount, MIN_GROUND_ALPHA),
-            sidebar: fade(amount, MIN_GROUND_ALPHA),
+            sidebar: fade(amount, MIN_SIDEBAR_ALPHA),
             card: fade(amount, MIN_CARD_ALPHA),
         },
     }
@@ -490,6 +499,7 @@ pub fn switch_on(dark: bool) -> Hsla {
 mod transparency_tests {
     use super::{
         faded, hex, panel_alphas, window_alphas, Alphas, LIGHT, MIN_CARD_ALPHA, MIN_GROUND_ALPHA,
+        MIN_SIDEBAR_ALPHA,
     };
     use crate::settings::Transparency::{Off, Sidebar, Window};
 
@@ -511,7 +521,7 @@ mod transparency_tests {
     #[test]
     fn sidebar_only_fades_the_sidebar_alone() {
         let a = window_alphas(Sidebar, 40.);
-        assert!(close(a.sidebar, 1. - 0.4 * (1. - MIN_GROUND_ALPHA)));
+        assert!(close(a.sidebar, 1. - 0.4 * (1. - MIN_SIDEBAR_ALPHA)));
         assert_eq!((a.bg, a.card), (1., 1.));
         assert!(a.is_see_through());
     }
@@ -520,9 +530,9 @@ mod transparency_tests {
     fn whole_window_fades_the_ground_more_than_cards() {
         let a = window_alphas(Window, 40.);
         assert!(close(a.bg, 1. - 0.4 * (1. - MIN_GROUND_ALPHA)));
-        assert!(close(a.sidebar, a.bg));
+        assert!(close(a.sidebar, 1. - 0.4 * (1. - MIN_SIDEBAR_ALPHA)));
         assert!(close(a.card, 1. - 0.4 * (1. - MIN_CARD_ALPHA)));
-        assert!(a.card > a.bg);
+        assert!(a.card > a.bg && a.bg > a.sidebar, "sidebar clearest, cards near solid");
     }
 
     #[test]
@@ -530,16 +540,34 @@ mod transparency_tests {
         for amount in [100., 250., f64::INFINITY] {
             let a = window_alphas(Window, amount);
             assert!(close(a.bg, MIN_GROUND_ALPHA), "ground {amount}");
-            assert!(close(a.sidebar, MIN_GROUND_ALPHA));
+            assert!(close(a.sidebar, MIN_SIDEBAR_ALPHA));
             assert!(close(a.card, MIN_CARD_ALPHA));
             assert!(close(
                 window_alphas(Sidebar, amount).sidebar,
-                MIN_GROUND_ALPHA
+                MIN_SIDEBAR_ALPHA
             ));
         }
         for amount in [0., -30., f64::NAN] {
             assert_eq!(window_alphas(Window, amount), Alphas::OPAQUE, "{amount}");
         }
+    }
+
+    #[test]
+    fn the_ground_keeps_most_of_its_colour_even_at_full_amount() {
+        // macOS's glass is light and clear; a thin ground let a light desktop
+        // wash a dark window out to grey. Over pure white, the dark ground at
+        // full amount must stay well below mid-grey.
+        // Lightness 0–1 of an sRGB colour, the mean of its channels: enough
+        // for these near-greys.
+        let lightness = |rgb: u32| {
+            [16, 8, 0].iter().map(|shift| f32::from(((rgb >> shift) & 0xff) as u8)).sum::<f32>() / (3. * 255.)
+        };
+        let over_white = |rgb: u32, alpha: f32| lightness(rgb) * alpha + (1. - alpha);
+        let ground = over_white(super::DARK.bg, MIN_GROUND_ALPHA);
+        assert!(ground < 0.3, "dark ground over white reads {ground}");
+        let sidebar = over_white(super::sidebar_rgb(true), MIN_SIDEBAR_ALPHA);
+        assert!(sidebar < 0.4, "dark sidebar over white reads {sidebar}");
+        assert!(MIN_CARD_ALPHA >= 0.9, "cards stay all but solid");
     }
 
     #[test]
