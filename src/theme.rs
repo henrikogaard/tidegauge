@@ -173,9 +173,12 @@ pub const MIN_SIDEBAR_ALPHA: f32 = 0.70;
 pub const MIN_CARD_ALPHA: f32 = 0.92;
 /// "Everything": the least alpha of the ground, sidebar and cards at full
 /// amount. Cards fade with the rest; text, charts and lines stay solid. This
-/// is the clearest mode, so its floors only promise readable text over
-/// anything up to mid-grey behind the window (the other modes promise it over
-/// white); secondary text brightens to the main text colour as it clears.
+/// is the clearest mode, so its floors only promise readable text when what
+/// is behind the window is near mid-grey: a dark theme over a very light
+/// desktop, or a light theme over a very dark one, loses contrast at the top
+/// of the slider (the other modes promise readable text over white behind a
+/// dark theme and black behind a light one). Secondary text moves towards
+/// the main text colour as the window clears.
 pub const MIN_EVERYTHING_GROUND_ALPHA: f32 = 0.30;
 pub const MIN_EVERYTHING_SIDEBAR_ALPHA: f32 = 0.30;
 pub const MIN_EVERYTHING_CARD_ALPHA: f32 = 0.40;
