@@ -431,6 +431,28 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
             )
         }),
     );
+    let themes = segment_group("theme-options", l("Theme", "Tema"), dark).children(
+        [
+            (crate::settings::Theme::Graphite, l("Graphite", "Grafitt")),
+            (crate::settings::Theme::Ocean, l("Ocean", "Hav")),
+            (crate::settings::Theme::Sand, l("Sand", "Sand")),
+            (crate::settings::Theme::Forest, l("Forest", "Skog")),
+            (crate::settings::Theme::Contrast, l("High contrast", "Høy kontrast")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (value, label))| {
+            choice(
+                format!("theme-{i}"),
+                label,
+                format!("{}: {label}", l("Theme", "Tema")),
+                settings.theme == value,
+                dark,
+                this.clone(),
+                move |settings| settings.theme = value,
+            )
+        }),
+    );
     let charts = segment_group("chart-options", l("Charts", "Diagrammer"), dark).children(
         [
             (ChartStyle::Line, l("Line", "Linje")),
@@ -514,6 +536,13 @@ fn general(view: &TideGaugeView, settings: &Settings, dark: bool, this: Entity<T
     let look = plain_group(
         vec![
             row(l("Appearance", "Utseende"), None, appearance, true, dark),
+            row(
+                l("Theme", "Tema"),
+                Some(l("Each theme has a light and a dark version.", "Hvert tema har en lys og en mørk versjon.").into()),
+                themes,
+                false,
+                dark,
+            ),
             row(l("Colors", "Farger"), None, colors, false, dark),
             row(l("Charts", "Diagrammer"), None, charts, false, dark),
         ],
@@ -569,6 +598,7 @@ fn transparency(view: &TideGaugeView, settings: &Settings, dark: bool, this: Ent
             (Transparency::Off, l("Off", "Av")),
             (Transparency::Sidebar, l("Sidebar only", "Bare sidefeltet")),
             (Transparency::Window, l("Whole window", "Hele vinduet")),
+            (Transparency::Everything, l("Everything", "Alt")),
         ]
         .into_iter()
         .enumerate()

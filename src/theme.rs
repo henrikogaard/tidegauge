@@ -2,12 +2,14 @@
 
 #![allow(dead_code)]
 
-use crate::settings::{ChartStyle, ColorMode, Settings};
+use crate::settings::{ChartStyle, ColorMode, Settings, Theme};
 use gpui_kit::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub bg: u32,
+    /// Sidebar ground: one step off `bg` so the navigation reads as chrome.
+    pub sidebar: u32,
     pub card: u32,
     pub card_hi: u32,
     pub ink: u32,
@@ -16,51 +18,132 @@ pub struct Palette {
     pub accent: u32,
 }
 
+/// Graphite, light: Tidegauge's original look.
 pub const LIGHT: Palette = Palette {
     bg: 0xf5f5f7,
+    sidebar: 0xececef,
     card: 0xffffff,
     card_hi: 0xededf0,
     ink: 0x1d1d1f,
-    ink_dim: 0x6e6e73,
+    // A shade darker than macOS's secondary label, so dim text keeps 4.5:1
+    // on the sidebar too.
+    ink_dim: 0x67676c,
     line: 0xd2d2d7,
     accent: 0x1d1d1f,
 };
 
+/// Graphite, dark.
 pub const DARK: Palette = Palette {
     bg: 0x161618,
+    sidebar: 0x1b1b1e,
     card: 0x1e1e20,
     card_hi: 0x2c2c2e,
     ink: 0xe5e5ea,
-    ink_dim: 0x8e8e93,
+    // A shade lighter than macOS's secondary label, so dim text keeps 4.5:1
+    // on a hovered row too.
+    ink_dim: 0x98989d,
     line: 0x38383a,
     accent: 0xf5f5f7,
 };
+
+/// The palette of `theme` in light or dark.
+pub fn theme_palette(theme: Theme, dark: bool) -> Palette {
+    let p = |bg, sidebar, card, card_hi, ink, ink_dim, line, accent| Palette {
+        bg, sidebar, card, card_hi, ink, ink_dim, line, accent,
+    };
+    match (theme, dark) {
+        (Theme::Graphite, false) => LIGHT,
+        (Theme::Graphite, true) => DARK,
+        (Theme::Ocean, false) => p(0xf2f5f9, 0xe7edf4, 0xffffff, 0xe6ecf3, 0x15202b, 0x56667a, 0xcfd8e3, 0x15202b),
+        (Theme::Ocean, true) => p(0x0f1620, 0x131c27, 0x16202c, 0x22303f, 0xe3eaf2, 0x8fa0b2, 0x2b3a4b, 0xf0f5fa),
+        (Theme::Sand, false) => p(0xf7f3ec, 0xefe9df, 0xfffdf9, 0xefe8dc, 0x2a2118, 0x6f6252, 0xddd2c2, 0x2a2118),
+        (Theme::Sand, true) => p(0x1a1612, 0x1f1a15, 0x231e18, 0x302921, 0xede4d8, 0xa39684, 0x3d342a, 0xf7efe4),
+        (Theme::Forest, false) => p(0xf1f5f1, 0xe6eee6, 0xffffff, 0xe4ece4, 0x17221a, 0x58685b, 0xcdd9ce, 0x17221a),
+        (Theme::Forest, true) => p(0x101611, 0x141b15, 0x172019, 0x233025, 0xe2ece3, 0x8d9d8f, 0x2c3a2e, 0xeff6f0),
+        (Theme::Contrast, false) => p(0xffffff, 0xf2f2f2, 0xffffff, 0xe6e6e6, 0x000000, 0x333333, 0x767676, 0x000000),
+        (Theme::Contrast, true) => p(0x000000, 0x0a0a0a, 0x0d0d0d, 0x262626, 0xffffff, 0xcccccc, 0x8c8c8c, 0xffffff),
+    }
+}
+
+/// The palette in use: the theme chosen in Settings, light or dark.
+fn palette(dark: bool) -> Palette {
+    theme_palette(look().theme, dark)
+}
 
 pub fn hex(c: u32) -> Hsla {
     gpui_kit::rgb(c).into()
 }
 
 pub fn ink(dark: bool) -> Hsla {
-    hex(if dark { DARK.ink } else { LIGHT.ink })
+    hex(palette(dark).ink)
 }
+/// Secondary text. On a see-through dark window it brightens just enough to
+/// keep 4.5:1 over the glass behind it (see `readable_dim`).
 pub fn ink_dim(dark: bool) -> Hsla {
-    hex(if dark { DARK.ink_dim } else { LIGHT.ink_dim })
+    hex(readable_dim(palette(dark), text_backing()))
+}
+
+/// WCAG relative luminance of an sRGB colour.
+fn luminance(rgb: u32) -> f64 {
+    let channel = |shift: u32| {
+        let c = f64::from((rgb >> shift) & 0xff) / 255.;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+}
+
+fn contrast(a: u32, b: u32) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// `a` moved towards `b` by `t` (0–1), per sRGB channel.
+fn mix(a: u32, b: u32, t: f64) -> u32 {
+    [16u32, 8, 0].iter().fold(0, |out, shift| {
+        let (x, y) = (f64::from((a >> shift) & 0xff), f64::from((b >> shift) & 0xff));
+        out | (((x + (y - x) * t).round() as u32) << shift)
+    })
+}
+
+/// `rgb` at `alpha` over white: how a surface shows over macOS's light glass,
+/// the worst case for light text.
+fn over_white(rgb: u32, alpha: f32) -> u32 {
+    mix(0xffffff, rgb, f64::from(alpha))
+}
+
+/// The secondary text colour for `p` on surfaces faded to `a`. A dark theme's
+/// dim text is moved towards its main text only as far as needed for 4.5:1
+/// on the ground, sidebar and cards over white glass; opaque surfaces and
+/// light themes keep the palette's own dim text.
+pub(crate) fn readable_dim(p: Palette, a: Alphas) -> u32 {
+    if luminance(p.bg) >= 0.2 || a == Alphas::OPAQUE {
+        return p.ink_dim;
+    }
+    let surfaces = [over_white(p.bg, a.bg), over_white(p.sidebar, a.sidebar), over_white(p.card, a.card)];
+    let readable = |text: u32| surfaces.iter().all(|s| contrast(text, *s) >= 4.5);
+    if readable(p.ink_dim) {
+        return p.ink_dim;
+    }
+    // Smallest step towards the main text that reads; at worst the main text.
+    let (mut low, mut high) = (0., 1.);
+    for _ in 0..16 {
+        let mid = (low + high) / 2.;
+        if readable(mix(p.ink_dim, p.ink, mid)) { high = mid } else { low = mid }
+    }
+    mix(p.ink_dim, p.ink, high)
 }
 pub fn card(dark: bool) -> Hsla {
-    hex(if dark { DARK.card } else { LIGHT.card })
+    hex(palette(dark).card)
 }
 pub fn card_hi(dark: bool) -> Hsla {
-    hex(if dark { DARK.card_hi } else { LIGHT.card_hi })
+    hex(palette(dark).card_hi)
 }
 pub fn bg(dark: bool) -> Hsla {
-    hex(if dark { DARK.bg } else { LIGHT.bg })
+    hex(palette(dark).bg)
 }
 /// Sidebar ground: one step off `bg` so the navigation reads as chrome.
 pub fn sidebar(dark: bool) -> Hsla {
-    hex(sidebar_rgb(dark))
-}
-fn sidebar_rgb(dark: bool) -> u32 {
-    if dark { 0x1b1b1e } else { 0xececef }
+    hex(palette(dark).sidebar)
 }
 // ---------- Transparency ----------
 //
@@ -78,6 +161,14 @@ pub const MIN_SIDEBAR_ALPHA: f32 = 0.70;
 /// Least alpha of a card, at full amount: cards carry the numbers, so they
 /// stay all but solid.
 pub const MIN_CARD_ALPHA: f32 = 0.92;
+/// "Everything": the least alpha of the ground, sidebar and cards at full
+/// amount. Cards fade with the rest; text, charts and lines stay solid. The
+/// floors are as low as dark text-on-glass allows: macOS's glass is light,
+/// and below about two thirds of a dark surface, white text over it drops
+/// under 4.5:1.
+pub const MIN_EVERYTHING_GROUND_ALPHA: f32 = 0.66;
+pub const MIN_EVERYTHING_SIDEBAR_ALPHA: f32 = 0.68;
+pub const MIN_EVERYTHING_CARD_ALPHA: f32 = 0.70;
 
 /// The alpha of each background surface, 1 for opaque.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -128,6 +219,11 @@ pub fn window_alphas(mode: crate::settings::Transparency, amount_percent: f64) -
             sidebar: fade(amount, MIN_SIDEBAR_ALPHA),
             card: fade(amount, MIN_CARD_ALPHA),
         },
+        Transparency::Everything => Alphas {
+            bg: fade(amount, MIN_EVERYTHING_GROUND_ALPHA),
+            sidebar: fade(amount, MIN_EVERYTHING_SIDEBAR_ALPHA),
+            card: fade(amount, MIN_EVERYTHING_CARD_ALPHA),
+        },
     }
 }
 
@@ -156,6 +252,19 @@ static WINDOW_ALPHAS: std::sync::RwLock<Alphas> = std::sync::RwLock::new(Alphas:
 
 pub fn set_window_alphas(alphas: Alphas) {
     *WINDOW_ALPHAS.write().unwrap() = alphas;
+    set_text_backing(alphas);
+}
+
+/// The surfaces the window being drawn puts its text on: the dashboard's or
+/// the menu-bar panel's. Each window sets it at the start of its render.
+static TEXT_BACKING: std::sync::RwLock<Alphas> = std::sync::RwLock::new(Alphas::OPAQUE);
+
+pub fn set_text_backing(alphas: Alphas) {
+    *TEXT_BACKING.write().unwrap() = alphas;
+}
+
+fn text_backing() -> Alphas {
+    *TEXT_BACKING.read().unwrap()
 }
 
 fn window_alphas_now() -> Alphas {
@@ -175,11 +284,11 @@ pub fn window_card(dark: bool) -> Hsla {
 }
 
 pub fn line(dark: bool) -> Hsla {
-    hex(if dark { DARK.line } else { LIGHT.line })
+    hex(palette(dark).line)
 }
 
 pub fn accent(dark: bool) -> Hsla {
-    hex(if dark { DARK.accent } else { LIGHT.accent })
+    hex(palette(dark).accent)
 }
 
 /// Foreground for a neutral filled identity tile.
@@ -294,6 +403,7 @@ impl Metric {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Look {
     pub colors: ColorMode,
+    pub theme: Theme,
     pub charts: ChartStyle,
     /// The macOS accent colour as 0xRRGGBB, as last read.
     pub system_accent: u32,
@@ -305,6 +415,7 @@ const FALLBACK_ACCENT: u32 = 0x007aff;
 impl Look {
     pub const DEFAULT: Look = Look {
         colors: ColorMode::Tidegauge,
+        theme: Theme::Graphite,
         charts: ChartStyle::Filled,
         system_accent: FALLBACK_ACCENT,
     };
@@ -346,6 +457,7 @@ pub fn sync(settings: &Settings) {
         .flatten();
     let mut look = LOOK.lock().unwrap_or_else(|e| e.into_inner());
     look.colors = settings.colors;
+    look.theme = settings.theme;
     look.charts = settings.charts;
     if let Some(system) = system {
         look.system_accent = system;
@@ -496,6 +608,56 @@ pub fn switch_on(dark: bool) -> Hsla {
 }
 
 #[cfg(test)]
+mod theme_tests {
+    use super::{theme_palette, DARK, LIGHT};
+    use crate::settings::Theme;
+
+    const ALL: [Theme; 5] = [Theme::Graphite, Theme::Ocean, Theme::Sand, Theme::Forest, Theme::Contrast];
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(rgb: u32) -> f64 {
+        let channel = |shift: u32| {
+            let c = f64::from((rgb >> shift) & 0xff) / 255.;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    fn contrast(a: u32, b: u32) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn every_theme_keeps_text_readable_in_light_and_dark() {
+        for theme in ALL {
+            for dark in [false, true] {
+                let p = theme_palette(theme, dark);
+                for (surface, name) in [(p.card, "card"), (p.bg, "ground"), (p.sidebar, "sidebar"), (p.card_hi, "raised")] {
+                    assert!(contrast(p.ink, surface) >= 7., "{theme:?} dark={dark}: text on {name} {:.1}", contrast(p.ink, surface));
+                    assert!(contrast(p.ink_dim, surface) >= 4.5, "{theme:?} dark={dark}: dim text on {name} {:.1}", contrast(p.ink_dim, surface));
+                }
+                // Dark themes are dark and light ones light, whatever their hue.
+                assert_eq!(luminance(p.bg) < 0.2, dark, "{theme:?} dark={dark}");
+                assert_ne!(p.card, p.card_hi, "{theme:?}: hover must show");
+            }
+        }
+    }
+
+    #[test]
+    fn graphite_is_the_original_look_and_themes_differ() {
+        assert_eq!(theme_palette(Theme::Graphite, false), LIGHT);
+        assert_eq!(theme_palette(Theme::Graphite, true), DARK);
+        for dark in [false, true] {
+            let grounds: Vec<u32> = ALL.iter().map(|t| theme_palette(*t, dark).bg).collect();
+            let mut unique = grounds.clone();
+            unique.dedup();
+            assert_eq!(unique.len(), grounds.len(), "dark={dark}: every theme has its own ground");
+        }
+    }
+}
+
+#[cfg(test)]
 mod transparency_tests {
     use super::{
         faded, hex, panel_alphas, window_alphas, Alphas, LIGHT, MIN_CARD_ALPHA, MIN_GROUND_ALPHA,
@@ -565,9 +727,45 @@ mod transparency_tests {
         let over_white = |rgb: u32, alpha: f32| lightness(rgb) * alpha + (1. - alpha);
         let ground = over_white(super::DARK.bg, MIN_GROUND_ALPHA);
         assert!(ground < 0.3, "dark ground over white reads {ground}");
-        let sidebar = over_white(super::sidebar_rgb(true), MIN_SIDEBAR_ALPHA);
+        let sidebar = over_white(super::DARK.sidebar, MIN_SIDEBAR_ALPHA);
         assert!(sidebar < 0.4, "dark sidebar over white reads {sidebar}");
         assert!(MIN_CARD_ALPHA >= 0.9, "cards stay all but solid");
+    }
+
+    #[test]
+    fn everything_fades_the_cards_too() {
+        use super::{MIN_EVERYTHING_CARD_ALPHA, MIN_EVERYTHING_GROUND_ALPHA, MIN_EVERYTHING_SIDEBAR_ALPHA};
+        let all = window_alphas(crate::settings::Transparency::Everything, 100.);
+        let window = window_alphas(Window, 100.);
+        assert!(close(all.bg, MIN_EVERYTHING_GROUND_ALPHA));
+        assert!(close(all.sidebar, MIN_EVERYTHING_SIDEBAR_ALPHA));
+        assert!(close(all.card, MIN_EVERYTHING_CARD_ALPHA));
+        assert!(all.card < window.card && all.bg < window.bg && all.sidebar < window.sidebar, "clearer than Whole window everywhere");
+        assert!(all.card > all.bg || close(all.card, all.bg), "cards never fall below the ground");
+        // Every dark theme's main and secondary text keeps 4.5:1 over white
+        // glass, on every surface, at every amount, in every see-through mode
+        // and in the menu-bar panel.
+        use super::{contrast, over_white, readable_dim, theme_palette};
+        use crate::settings::{Theme, Transparency};
+        for theme in [Theme::Graphite, Theme::Ocean, Theme::Sand, Theme::Forest, Theme::Contrast] {
+            let p = theme_palette(theme, true);
+            for amount in (0..=100).step_by(10).map(f64::from) {
+                let modes = [Transparency::Sidebar, Transparency::Window, Transparency::Everything]
+                    .map(|mode| window_alphas(mode, amount));
+                for a in modes.into_iter().chain([panel_alphas(true, amount)]) {
+                    let dim = readable_dim(p, a);
+                    for (surface, alpha) in [(p.bg, a.bg), (p.sidebar, a.sidebar), (p.card, a.card)] {
+                        let shown = over_white(surface, alpha);
+                        assert!(contrast(p.ink, shown) >= 4.5, "{theme:?} {amount}%: text {:.2}", contrast(p.ink, shown));
+                        assert!(contrast(dim, shown) >= 4.5, "{theme:?} {amount}%: dim {:.2}", contrast(dim, shown));
+                    }
+                }
+            }
+            assert_eq!(readable_dim(p, Alphas::OPAQUE), p.ink_dim, "{theme:?}: solid windows keep their dim text");
+            let light = theme_palette(theme, false);
+            assert_eq!(readable_dim(light, window_alphas(Transparency::Everything, 100.)), light.ink_dim);
+        }
+        assert_eq!(window_alphas(crate::settings::Transparency::Everything, 0.), Alphas::OPAQUE);
     }
 
     #[test]
@@ -748,6 +946,7 @@ mod look_tests {
     fn look(colors: ColorMode, system_accent: u32) -> Look {
         Look {
             colors,
+            theme: crate::settings::Theme::Graphite,
             charts: ChartStyle::Filled,
             system_accent,
         }

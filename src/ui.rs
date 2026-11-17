@@ -216,7 +216,9 @@ impl TideGaugeView {
         let glass = match mode {
             crate::settings::Transparency::Off => None,
             crate::settings::Transparency::Sidebar => Some(crate::appearance::Glass::Sidebar),
-            crate::settings::Transparency::Window => Some(crate::appearance::Glass::Window),
+            crate::settings::Transparency::Window | crate::settings::Transparency::Everything => {
+                Some(crate::appearance::Glass::Window)
+            }
         };
         if self.glass != glass {
             self.glass = glass;
