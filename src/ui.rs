@@ -204,7 +204,7 @@ pub struct TideGaugeView {
 impl TideGaugeView {
     /// Fade the window's surfaces by the transparency setting and switch the
     /// window between frosted glass and plain as needed.
-    fn sync_transparency(&mut self, window: &mut Window) {
+    fn sync_transparency(&mut self, window: &mut Window, cx: &mut App) {
         let settings = crate::settings::Settings::load();
         let mode = settings.window_transparency(crate::appearance::reduce_transparency());
         let alphas = t::window_alphas(mode, settings.transparency_amount);
@@ -212,6 +212,7 @@ impl TideGaugeView {
         if self.blurred != alphas.is_see_through() {
             self.blurred = alphas.is_see_through();
             window.set_background_appearance(crate::appearance::background(self.blurred));
+            crate::appearance::clear_root_background(window, cx, self.blurred);
         }
         let glass = match mode {
             crate::settings::Transparency::Off => None,
@@ -1818,7 +1819,7 @@ impl Render for TideGaugeView {
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
         let dark = self.dark;
-        self.sync_transparency(window);
+        self.sync_transparency(window, cx);
         self.sliders.sync(self.snap.audio.device_volume, self.snap.audio.input.volume, window, cx);
         if self.destination() == Destination::Tab(Tab::Sound) {
             let audio = &self.snap.audio;
