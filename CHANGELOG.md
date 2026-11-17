@@ -6,6 +6,13 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Fixed
+
+- Settings choices, switches and buttons now work with VoiceOver, Voice
+  Control and other accessibility tools. Pressing one that was scrolled out
+  of view did nothing before; now it always runs, and never lands on
+  whatever else sits at that spot.
+
 ## [0.10.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.10.0) — 2026-11-17
 
 ### Added
