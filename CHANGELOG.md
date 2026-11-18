@@ -6,6 +6,8 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+## [0.11.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.11.1) — 2026-11-18
+
 ### Fixed
 
 - Transparency now shows what is behind the window. The UI toolkit painted a
