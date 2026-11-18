@@ -6,6 +6,18 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Fixed
+
+- Transparency now shows what is behind the window. The UI toolkit painted a
+  solid background under the whole dashboard, so no transparency setting
+  ever let the desktop through; while a see-through mode is on, that
+  background is now cleared. **Everything** is much clearer (the ground keeps
+  30 % of its colour at full amount); grey secondary text adjusts in light
+  and dark themes. Sidebar only and Whole window keep text readable over any
+  desktop; Everything keeps it readable when the desktop behind is near
+  mid-grey, so with a dark theme over a very light desktop, or a light theme
+  over a very dark one, lower its amount.
+
 ## [0.11.0](https://github.com/henrikogaard/tidegauge/releases/tag/v0.11.0) — 2026-11-17
 
 ### Added

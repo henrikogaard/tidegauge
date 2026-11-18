@@ -77,8 +77,9 @@ pub fn hex(c: u32) -> Hsla {
 pub fn ink(dark: bool) -> Hsla {
     hex(palette(dark).ink)
 }
-/// Secondary text. On a see-through dark window it brightens just enough to
-/// keep 4.5:1 over the glass behind it (see `readable_dim`).
+/// Secondary text. On a see-through window it moves towards the main text
+/// just enough to keep 4.5:1 over what is assumed behind it (see
+/// `readable_dim`).
 pub fn ink_dim(dark: bool) -> Hsla {
     hex(readable_dim(palette(dark), text_backing()))
 }
@@ -105,21 +106,30 @@ fn mix(a: u32, b: u32, t: f64) -> u32 {
     })
 }
 
-/// `rgb` at `alpha` over white: how a surface shows over macOS's light glass,
-/// the worst case for light text.
-fn over_white(rgb: u32, alpha: f32) -> u32 {
-    mix(0xffffff, rgb, f64::from(alpha))
+/// What a see-through window is assumed to sit on when its secondary text is
+/// made readable: the worst case for the theme (white behind a dark theme,
+/// black behind a light one), or mid-grey once the ground is clearer than
+/// "Whole window" allows, as only "Everything" makes it.
+pub(crate) fn assumed_backdrop(p: Palette, a: Alphas) -> u32 {
+    if a.bg < MIN_GROUND_ALPHA - 1e-4 {
+        0x808080
+    } else if luminance(p.bg) < 0.2 {
+        0xffffff
+    } else {
+        0x000000
+    }
 }
 
-/// The secondary text colour for `p` on surfaces faded to `a`. A dark theme's
-/// dim text is moved towards its main text only as far as needed for 4.5:1
-/// on the ground, sidebar and cards over white glass; opaque surfaces and
-/// light themes keep the palette's own dim text.
+/// The secondary text colour for `p` on surfaces faded to `a`. Dim text is
+/// moved towards the main text only as far as needed for 4.5:1 on the
+/// ground, sidebar and cards over `assumed_backdrop`; opaque windows keep the
+/// palette's own dim text.
 pub(crate) fn readable_dim(p: Palette, a: Alphas) -> u32 {
-    if luminance(p.bg) >= 0.2 || a == Alphas::OPAQUE {
+    if a == Alphas::OPAQUE {
         return p.ink_dim;
     }
-    let surfaces = [over_white(p.bg, a.bg), over_white(p.sidebar, a.sidebar), over_white(p.card, a.card)];
+    let behind = assumed_backdrop(p, a);
+    let surfaces = [mix(behind, p.bg, f64::from(a.bg)), mix(behind, p.sidebar, f64::from(a.sidebar)), mix(behind, p.card, f64::from(a.card))];
     let readable = |text: u32| surfaces.iter().all(|s| contrast(text, *s) >= 4.5);
     if readable(p.ink_dim) {
         return p.ink_dim;
@@ -151,9 +161,9 @@ pub fn sidebar(dark: bool) -> Hsla {
 // background layers fade; text, charts and borders stay fully opaque. The
 // alpha math lives here, so the views only ask for a surface colour.
 
-/// Least alpha of the window ground, at full amount. The ground keeps most of
-/// its own colour, so the glass shows as a hint: macOS's glass is light and
-/// clear, and a thinner ground let it wash a dark window out to grey.
+/// Least alpha of the window ground, at full amount, for "Whole window". The
+/// ground keeps most of its own colour, so text stays readable even over a
+/// white desktop; "Everything" is the mode for a clearer window.
 pub const MIN_GROUND_ALPHA: f32 = 0.78;
 /// Least alpha of the sidebar, at full amount: a little more see-through than
 /// the ground, as in Finder, and still dark enough for its labels.
@@ -162,13 +172,16 @@ pub const MIN_SIDEBAR_ALPHA: f32 = 0.70;
 /// stay all but solid.
 pub const MIN_CARD_ALPHA: f32 = 0.92;
 /// "Everything": the least alpha of the ground, sidebar and cards at full
-/// amount. Cards fade with the rest; text, charts and lines stay solid. The
-/// floors are as low as dark text-on-glass allows: macOS's glass is light,
-/// and below about two thirds of a dark surface, white text over it drops
-/// under 4.5:1.
-pub const MIN_EVERYTHING_GROUND_ALPHA: f32 = 0.66;
-pub const MIN_EVERYTHING_SIDEBAR_ALPHA: f32 = 0.68;
-pub const MIN_EVERYTHING_CARD_ALPHA: f32 = 0.70;
+/// amount. Cards fade with the rest; text, charts and lines stay solid. This
+/// is the clearest mode, so its floors only promise readable text when what
+/// is behind the window is near mid-grey: a dark theme over a very light
+/// desktop, or a light theme over a very dark one, loses contrast at the top
+/// of the slider (the other modes promise readable text over white behind a
+/// dark theme and black behind a light one). Secondary text moves towards
+/// the main text colour as the window clears.
+pub const MIN_EVERYTHING_GROUND_ALPHA: f32 = 0.30;
+pub const MIN_EVERYTHING_SIDEBAR_ALPHA: f32 = 0.30;
+pub const MIN_EVERYTHING_CARD_ALPHA: f32 = 0.40;
 
 /// The alpha of each background surface, 1 for opaque.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -716,9 +729,8 @@ mod transparency_tests {
 
     #[test]
     fn the_ground_keeps_most_of_its_colour_even_at_full_amount() {
-        // macOS's glass is light and clear; a thin ground let a light desktop
-        // wash a dark window out to grey. Over pure white, the dark ground at
-        // full amount must stay well below mid-grey.
+        // "Whole window" promises readable text over any desktop: over pure
+        // white, the dark ground at full amount must stay well below mid-grey.
         // Lightness 0–1 of an sRGB colour, the mean of its channels: enough
         // for these near-greys.
         let lightness = |rgb: u32| {
@@ -742,28 +754,49 @@ mod transparency_tests {
         assert!(close(all.card, MIN_EVERYTHING_CARD_ALPHA));
         assert!(all.card < window.card && all.bg < window.bg && all.sidebar < window.sidebar, "clearer than Whole window everywhere");
         assert!(all.card > all.bg || close(all.card, all.bg), "cards never fall below the ground");
-        // Every dark theme's main and secondary text keeps 4.5:1 over white
-        // glass, on every surface, at every amount, in every see-through mode
-        // and in the menu-bar panel.
-        use super::{contrast, over_white, readable_dim, theme_palette};
+        // Every dark theme's main and secondary text keeps 4.5:1 on every
+        // surface at every amount: over white for Sidebar only, Whole window
+        // and the menu-bar panel, and over mid-grey for Everything.
+        use super::{contrast, readable_dim, theme_palette};
         use crate::settings::{Theme, Transparency};
         for theme in [Theme::Graphite, Theme::Ocean, Theme::Sand, Theme::Forest, Theme::Contrast] {
             let p = theme_palette(theme, true);
             for amount in (0..=100).step_by(10).map(f64::from) {
-                let modes = [Transparency::Sidebar, Transparency::Window, Transparency::Everything]
-                    .map(|mode| window_alphas(mode, amount));
-                for a in modes.into_iter().chain([panel_alphas(true, amount)]) {
+                let over_white_modes = [Transparency::Sidebar, Transparency::Window]
+                    .map(|mode| (window_alphas(mode, amount), 0xffffff_u32));
+                let checks = over_white_modes
+                    .into_iter()
+                    .chain([(panel_alphas(true, amount), 0xffffff)])
+                    .chain([(window_alphas(Transparency::Everything, amount), 0x808080)]);
+                for (a, behind) in checks {
                     let dim = readable_dim(p, a);
                     for (surface, alpha) in [(p.bg, a.bg), (p.sidebar, a.sidebar), (p.card, a.card)] {
-                        let shown = over_white(surface, alpha);
-                        assert!(contrast(p.ink, shown) >= 4.5, "{theme:?} {amount}%: text {:.2}", contrast(p.ink, shown));
-                        assert!(contrast(dim, shown) >= 4.5, "{theme:?} {amount}%: dim {:.2}", contrast(dim, shown));
+                        let shown = super::mix(behind, surface, f64::from(alpha));
+                        assert!(contrast(p.ink, shown) >= 4.5, "{theme:?} {amount}% over {behind:06x}: text {:.2}", contrast(p.ink, shown));
+                        assert!(contrast(dim, shown) >= 4.5, "{theme:?} {amount}% over {behind:06x}: dim {:.2}", contrast(dim, shown));
                     }
                 }
             }
             assert_eq!(readable_dim(p, Alphas::OPAQUE), p.ink_dim, "{theme:?}: solid windows keep their dim text");
+            // Light themes: over black for the calmer modes, mid-grey for
+            // Everything.
             let light = theme_palette(theme, false);
-            assert_eq!(readable_dim(light, window_alphas(Transparency::Everything, 100.)), light.ink_dim);
+            for amount in (0..=100).step_by(10).map(f64::from) {
+                let checks = [Transparency::Sidebar, Transparency::Window]
+                    .map(|mode| (window_alphas(mode, amount), 0x000000_u32))
+                    .into_iter()
+                    .chain([(panel_alphas(true, amount), 0x000000)])
+                    .chain([(window_alphas(Transparency::Everything, amount), 0x808080)]);
+                for (a, behind) in checks {
+                    let dim = readable_dim(light, a);
+                    for (surface, alpha) in [(light.bg, a.bg), (light.sidebar, a.sidebar), (light.card, a.card)] {
+                        let shown = super::mix(behind, surface, f64::from(alpha));
+                        assert!(contrast(light.ink, shown) >= 4.5, "{theme:?} light {amount}% over {behind:06x}: text {:.2}", contrast(light.ink, shown));
+                        assert!(contrast(dim, shown) >= 4.5, "{theme:?} light {amount}% over {behind:06x}: dim {:.2}", contrast(dim, shown));
+                    }
+                }
+            }
+            assert_eq!(readable_dim(light, Alphas::OPAQUE), light.ink_dim);
         }
         assert_eq!(window_alphas(crate::settings::Transparency::Everything, 0.), Alphas::OPAQUE);
     }

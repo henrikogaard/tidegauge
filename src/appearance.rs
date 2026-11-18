@@ -53,6 +53,23 @@ pub fn background(see_through: bool) -> WindowBackgroundAppearance {
     }
 }
 
+/// Let the window's content show through the UI kit's root, or not. The kit
+/// paints its theme background (opaque) under every window it opens, so with
+/// that in place nothing behind the window could ever show through. Deferred:
+/// the root is being drawn when the dashboard notices the setting changed.
+pub fn clear_root_background(window: &Window, cx: &mut gpui_kit::App, see_through: bool) {
+    window.defer(cx, move |window, cx| {
+        if window.root::<gpui_kit::base::Root>().flatten().is_none() {
+            return;
+        }
+        gpui_kit::base::Root::update(window, cx, |root, _, cx| {
+            use gpui_kit::Styled as _;
+            root.style().background = see_through.then(|| gpui_kit::transparent_black().into());
+            cx.notify();
+        });
+    });
+}
+
 /// Which macOS glass sits behind a see-through window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glass {
