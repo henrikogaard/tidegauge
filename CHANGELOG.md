@@ -6,6 +6,11 @@ hardware acceptance checks. A merge and a published release are separate events.
 
 ## Unreleased
 
+### Fixed
+
+- Clicking the menu-bar item no longer brings back a closed dashboard. The
+  panel opened as it should, but the dashboard window came back with it.
+
 ## [0.11.1](https://github.com/henrikogaard/tidegauge/releases/tag/v0.11.1) — 2026-11-18
 
 ### Fixed

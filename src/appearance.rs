@@ -34,6 +34,20 @@ pub fn is_visible(window: &Window) -> bool {
     })
 }
 
+/// Take the window off screen without closing it. Hiding the app alone is
+/// not enough: macOS unhides a hidden app, with every window it had, as soon
+/// as any of its windows is ordered in, so the menu-bar panel would bring the
+/// dashboard back with it.
+pub fn order_out(window: &Window) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return };
+    // The borrowed GPUI window owns this AppKit view for the duration of this call.
+    let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+    if let Some(native_window) = view.window() {
+        native_window.orderOut(None);
+    }
+}
+
 /// Whether macOS has "Reduce transparency" on; the see-through settings give
 /// way to it.
 pub fn reduce_transparency() -> bool {
