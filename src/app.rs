@@ -364,8 +364,17 @@ pub fn set_in_dock(shown: bool) {
 }
 
 /// Close the dashboard: it hides (collection goes on) and the Dock icon goes.
+/// Its window is ordered out as well as the app hidden, so opening the
+/// menu-bar panel (which unhides the app) leaves it closed. Deferred: the
+/// red button asks while the window is handling the event.
 pub fn hide_dashboard(cx: &mut gpui_kit::App) {
-    cx.hide();
+    let handle = PANEL.get_or_init(|| Mutex::new(None)).lock().unwrap().clone();
+    cx.defer(move |cx| {
+        if let Some(handle) = handle {
+            let _ = handle.update(cx, |_, window, _| crate::appearance::order_out(window));
+        }
+        cx.hide();
+    });
     set_in_dock(false);
 }
 
